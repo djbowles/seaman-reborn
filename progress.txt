@@ -589,3 +589,24 @@ Started: 2026-02-25
   - _MOOD_ORDER tuple provides canonical ordering for index-based operations
   - 67 tests: enum (4), helpers (8), init (4), needs scoring (4), interactions (5), time scoring (6), personality (4), mood index (5), transition smoothing (8), calculate_mood (7), modifiers (4), set_mood (4), edge cases (4)
 ---
+
+## 2026-02-25 - US-033
+- Implemented BehaviorEngine class in behavior/autonomous.py managing autonomous creature actions
+- BehaviorType enum: IDLE_SWIM, TAP_GLASS, COMPLAIN, OBSERVE, SLEEP, EAT
+- IdleBehavior dataclass: action_type, message, animation_hint, priority
+- get_idle_behavior() scores all behavior types, filters by cooldown, returns highest priority
+- Need-driven scoring: hunger boosts COMPLAIN/EAT, low stimulation boosts TAP_GLASS, night boosts SLEEP, curiosity boosts OBSERVE
+- Cooldown system: per-behavior-type cooldowns, configurable overrides, reset_cooldowns(), get_cooldown_remaining()
+- Message cycling: mood-categorized messages (negative/neutral/positive) rotate on repeated calls
+- generate_idle_comment() for optional LLM-powered idle speech (async, graceful error handling)
+- Updated behavior/__init__.py to export BehaviorEngine, BehaviorType, IdleBehavior
+- Files changed: src/seaman_brain/behavior/autonomous.py, src/seaman_brain/behavior/__init__.py, tests/test_behavior/test_autonomous.py
+- **Learnings for future iterations:**
+  - BehaviorEngine follows same injectable now_func pattern as GameClock, FeedingEngine, DeathEngine
+  - Mood is categorized into "negative"/"neutral"/"positive" for message selection — not per-mood
+  - Cooldowns are per-behavior-type, not global — IDLE_SWIM (15s) is frequent, SLEEP (120s) is rare
+  - _pick_message cycles through messages using an incrementing index per behavior type (wraps with modulo)
+  - generate_idle_comment uses lazy import of ChatMessage/MessageRole to avoid circular imports
+  - creature_state is dict[str, Any] (not CreatureState) to decouple from creature module
+  - 45 tests: BehaviorType (2), IdleBehavior (2), mood category (3), selection (7), cooldown (8), need-driven scoring (9), message cycling (3), LLM comment generation (4), edge cases (7)
+---
