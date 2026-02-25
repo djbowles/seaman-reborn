@@ -910,3 +910,23 @@ Started: 2026-02-25
   - TYPE_CHECKING guard + local import in from_dict() prevents circular import (state <-> genome)
   - 55 tests: trait constants (6), stage defaults (3), dataclass (7), serialization (4), random generation (7), mutation (6), epigenetic drift (11), state integration (7)
 ---
+
+## 2026-02-25 - US-048
+- Implemented SelfModel class with stage-aware body descriptions, change detection, and prompt injection
+- SelfModel dataclass holds description, new_changes list, and previous_levels for change tracking
+- build_self_description(genome, stage) generates natural-language self-perception at 5 detail levels:
+  - Mushroomer: minimal (body size only)
+  - Gillman: basic (morphological traits)
+  - Podfish: moderate (+ chromatic traits)
+  - Tadman: detailed (+ behavioral traits)
+  - Frogman: rich (everything + philosophical synthesis)
+- Change detection compares trait level bands (low/mid/high) between updates
+- get_prompt_injection() formats [YOUR BODY] and [RECENT PHYSICAL CHANGES] blocks for system prompt
+- Files changed: src/seaman_brain/creature/self_model.py, tests/test_creature/test_self_model.py
+- **Learnings for future iterations:**
+  - Trait-to-language uses 3-band thresholds (<0.33=low, 0.33-0.66=mid, >0.66=high)
+  - Change detection tracks level band transitions, not raw float diffs — avoids noisy micro-changes
+  - _STAGE_AWARENESS dict maps stages to detail levels for progressive self-knowledge
+  - SelfModel stores previous_levels dict for stateful change tracking across updates
+  - 21 tests: description per stage (6), change detection (6), prompt injection (4), edge cases (5)
+---
