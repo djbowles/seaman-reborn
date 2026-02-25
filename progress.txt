@@ -610,3 +610,29 @@ Started: 2026-02-25
   - creature_state is dict[str, Any] (not CreatureState) to decouple from creature module
   - 45 tests: BehaviorType (2), IdleBehavior (2), mood category (3), selection (7), cooldown (8), need-driven scoring (9), message cycling (3), LLM comment generation (4), edge cases (7)
 ---
+
+## 2026-02-25 - US-034
+- Implemented EventSystem class in behavior/events.py managing scheduled, random, and stage-triggered game events
+- EventType enum: EVOLUTION_READY, BREEDING, HOLIDAY, MILESTONE, RANDOM_OBSERVATION, ENVIRONMENTAL
+- EventEffect dataclass: mood_change, trust_change, hunger_change, health_change, tank_changes, trigger_dialogue
+- GameEvent dataclass: event_type, name, message, effects, one_shot, cooldown_seconds, priority
+- TriggerCondition callable type: (CreatureState, TankEnvironment, dict) -> bool
+- 15 built-in events via _build_default_events():
+  - 4 evolution-ready events (one per non-final stage, one-shot)
+  - 3 stage-specific: gillman_cannibalism, podfish_mating, tank_drain_prompt (all one-shot)
+  - 3 time-triggered: late_night_visit (0-5am), weekend_observation, long_absence (moderate/severe)
+  - 3 milestones: 10/50/100 interactions (one-shot)
+  - 2 environmental: dirty_tank (cleanliness<0.3), temperature_warning (temp<18 or >32)
+- EventSystem class: register_event, unregister_event, check_events (filters one-shots + cooldowns, sorts by priority), apply_effects (modifies state in-place with clamping), reset/reset_event, to_dict/load_state persistence
+- Injectable now_func and rng_seed for deterministic testing
+- Updated behavior/__init__.py to export EventEffect, EventSystem, EventType, GameEvent
+- Files changed: src/seaman_brain/behavior/events.py, src/seaman_brain/behavior/__init__.py, tests/test_behavior/test_events.py
+- **Learnings for future iterations:**
+  - EventSystem follows same injectable now_func pattern as GameClock, FeedingEngine, DeathEngine, BehaviorEngine
+  - TriggerCondition is a Callable type alias — event factories return (GameEvent, TriggerCondition) tuples
+  - Built-in events use closure-based conditions (inner functions capturing stage/count params)
+  - One-shot tracking and cooldown tracking are independent systems — one-shots also record last_fired time
+  - apply_effects uses _clamp for creature state but directly sets tank fields via setattr
+  - to_dict/load_state serialize one-shot set and last_fired timestamps for session persistence
+  - 76 tests: EventType (2), EventEffect (2), GameEvent (2), _clamp (4), init (4), registration (5), check_events (5), one-shot (3), cooldown (3), apply_effects (8), reset (4), persistence (5), built-in events (5), built-in triggers (17), integration (4), edge cases (4)
+---
