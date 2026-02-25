@@ -949,3 +949,23 @@ Started: 2026-02-25
   - Personality drift is computed per-trait: final - stage_default, rounded to 4 decimal places
   - 41 tests: GeneticLegacy (5), heuristic distillation (5), LLM distillation (6), personality drift (4), behavioral patterns (3), extract_legacy (5), save/load (5), get_latest_legacy (5), DeathEngine hook (3)
 ---
+
+## 2026-02-25 - US-050
+- Implemented generational inheritance and mutation in creature/inheritance.py
+- InheritanceEngine class: hatch_from_legacy() takes a GeneticLegacy and produces a new CreatureState (MUSHROOMER), mutated child genome, and list of AncestralMemory
+- AncestralMemory dataclass: original_fact, faded_version (with vague prefix), confidence (0-1, decays per generation), source_generation
+- Genome mutation: delegates to mutate_genome() from genome.py, each trait drifts by gaussian noise scaled to mutation_rate, clamped to [0,1]
+- Ancestral memories: parent memories get vague prefixes ("I have a dim memory that...", "Something tells me that...", etc.) with lowercased fact for natural flow
+- Memory confidence decay: DECAY_PER_GENERATION=0.5, so direct child gets 0.5, grandchild gets 0.25, etc. Memories below 0.05 confidence are dropped entirely
+- fade_across_generations() static method for multi-generation memory propagation
+- Personality inheritance: compute_inherited_traits() shifts MUSHROOMER defaults 30% toward parent's final traits (using personality_drift from legacy)
+- New creature always starts at MUSHROOMER stage with age=0, trust=0, interaction_count=0
+- Files changed: src/seaman_brain/creature/inheritance.py (new), tests/test_creature/test_inheritance.py (new), prd.json
+- **Learnings for future iterations:**
+  - InheritanceEngine reuses mutate_genome() from genome.py — no need to reimplement mutation
+  - Personality inheritance formula: default + 0.3 * (parent_final - default) where parent_final = default + drift
+  - AncestralMemory fading uses simple exponential decay (confidence *= 0.5 per generation)
+  - Blank/whitespace-only memories are filtered out during ancestral memory creation
+  - CreatureGenome.from_dict({}) fills all missing traits with 0.5 — safe for empty genome legacies
+  - 19 tests: AncestralMemory (2), genome mutation (4), memory fading (6), personality inheritance (4), hatch integration (3)
+---

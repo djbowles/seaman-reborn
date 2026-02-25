@@ -905,8 +905,8 @@
         "ruff check passes, pytest passes"
       ],
       "priority": 50,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "InheritanceEngine with hatch_from_legacy(), AncestralMemory dataclass, genome mutation via mutate_genome(), memory fading with DECAY_PER_GENERATION=0.5, personality inheritance at 30% weight, fade_across_generations() for multi-gen decay. 19 tests."
     },
     {
       "id": "US-051",
