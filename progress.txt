@@ -8,6 +8,8 @@ Started: 2026-02-25
 - All stub files have docstrings with "Stub - implementation in US-XXX"
 - Package installed in editable mode: `pip install -e ".[dev]"`
 - Quality gates: `ruff check src/ tests/` + `python -m pytest tests/ -x --tb=short` + `python -m seaman_brain --version`
+- Use `datetime.UTC` not `timezone.utc` (ruff UP017 rule)
+- Run ruff via `python -m ruff` (not bare `ruff`) — bare command not on PATH
 
 ## 2026-02-25 - US-001
 - Initialized git repo, created full project scaffold
@@ -18,4 +20,14 @@ Started: 2026-02-25
   - ruff configured with line-length=100, rules E,F,W,I,N,UP
   - All 7 subpackages have __init__.py files
   - conftest.py provides config_dir and data_dir fixtures using tmp_path
+---
+
+## 2026-02-25 - US-002
+- Implemented shared types and enums: CreatureStage (5 stages), MessageRole (3 roles), ChatMessage dataclass, MemoryRecord dataclass
+- Files changed: src/seaman_brain/types.py, tests/test_types.py
+- **Learnings for future iterations:**
+  - Use `datetime.UTC` not `timezone.utc` — ruff UP017 enforces the newer alias
+  - `ruff` is not on PATH; must use `python -m ruff check src/ tests/`
+  - numpy NDArray[np.float32] works well for embedding type hints
+  - 13 tests in test_types.py covering enums, dataclass creation, defaults, edge cases
 ---

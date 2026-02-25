@@ -36,8 +36,8 @@
         "ruff check passes, pytest passes"
       ],
       "priority": 2,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Types use datetime.UTC (not timezone.utc) per ruff UP017. numpy NDArray[np.float32] for embeddings."
     },
     {
       "id": "US-003",
@@ -446,7 +446,7 @@
     {
       "id": "US-026",
       "title": "Implement real-time clock and time awareness",
-      "description": "As a creature, I need to know what time it is in the real world. The original Seaman was tied to the Dreamcast's real-time clock — the creature knew if you visited at 3am, commented on holidays, and starved if you didn't show up. Implement time awareness that feeds into the prompt builder and needs system.",
+      "description": "As a creature, I need to know what time it is in the real world. The original Seaman was tied to the Dreamcast's real-time clock \u00e2\u20ac\u201d the creature knew if you visited at 3am, commented on holidays, and starved if you didn't show up. Implement time awareness that feeds into the prompt builder and needs system.",
       "acceptanceCriteria": [
         "GameClock class wrapping real-time clock with game-relevant properties",
         "Properties: time_of_day (morning/afternoon/evening/night), day_of_week, is_weekend, hours_since_last_session, session_duration_minutes",
@@ -537,7 +537,7 @@
     {
       "id": "US-031",
       "title": "Implement death and revival mechanics",
-      "description": "As a creature, I can die from neglect — starvation, suffocation, temperature extremes, or prolonged illness. Death is consequential (the original Seaman permanently died). Implement death detection, death state, and optional revival (new egg) mechanic.",
+      "description": "As a creature, I can die from neglect \u00e2\u20ac\u201d starvation, suffocation, temperature extremes, or prolonged illness. Death is consequential (the original Seaman permanently died). Implement death detection, death state, and optional revival (new egg) mechanic.",
       "acceptanceCriteria": [
         "DeathEngine class monitoring creature health for death conditions",
         "check_death(creature_state, needs, tank) -> DeathCause | None",
@@ -573,7 +573,7 @@
     {
       "id": "US-033",
       "title": "Implement autonomous behavior system",
-      "description": "As a creature, I should do things unprompted — swim around, tap the glass, make observations about the time, complain about hunger, react to the player's webcam presence. These idle behaviors make the creature feel alive between conversations.",
+      "description": "As a creature, I should do things unprompted \u00e2\u20ac\u201d swim around, tap the glass, make observations about the time, complain about hunger, react to the player's webcam presence. These idle behaviors make the creature feel alive between conversations.",
       "acceptanceCriteria": [
         "BehaviorEngine class managing autonomous creature actions",
         "IdleBehavior dataclass: action_type, message, animation_hint, priority",
@@ -649,11 +649,11 @@
     {
       "id": "US-037",
       "title": "Implement creature sprite and animation system",
-      "description": "As a user, I need to see the creature in the tank. Each of the 5 evolutionary stages needs a distinct visual representation. Use procedural/geometric art (circles, ellipses, lines) to represent each stage — no external assets needed. Idle, swimming, talking, and eating animations.",
+      "description": "As a user, I need to see the creature in the tank. Each of the 5 evolutionary stages needs a distinct visual representation. Use procedural/geometric art (circles, ellipses, lines) to represent each stage \u00e2\u20ac\u201d no external assets needed. Idle, swimming, talking, and eating animations.",
       "acceptanceCriteria": [
         "CreatureRenderer class drawing the creature for each stage",
         "5 stage renderers: Mushroomer (small spore with eye), Gillman (fish with human face), Podfish (fish with legs), Tadman (tadpole humanoid), Frogman (frog-man)",
-        "All art is procedural (Pygame draw calls) — no external image files required",
+        "All art is procedural (Pygame draw calls) \u00e2\u20ac\u201d no external image files required",
         "Animation states: IDLE, SWIMMING, TALKING, EATING, SLEEPING",
         "Smooth position interpolation as creature moves around tank",
         "Talking animation: mouth movement synced to TTS or text output",
@@ -801,7 +801,7 @@
     {
       "id": "US-045",
       "title": "Implement real-time event streaming over WebSocket",
-      "description": "As a UE5 client, I need to receive real-time updates about the creature's state — mood shifts, need changes, autonomous behaviors, evolution events, and death — so the 3D rendering can react instantly.",
+      "description": "As a UE5 client, I need to receive real-time updates about the creature's state \u00e2\u20ac\u201d mood shifts, need changes, autonomous behaviors, evolution events, and death \u00e2\u20ac\u201d so the 3D rendering can react instantly.",
       "acceptanceCriteria": [
         "EventBroadcaster class that collects state changes and pushes to all connected WebSocket clients",
         "Subscribable event channels: mood, needs, evolution, behavior, tank, death",
@@ -837,7 +837,7 @@
     {
       "id": "US-047",
       "title": "Implement creature genome and physical trait system",
-      "description": "As a creature, I need a genetic identity that makes me physically unique. Each creature has a 'genome' — an array of float values representing heritable physical traits (body_size, head_ratio, eye_size, coloring_hue, coloring_saturation, fin_length, limb_proportion, face_expressiveness, voice_pitch, metabolism_rate). These traits interpolate smoothly within each evolutionary stage, shift gradually during life based on care quality, environment, and interaction patterns, and are the foundation for genetic inheritance across generations.",
+      "description": "As a creature, I need a genetic identity that makes me physically unique. Each creature has a 'genome' \u00e2\u20ac\u201d an array of float values representing heritable physical traits (body_size, head_ratio, eye_size, coloring_hue, coloring_saturation, fin_length, limb_proportion, face_expressiveness, voice_pitch, metabolism_rate). These traits interpolate smoothly within each evolutionary stage, shift gradually during life based on care quality, environment, and interaction patterns, and are the foundation for genetic inheritance across generations.",
       "acceptanceCriteria": [
         "CreatureGenome dataclass: dict of trait_name -> float (0.0-1.0) for ~12 heritable traits",
         "Trait categories: morphological (body_size, head_ratio, eye_size, fin_length, limb_proportion), chromatic (hue, saturation, pattern_complexity), behavioral (metabolism_rate, voice_pitch, face_expressiveness, aggression_baseline)",
@@ -855,7 +855,7 @@
     {
       "id": "US-048",
       "title": "Implement creature self-model and body awareness",
-      "description": "As a creature, I need to know what I look like so I can comment on my own body. The creature maintains a self-model — a natural language description of its current physical state derived from its genome and evolutionary stage. This self-model is injected into the LLM system prompt so the creature can reference its own appearance ('I notice my legs are getting longer'), react to physical changes during evolution, and have opinions about how it looks.",
+      "description": "As a creature, I need to know what I look like so I can comment on my own body. The creature maintains a self-model \u00e2\u20ac\u201d a natural language description of its current physical state derived from its genome and evolutionary stage. This self-model is injected into the LLM system prompt so the creature can reference its own appearance ('I notice my legs are getting longer'), react to physical changes during evolution, and have opinions about how it looks.",
       "acceptanceCriteria": [
         "SelfModel class that generates a natural language body description from genome + stage",
         "build_self_description(genome, stage, previous_description) -> str returns current self-perception",
@@ -891,7 +891,7 @@
     {
       "id": "US-050",
       "title": "Implement generational inheritance and mutation",
-      "description": "As a new creature hatching after my predecessor's death, I should inherit genetic material from my parent. The new creature receives: a mutated version of the parent's genome (physical traits drift but stay recognizable), 'ancestral memories' — faded, fragmented versions of the parent's key memories that surface as deja vu or vague recollections, and a personality baseline shifted toward the parent's final personality. Each generation produces a slightly different creature while maintaining lineage continuity.",
+      "description": "As a new creature hatching after my predecessor's death, I should inherit genetic material from my parent. The new creature receives: a mutated version of the parent's genome (physical traits drift but stay recognizable), 'ancestral memories' \u00e2\u20ac\u201d faded, fragmented versions of the parent's key memories that surface as deja vu or vague recollections, and a personality baseline shifted toward the parent's final personality. Each generation produces a slightly different creature while maintaining lineage continuity.",
       "acceptanceCriteria": [
         "InheritanceEngine class managing the birth of a new creature from GeneticLegacy",
         "hatch_from_legacy(legacy: GeneticLegacy) -> tuple[CreatureState, CreatureGenome, list[AncestralMemory]]",
