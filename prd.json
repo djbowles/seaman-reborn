@@ -388,8 +388,8 @@
         "ruff check passes, pytest passes"
       ],
       "priority": 22,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "21 integration tests in 5 classes: TestEndToEndConversation (5), TestMemoryExtraction (3), TestEvolution (4), TestSessionPersistence (4), TestGracefulDegradation (5). All pass with pytest -m integration."
     },
     {
       "id": "US-023",

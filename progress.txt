@@ -359,3 +359,18 @@ Started: 2026-02-25
   - MockLLM for CLI tests: same pattern as test_manager.py — AsyncMock for chat, async generator for stream
   - 54 tests: command parsing (7), help (2), state (2), memory (4), stage (2), traits (3), reset (2), quit (2), unknown (1), format_header (8), format_response (4), terminal init (4), display (3), run loop (6), shutdown (4)
 ---
+
+## 2026-02-25 - US-022
+- Implemented 21 integration tests for the brain core conversation loop in tests/test_integration/test_brain_core.py
+- 5 test classes: TestEndToEndConversation (5 tests), TestMemoryExtraction (3 tests), TestEvolution (4 tests), TestSessionPersistence (4 tests), TestGracefulDegradation (5 tests)
+- All tests use `pytestmark = pytest.mark.integration` — runnable with `pytest -m integration`
+- Tests exercise full ConversationManager pipeline with mocked LLM at boundary only
+- Files changed: tests/test_integration/__init__.py, tests/test_integration/test_brain_core.py, prd.json
+- **Learnings for future iterations:**
+  - PromptBuilder uses descriptive stage text, not stage enum names — check `_STAGE_IDENTITIES` for actual content
+  - StatePersistence.save() is synchronous — use MagicMock not AsyncMock when mocking it
+  - `pytestmark = pytest.mark.integration` at module level applies marker to all tests in the module
+  - MockLLM with response queue pattern: `side_effect=self._next_response` on AsyncMock allows multi-turn tests with different responses
+  - LanceDB `db_path` must be set in MemoryConfig when testing extraction that stores to semantic memory
+  - 21 tests: end-to-end (5), extraction (3), evolution (4), persistence (4), degradation (5)
+---
