@@ -115,3 +115,18 @@ Started: 2026-02-25
   - anthropic>=0.40 is in `[cloud]` optional deps alongside openai
   - 21 tests: happy path (7), edge cases (10), error handling (5 including chained exceptions)
 ---
+
+## 2026-02-25 - US-008
+- Implemented create_provider() factory function in llm/factory.py
+- Selects OllamaProvider, OpenAIProvider, or AnthropicProvider based on config.provider string
+- Lazy imports: each provider module imported only when selected (handles missing optional deps)
+- Case-insensitive provider name matching via .lower()
+- Clear ValueError for unknown providers listing supported options
+- Clear ImportError with install instructions for missing packages
+- Files changed: src/seaman_brain/llm/factory.py, tests/test_llm/test_factory.py
+- **Learnings for future iterations:**
+  - Lazy imports in factory prevent ImportError when optional cloud deps aren't installed
+  - To test missing imports: must pop module from sys.modules AND patch builtins.__import__
+  - sys.modules caching means patch.dict("sys.modules", {"pkg": None}) alone won't block submodule imports
+  - 11 tests: happy path (4), edge cases (2), error handling (5 including import errors)
+---

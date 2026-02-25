@@ -141,8 +141,8 @@
         "ruff check passes, pytest passes"
       ],
       "priority": 8,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Factory creates OllamaProvider, OpenAIProvider, or AnthropicProvider from LLMConfig.provider string. Lazy imports with clear ImportError for missing packages. 11 tests covering happy path, edge cases, error handling."
     },
     {
       "id": "US-009",
