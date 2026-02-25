@@ -21,6 +21,7 @@ Started: 2026-02-25
 - Pygame mocked in tests via `patch.dict(sys.modules, {"pygame": mock})` + force reimport after mocking; mock needs int constants (QUIT=256, KEYDOWN=768, K_ESCAPE=27)
 - For modules that import numpy (via types.py): use module-level `sys.modules["pygame"] = mock` + import once, NOT per-test `patch.dict` (which removes numpy between tests, causing C extension reload error)
 - Background asyncio for GUI: `asyncio.new_event_loop()` + `loop.run_forever()` + daemon thread; `run_coroutine_threadsafe()` to bridge sync->async
+- For gui test modules with shared pygame mock: re-install `sys.modules["pygame"]` in autouse fixture — other test_gui modules overwrite the mock at collection time
 
 ## 2026-02-25 - US-001
 - Initialized git repo, created full project scaffold
@@ -765,4 +766,25 @@ Started: 2026-02-25
   - Visual effects use alive property + update loop removal pattern (same as bubbles in tank_renderer)
   - NeedsConfig(feeding_cooldown_seconds=0) in test fixture removes cooldown for cleaner feeding tests
   - 39 tests: construction (4), feeding (6), temperature (3), glass tap (6), clean (2), drain/fill (2), visual effects (6), rendering (4), mouse move (2), edge cases (4)
+---
+
+## 2026-02-25 - US-041
+- Implemented PygameAudioBridge class in gui/audio_integration.py connecting AudioManager to Pygame mixer
+- AudioChannel enum: AMBIENT, VOICE, SFX with independent per-channel volume controls
+- Ambient sound loops: start_ambient("aquarium"|"terrarium") loads water_bubbling.wav or nature_ambient.wav, loops via pygame.mixer.Channel.play(loops=-1)
+- Creature voice: play_voice(text) synthesizes WAV via AudioManager.synthesize() in async loop, plays through voice channel
+- UI SFX: play_sfx(sound_name) loads .wav from sounds dir, plays through SFX channel with volume
+- Microphone toggle: toggle_microphone() / handle_key_event(K_m) toggles STT, starts async listen
+- Graceful fallback: if pygame.mixer.init() fails, audio_available=False, all playback methods become no-ops
+- Per-channel volume: get_volume/set_volume with 0.0-1.0 clamping, applies to mixer channels
+- update(dt) monitors ambient channel, shutdown() stops all channels
+- get_status() returns full audio state dict
+- Files changed: src/seaman_brain/gui/audio_integration.py, tests/test_gui/test_audio_integration.py
+- **Learnings for future iterations:**
+  - For gui test modules with pygame mocks: must re-install `sys.modules["pygame"]` and `sys.modules["pygame.mixer"]` in autouse fixture — other test_gui modules overwrite the mock at collection time
+  - pygame.mixer.Channel(n) returns a channel object — use set_volume(), play(), stop(), get_busy()
+  - Ambient loops use loops=-1 for infinite repeat
+  - TTS voice routing: AudioManager.synthesize() -> bytes -> pygame.mixer.Sound(buffer=bytes) -> channel.play()
+  - PygameAudioBridge needs an asyncio loop reference for async TTS/STT calls from sync game thread
+  - 47 tests: construction (5), volume control (6), ambient loop (7), voice playback (7), SFX (5), microphone toggle (9), lifecycle (5), edge cases (3)
 ---

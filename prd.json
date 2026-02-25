@@ -738,8 +738,8 @@
         "ruff check passes, pytest passes"
       ],
       "priority": 41,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "PygameAudioBridge with 3-channel mixer (ambient, voice, SFX), per-channel volume, ambient loops, TTS->mixer voice, SFX playback, M-key mic toggle, graceful visual-only fallback. 47 tests."
     },
     {
       "id": "US-042",
