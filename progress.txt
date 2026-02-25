@@ -808,3 +808,25 @@ Started: 2026-02-25
   - GameEngine registers update/render callbacks with GameWindow instead of overriding run() — keeps window loop clean
   - 30 tests: init (4), loop tick (6), async conversation bridge (6), evolution sequence (4), death/restart (3), rendering (4), interaction handling (3)
 ---
+
+## 2026-02-25 - US-043
+- Implemented FastAPI WebSocket server for UE5 bridge in api/server.py
+- BrainServer class with FastAPI app creation, WebSocket client management, background state broadcasting
+- WebSocket endpoint /ws/brain: accepts JSON messages {type: "input", text: "..."}, returns {type: "response", text: "...", state: {...}}
+- REST endpoints: GET /api/health (status + initialized flag), GET /api/state (full creature state snapshot), POST /api/reset (reset to default CreatureState)
+- CORS middleware configured from APIConfig.cors_origins
+- Background broadcast loop: periodically pushes state diffs to all connected WebSocket clients
+- Graceful client disconnect handling with client list cleanup
+- Wired --api flag in __main__.py to launch BrainServer.run() with uvicorn
+- Removed unused sys import from __main__.py (no longer needed after replacing stub)
+- Updated api/__init__.py to export BrainServer
+- Files changed: src/seaman_brain/api/server.py, src/seaman_brain/api/__init__.py, src/seaman_brain/__main__.py, tests/test_api/test_server.py
+- **Learnings for future iterations:**
+  - For WebSocket tests, mock process_input directly on manager rather than setting _initialized=True (process_input requires all subsystems like _episodic, _prompt_builder to be initialized)
+  - httpx ASGITransport + AsyncClient is the standard pattern for testing FastAPI REST endpoints without running uvicorn
+  - starlette.testclient.TestClient with websocket_connect() is used for synchronous WebSocket tests
+  - FastAPI lifespan context manager (asynccontextmanager) replaces deprecated on_startup/on_shutdown events
+  - Background asyncio tasks in lifespan should be cancelled and awaited with try/except CancelledError in shutdown
+  - _build_state_snapshot helper extracts state from manager.creature_state.to_dict() — returns {} if state is None
+  - 20 tests: health (2), state (2), reset (2), WebSocket (6), helpers (2), init (3), CORS (1), client tracking (2)
+---

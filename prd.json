@@ -777,8 +777,8 @@
         "ruff check passes, pytest passes"
       ],
       "priority": 43,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "BrainServer with FastAPI app, WebSocket /ws/brain endpoint, REST /api/health + /api/state + /api/reset, CORS middleware, background state-diff broadcasting, client tracking. --api flag wired in __main__.py. 20 tests."
     },
     {
       "id": "US-044",

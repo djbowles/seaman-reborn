@@ -8,7 +8,6 @@ Usage:
 """
 
 import argparse
-import sys
 
 from seaman_brain import __version__
 
@@ -42,9 +41,10 @@ def main() -> None:
         window = GameWindow()
         window.run()
     elif args.api:
-        # TODO: Launch API server (US-043)
-        print(f"Seaman Brain v{__version__} - API server mode not yet implemented")
-        sys.exit(0)
+        from seaman_brain.api.server import BrainServer
+
+        server = BrainServer()
+        server.run()
     else:
         # Launch interactive terminal
         import asyncio
