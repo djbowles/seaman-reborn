@@ -1,0 +1,48 @@
+[llm]
+provider = "ollama"
+model = "qwen3-coder:30b"
+temperature = 0.8
+max_tokens = 512
+base_url = "http://localhost:11434"
+
+[memory]
+buffer_size = 20
+vector_dims = 384
+top_k = 5
+extraction_interval = 5
+db_path = "data/lancedb"
+similarity_weight = 0.7
+recency_weight = 0.3
+
+[memory.embeddings]
+provider = "ollama"
+model = "all-minilm:l6-v2"
+
+[personality]
+stages_path = "config/stages"
+
+[personality.base_traits]
+cynicism = 0.7
+wit = 0.8
+patience = 0.3
+curiosity = 0.6
+warmth = 0.2
+verbosity = 0.5
+formality = 0.2
+aggression = 0.4
+
+[creature]
+save_path = "data/saves"
+initial_stage = "mushroomer"
+auto_save = true
+
+[creature.evolution_thresholds]
+gillman = { interactions = 20, trust = 0.3 }
+podfish = { interactions = 50, trust = 0.5 }
+tadman = { interactions = 100, trust = 0.6 }
+frogman = { interactions = 200, trust = 0.8 }
+
+[cli]
+show_debug = false
+stream_responses = true
+prompt_style = "seaman"
