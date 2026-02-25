@@ -196,3 +196,22 @@ Started: 2026-02-25
   - All memory module dependencies: embeddings.py -> semantic.py -> retriever.py
   - 12 tests: happy path (4), edge cases (5), error handling (3)
 ---
+
+## 2026-02-25 - US-013
+- Implemented MemoryExtractor class in memory/extractor.py
+- Uses LLM to extract key facts from conversation history via structured prompt
+- extract() sends filtered conversation (no system messages) to LLM, parses newline-separated facts
+- extract_and_store() embeds each fact and persists to SemanticMemory, with per-fact error resilience
+- Configurable extraction_interval from MemoryConfig (default 5 messages)
+- Message counter with should_extract()/increment_counter()/reset_counter() for interval tracking
+- EXTRACTION_PROMPT focuses on: user preferences, personal info, topics, observations
+- Graceful degradation: LLM errors return empty list, individual fact embed/store errors skip that fact
+- Files changed: src/seaman_brain/memory/extractor.py, tests/test_memory/test_extractor.py
+- **Learnings for future iterations:**
+  - MemoryExtractor depends on LLMProvider, EmbeddingProvider, and SemanticMemory — three injected collaborators
+  - System messages should be filtered out before sending conversation to extraction LLM
+  - LLM "NONE" response is the sentinel for no-facts-found — must handle case-insensitively
+  - Per-fact error handling in extract_and_store means one bad embedding doesn't block other facts
+  - Memory module dependency chain updated: embeddings.py -> semantic.py -> retriever.py, extractor.py (parallel leaf)
+  - 17 tests: happy path (5), edge cases (7), error handling (5)
+---
