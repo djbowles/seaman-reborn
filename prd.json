@@ -159,8 +159,8 @@
         "ruff check passes, pytest passes"
       ],
       "priority": 9,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "EpisodicMemory with deque-based rolling buffer, configurable max_size, add/get_recent/get_all/clear. 20 tests covering happy path, overflow eviction, edge cases, error handling."
     },
     {
       "id": "US-010",
