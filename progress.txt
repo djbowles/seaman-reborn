@@ -12,6 +12,9 @@ Started: 2026-02-25
 - Run ruff via `python -m ruff` (not bare `ruff`) — bare command not on PATH
 - Cloud LLM providers (openai, anthropic) are in `[cloud]` optional deps: `pip install -e ".[cloud]"`
 - Anthropic API separates system messages from conversation — pass via `system` kwarg, not in `messages` array
+- LanceDB async: `connect_async()`, `table.search()` is a coroutine (await it), then chain `.limit(k).to_list()`
+- LanceDB `list_tables()` returns a response object — access `.tables` for the list of names (replaces deprecated `table_names()`)
+- LanceDB stores timestamps as ISO strings, reconstruct with `datetime.fromisoformat()`
 
 ## 2026-02-25 - US-001
 - Initialized git repo, created full project scaffold
@@ -159,4 +162,22 @@ Started: 2026-02-25
   - Config chain: MemoryConfig.embeddings (EmbeddingsConfig) holds model name — not LLMConfig
   - For batch with mixed empties: filter empties, send only real texts, then map results back to original indices
   - 21 tests: happy path (5), edge cases (8), error handling (5), configuration (3)
+---
+
+## 2026-02-25 - US-011
+- Implemented SemanticMemory class in memory/semantic.py using LanceDB async API
+- Lazy connection/table initialization via _ensure_table()
+- add() stores MemoryRecord with embedding validation (empty check, dimension check)
+- search() returns MemoryRecord list sorted by vector similarity, respects top_k
+- count() and delete_all() for management
+- PyArrow schema with text, vector, timestamp (ISO string), importance, source
+- Files changed: src/seaman_brain/memory/semantic.py, tests/test_memory/test_semantic.py
+- **Learnings for future iterations:**
+  - LanceDB async: `connect_async()` returns AsyncConnection, `table.search()` is a coroutine
+  - Async search chain: `query = await table.search(vec)` then `await query.limit(k).to_list()`
+  - `list_tables()` returns ListTablesResponse object — use `.tables` for name list (deprecated `table_names()`)
+  - Timestamps stored as ISO strings (pa.string), not datetime — LanceDB Arrow doesn't handle tz-aware datetimes well
+  - Embeddings stored as `pa.list_(pa.float32(), dim)` — fixed-size list for vector column
+  - MemoryRecord.embedding is NDArray, must `.tolist()` before storing in LanceDB
+  - 16 tests: happy path (6), edge cases (7), error handling (3)
 ---

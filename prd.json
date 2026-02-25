@@ -193,8 +193,8 @@
         "ruff check passes, pytest passes"
       ],
       "priority": 11,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "SemanticMemory with async LanceDB. Lazy table init, add/search/count/delete_all. 16 tests covering happy path, edge cases, error handling."
     },
     {
       "id": "US-012",
