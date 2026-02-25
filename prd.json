@@ -298,8 +298,8 @@
         "ruff check passes, pytest passes"
       ],
       "priority": 17,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "CreatureState dataclass with clamping, to_dict/from_dict serialization. StatePersistence with JSON save/load, backup on overwrite, default state for missing files. 46 tests."
     },
     {
       "id": "US-018",

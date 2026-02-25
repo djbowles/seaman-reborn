@@ -270,3 +270,20 @@ Started: 2026-02-25
   - Negative constraints are the single most important section — they prevent the LLM from breaking character
   - 42 tests: basic build (5), with memories (4), different stages (4), creature state (8), trait tone (7), mood (6), stage desc (2), needs hints (6)
 ---
+
+## 2026-02-25 - US-017
+- Implemented CreatureState dataclass in creature/state.py with 11 fields (stage, age, interaction_count, mood, trust_level, hunger, health, comfort, last_fed, last_interaction, birth_time)
+- All float fields clamped to [0.0, 1.0] via __post_init__, age and interaction_count clamped to non-negative
+- to_dict() serializes to JSON-compatible dict (stage as .value, datetimes as ISO strings)
+- from_dict() deserializes with graceful handling of missing/unknown keys
+- Implemented StatePersistence class in creature/persistence.py with save/load/exists/delete
+- save() creates directory if needed, backs up existing file to .json.bak before overwriting
+- load() returns default CreatureState if file missing
+- Files changed: src/seaman_brain/creature/state.py, src/seaman_brain/creature/persistence.py, tests/test_creature/test_state.py, tests/test_creature/test_persistence.py
+- **Learnings for future iterations:**
+  - CreatureState uses _clamp() helper in __post_init__ for float field validation — same pattern as TraitProfile
+  - from_dict() uses datetime.fromisoformat() for timestamp deserialization — timestamps stored as ISO strings
+  - StatePersistence uses shutil.copy2() for backup (preserves metadata)
+  - data/saves/ is gitignored — tests must use tmp_path fixture for persistence tests
+  - 46 tests: state creation (3), clamping (7), to_dict (3), from_dict (6), save/load (5), backup (3), missing file (4), errors (3), delete (2), all-stages roundtrip (5), helper (5)
+---
