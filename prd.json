@@ -440,8 +440,8 @@
         "ruff check passes, pytest passes"
       ],
       "priority": 25,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "AudioManager coordinating TTS, STT, SFX with per-channel enable/disable, sfx_volume, play_sfx with winsound/simpleaudio fallback, asyncio.Lock for thread-safe SFX, create_audio_manager factory. 43 tests."
     },
     {
       "id": "US-026",

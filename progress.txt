@@ -414,3 +414,26 @@ Started: 2026-02-25
   - AudioConfig defaults: stt_enabled=False, stt_provider="speech_recognition"
   - 30 tests: protocol (4), noop (3), init (5), listen (8), recognize (4), factory (6)
 ---
+
+## 2026-02-25 - US-025
+- Implemented AudioManager class in audio/manager.py — unified coordinator for TTS, STT, and SFX
+- async speak(text) routes to TTS provider with disabled/empty checks and error handling
+- async synthesize(text) returns WAV bytes from TTS with graceful fallback to b""
+- async listen() routes to STT provider with disabled/error handling returning ""
+- async play_sfx(sound_name) plays .wav files from sounds_dir with winsound/simpleaudio backend fallback
+- Per-channel enable/disable (tts, stt, sfx) with runtime toggling via properties and set_channel()
+- sfx_volume property with clamping to [0.0, 1.0]
+- asyncio.Lock for thread-safe SFX serialization
+- get_status() returns dict of channel states
+- create_audio_manager() factory function
+- Updated audio/__init__.py to export AudioManager and create_audio_manager
+- Fixed ruff lint: removed unused NoopSTTProvider/NoopTTSProvider imports from manager.py, fixed test import sorting
+- Files changed: src/seaman_brain/audio/manager.py, src/seaman_brain/audio/__init__.py, tests/test_audio/test_manager.py
+- **Learnings for future iterations:**
+  - AudioManager uses create_tts_provider/create_stt_provider as defaults — no need to import Noop providers directly
+  - winsound is Windows-only, simpleaudio is cross-platform — manager tries winsound first then falls back
+  - asyncio.Lock serializes SFX playback to prevent overlapping sounds
+  - _play_wav uses lazy imports for both winsound and simpleaudio, same pattern as tts.py/stt.py
+  - AudioConfig.sfx_volume default is 0.5, sfx_enabled default is True, stt_enabled default is False
+  - 43 tests: init (4), speak (6), synthesize (4), listen (3), sfx (7), play_wav (2), channels (8), volume (4), factory (3), concurrency (2)
+---
