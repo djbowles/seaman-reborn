@@ -52,7 +52,7 @@ Stories have implicit dependencies based on imports. Check the story's priority 
 - llm/base.py -> all providers -> factory
 - memory: episodic (standalone), embeddings -> semantic -> retriever
 - personality: traits -> constraints -> prompt_builder
-- creature: state -> evolution, persistence
+- creature: state -> evolution, persistence, genome -> self_model, genetics -> lineage
 - conversation: context_assembler + manager (depends on most subsystems)
 - cli: terminal + commands (depends on conversation manager)
 - audio: tts + stt -> manager

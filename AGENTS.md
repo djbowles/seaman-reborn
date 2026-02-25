@@ -119,6 +119,32 @@
 - Auto-saves after each interaction
 - Creates backups before stage transitions
 
+#### `genome.py` — Creature Genome & Physical Traits
+- `CreatureGenome` dataclass: ~12 heritable float traits (body_size, head_ratio, eye_size, coloring_hue, etc.)
+- `generate_random_genome()`: gaussian-distributed around stage defaults
+- `mutate_genome(parent, mutation_rate)`: child genome with random drift
+- `update_epigenetic_drift(genome, care, environment, days)`: subtle life-driven shifts
+
+#### `self_model.py` — Creature Self-Awareness
+- `SelfModel`: generates natural language body description from genome + stage
+- `build_self_description()`: current self-perception text
+- Tracks physical changes between updates, detects "new_changes"
+- `get_prompt_injection()`: formatted block for LLM system prompt
+- Stage-gated awareness (Mushroomer: minimal, Frogman: rich self-knowledge)
+
+#### `genetics.py` — Genetic Inheritance System
+- `GeneticLegacy` dataclass: genome, distilled_memories, personality_drift, death_cause, generation_number
+- `extract_legacy()`: on death, distill genome + memories + personality into legacy artifact
+- `InheritanceEngine.hatch_from_legacy()`: create new creature from parent's legacy
+- `AncestralMemory` dataclass: faded memories with confidence decay across generations
+- Memory confidence degrades per generation (grandparent memories hazier than parent)
+
+#### `lineage.py` — Lineage Tracking
+- `LineageTracker`: persistent family tree across all generations
+- `LineageEntry`: generation, genome, lifespan, death_cause, stage_reached, notable_facts
+- `get_lineage_summary()`: prompt-injectable text ("You are the 4th generation...")
+- Persisted to data/saves/lineage/family_tree.json
+
 ---
 
 ### Subpackage: `conversation/`

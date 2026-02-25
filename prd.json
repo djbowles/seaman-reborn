@@ -833,6 +833,119 @@
       "priority": 46,
       "passes": false,
       "notes": ""
+    },
+    {
+      "id": "US-047",
+      "title": "Implement creature genome and physical trait system",
+      "description": "As a creature, I need a genetic identity that makes me physically unique. Each creature has a 'genome' — an array of float values representing heritable physical traits (body_size, head_ratio, eye_size, coloring_hue, coloring_saturation, fin_length, limb_proportion, face_expressiveness, voice_pitch, metabolism_rate). These traits interpolate smoothly within each evolutionary stage, shift gradually during life based on care quality, environment, and interaction patterns, and are the foundation for genetic inheritance across generations.",
+      "acceptanceCriteria": [
+        "CreatureGenome dataclass: dict of trait_name -> float (0.0-1.0) for ~12 heritable traits",
+        "Trait categories: morphological (body_size, head_ratio, eye_size, fin_length, limb_proportion), chromatic (hue, saturation, pattern_complexity), behavioral (metabolism_rate, voice_pitch, face_expressiveness, aggression_baseline)",
+        "generate_random_genome() creates a new genome with gaussian-distributed traits around stage defaults",
+        "mutate_genome(parent_genome, mutation_rate=0.1) returns child genome with random drift per trait",
+        "Genome persisted as part of CreatureState JSON",
+        "update_epigenetic_drift(genome, care_quality, environment_quality, elapsed_days) -> subtly shifts traits during life based on conditions (well-cared creatures grow larger, neglected ones become more aggressive)",
+        "At least 3 tests: random generation within bounds, mutation produces different but similar genome, epigenetic drift responds to care quality",
+        "ruff check passes, pytest passes"
+      ],
+      "priority": 47,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-048",
+      "title": "Implement creature self-model and body awareness",
+      "description": "As a creature, I need to know what I look like so I can comment on my own body. The creature maintains a self-model — a natural language description of its current physical state derived from its genome and evolutionary stage. This self-model is injected into the LLM system prompt so the creature can reference its own appearance ('I notice my legs are getting longer'), react to physical changes during evolution, and have opinions about how it looks.",
+      "acceptanceCriteria": [
+        "SelfModel class that generates a natural language body description from genome + stage",
+        "build_self_description(genome, stage, previous_description) -> str returns current self-perception",
+        "Tracks physical changes between updates: 'new_changes' list (e.g., 'legs appeared', 'coloring darkened')",
+        "get_prompt_injection(self_model) -> str returns formatted text block for system prompt insertion",
+        "Description varies by stage: Mushroomer has minimal self-awareness, Frogman has rich self-knowledge",
+        "Creature can express opinions about its body based on personality traits (vain Podfish vs indifferent Gillman)",
+        "At least 3 tests: description generation per stage, change detection between updates, prompt injection format",
+        "ruff check passes, pytest passes"
+      ],
+      "priority": 48,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-049",
+      "title": "Implement genetic material extraction on death",
+      "description": "As a creature reaching end of life, I need to leave behind genetic material that will inform my successor. On death (neglect, end-of-life cycle, or natural causes), the system extracts a 'genetic legacy' artifact containing: the creature's final genome, key distilled memories (facts about the human, emotional associations), personality trait drift from defaults, behavioral patterns, and cause of death. This legacy is saved as a JSON file in data/saves/lineage/ and becomes the seed for the next generation.",
+      "acceptanceCriteria": [
+        "GeneticLegacy dataclass: genome, distilled_memories (list[str]), personality_drift (dict), behavioral_patterns (dict), cause_of_death, generation_number, lifespan_days, stage_reached, trust_at_death",
+        "extract_legacy(creature_state, genome, memories, personality, death_cause) -> GeneticLegacy",
+        "Memory distillation: uses LLM (or heuristic fallback) to compress all semantic memories into top 10-20 core facts about the human",
+        "Personality drift: delta between starting trait profile and final trait values",
+        "Save legacy to data/saves/lineage/gen_N.json",
+        "Legacy extraction triggers automatically on death via DeathEngine hook",
+        "At least 3 tests: legacy extraction with full data, distillation of memories, save/load roundtrip",
+        "ruff check passes, pytest passes"
+      ],
+      "priority": 49,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-050",
+      "title": "Implement generational inheritance and mutation",
+      "description": "As a new creature hatching after my predecessor's death, I should inherit genetic material from my parent. The new creature receives: a mutated version of the parent's genome (physical traits drift but stay recognizable), 'ancestral memories' — faded, fragmented versions of the parent's key memories that surface as deja vu or vague recollections, and a personality baseline shifted toward the parent's final personality. Each generation produces a slightly different creature while maintaining lineage continuity.",
+      "acceptanceCriteria": [
+        "InheritanceEngine class managing the birth of a new creature from GeneticLegacy",
+        "hatch_from_legacy(legacy: GeneticLegacy) -> tuple[CreatureState, CreatureGenome, list[AncestralMemory]]",
+        "AncestralMemory dataclass: original_fact, faded_version, confidence (0-1, degrades per generation), source_generation",
+        "Genome mutation: each trait drifts by gaussian noise scaled to mutation_rate, clamped to [0,1]",
+        "Ancestral memories: parent memories injected as vague recollections ('I have a dim memory that you...' or 'Something tells me you...')",
+        "Memory confidence decays across generations (grandparent memories are hazier than parent memories)",
+        "Personality baseline: new creature starts with traits shifted 30% toward parent's final traits",
+        "New creature always starts at MUSHROOMER stage regardless of parent's stage at death",
+        "At least 3 tests: genome mutation produces valid genome, ancestral memory fading across 3 generations, personality inheritance",
+        "ruff check passes, pytest passes"
+      ],
+      "priority": 50,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-051",
+      "title": "Implement lineage tracking and family tree",
+      "description": "As a player, I want to see the history of all my creatures across generations. Implement a persistent lineage log tracking every generation: their genome, lifespan, cause of death, stage reached, notable memories, and generation number. The lineage feeds into the creature's self-awareness ('I am the 4th of my line') and can be displayed in the GUI.",
+      "acceptanceCriteria": [
+        "LineageTracker class managing the persistent family tree",
+        "LineageEntry dataclass: generation, genome_snapshot, birth_time, death_time, death_cause, stage_reached, trust_at_death, notable_facts (list[str]), personality_summary",
+        "add_entry(legacy: GeneticLegacy) appends to lineage file",
+        "get_lineage() -> list[LineageEntry] returns full ancestry",
+        "get_generation_count() -> int for current generation number",
+        "get_lineage_summary() -> str for prompt injection ('You are the 4th generation. Your predecessor lived 23 days and died of starvation.')",
+        "Persisted to data/saves/lineage/family_tree.json",
+        "At least 3 tests: add entry, multi-generation lineage retrieval, summary generation",
+        "ruff check passes, pytest passes"
+      ],
+      "priority": 51,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-052",
+      "title": "Implement genome-driven sprite rendering",
+      "description": "As a player, I want each creature to look visually unique based on its genome. The procedural Pygame sprites (from US-037) should be parameterized by the creature's genome values so that body size, coloring, eye size, fin/limb proportions, and pattern complexity all vary between individuals. Two Podfish from different generations should be recognizably the same stage but visually distinct.",
+      "acceptanceCriteria": [
+        "Update CreatureRenderer to accept genome as rendering parameter",
+        "body_size genome trait scales the creature's drawn size (0.7x to 1.3x base)",
+        "hue and saturation traits shift the creature's color palette via HSV adjustment",
+        "eye_size trait scales eye rendering proportionally",
+        "fin_length / limb_proportion traits adjust appendage dimensions",
+        "pattern_complexity trait adds or removes detail elements (spots, stripes, bumps)",
+        "face_expressiveness trait affects mouth/eye animation amplitude",
+        "All genome-driven variations stay within stage-appropriate visual bounds",
+        "At least 3 tests: two different genomes produce visually different renders, genome extremes don't break rendering, default genome matches original stage appearance",
+        "ruff check passes, pytest passes"
+      ],
+      "priority": 52,
+      "passes": false,
+      "notes": ""
     }
   ]
 }
