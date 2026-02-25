@@ -322,3 +322,23 @@ Started: 2026-02-25
   - Budget trimming: system prompt always included, then memories if they fit, then episodic oldest-first trim
   - 27 tests: basic assembly (5), memory formatting (4), token budget (5), edge cases (6), errors (3), token estimation (4)
 ---
+
+## 2026-02-25 - US-020
+- Implemented ConversationManager class in conversation/manager.py — the central orchestrator
+- Full conversation loop: add user msg to episodic -> update state (interaction count, trust, last_interaction) -> check evolution -> retrieve long-term memories -> build system prompt -> assemble context -> LLM chat -> apply personality constraints -> store assistant msg -> trigger extraction -> save state
+- async initialize() sets up all subsystems from SeamanConfig with graceful degradation
+- async shutdown() saves state and clears initialized flag
+- Graceful degradation: LLM failure returns fallback response, memory retrieval/extraction failures logged and skipped, save failures logged
+- get_state_summary() returns debug/display dict
+- Constructor accepts optional pre-built LLM and CreatureState for testing
+- Trust bump formula: `min(0.01, (1.0 - trust) * 0.02)` — diminishing returns
+- Files changed: src/seaman_brain/conversation/manager.py, tests/test_conversation/test_manager.py, prd.json
+- **Learnings for future iterations:**
+  - ConversationManager accepts creature_state dict in PromptBuilder.build() via state.to_dict() — avoids coupling
+  - Memory retrieval results are passed as text strings to PromptBuilder (not raw MemoryRecords to context_assembler)
+  - Evolution check happens BEFORE LLM call so system prompt reflects new stage if evolved
+  - The `from seaman_brain.types import ...` can be done inside process_input to avoid circular imports (though not needed here)
+  - MockLLM for tests: just needs chat as AsyncMock — stream() not exercised by ConversationManager
+  - Fallback response uses evolved flag to give stage-transition message on LLM failure
+  - 35 tests: init (6), happy path (8), evolution (4), degradation (6), shutdown (3), summary (3), fallback (3), extraction (2)
+---
