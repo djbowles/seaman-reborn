@@ -5,17 +5,21 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "seaman-brain"
 version = "0.1.0"
-description = "AI Brain Core for Seaman Reborn - sardonic creature cognition engine"
+description = "Seaman Reborn - sardonic creature cognition engine with Pygame interface"
 requires-python = ">=3.13"
 license = "MIT"
-authors = [{ name = "djb" }]
+authors = [{ name = "djbowles" }]
 dependencies = [
     "ollama>=0.4",
     "lancedb>=0.17",
     "pydantic>=2.0",
     "rich>=13.0",
     "prompt-toolkit>=3.0",
-    "tomli>=2.0;python_version<'3.11'",
+    "pygame>=2.6",
+    "pyttsx3>=2.9",
+    "fastapi>=0.115",
+    "uvicorn>=0.34",
+    "websockets>=14.0",
 ]
 
 [project.optional-dependencies]
@@ -23,13 +27,18 @@ cloud = [
     "openai>=1.50",
     "anthropic>=0.40",
 ]
+stt = [
+    "SpeechRecognition>=3.10",
+    "pyaudio>=0.2.14",
+]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.24",
     "pytest-mock>=3.14",
     "ruff>=0.8",
+    "httpx>=0.28",
 ]
-all = ["seaman-brain[cloud,dev]"]
+all = ["seaman-brain[cloud,stt,dev]"]
 
 [project.scripts]
 seaman-brain = "seaman_brain.__main__:main"

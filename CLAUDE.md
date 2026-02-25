@@ -1,10 +1,12 @@
 # Ralph Agent Instructions
 
-You are an autonomous coding agent working on the Seaman Reborn AI Brain Core.
+You are an autonomous coding agent working on Seaman Reborn.
 
 ## Project Context
 
-Python middleware powering a sardonic, evolving creature's cognition. Local LLM inference via Ollama, persistent vector memory via LanceDB, configurable personality traits across 5 evolutionary stages. See `AGENTS.md` for module documentation.
+Full Seaman Reborn game — sardonic creature cognition with local LLM (Ollama), persistent vector memory (LanceDB), evolving personality across 5 stages, biological needs/care mechanics, Pygame visual interface with procedural creature art, TTS/STT audio, and a FastAPI WebSocket bridge for future UE5 integration. See `AGENTS.md` for module documentation.
+
+Subpackages: llm, personality, memory, creature, conversation, cli, audio, environment, needs, behavior, gui, api.
 
 ## Your Task
 
@@ -46,13 +48,19 @@ Python middleware powering a sardonic, evolving creature's cognition. Local LLM 
 
 Stories have implicit dependencies based on imports. Check the story's priority — lower priority stories may import from higher ones. Read existing module stubs before implementing to understand the expected interfaces. Key dependency chains:
 - types.py -> everything
-- config.py -> personality, memory, creature
+- config.py -> personality, memory, creature, audio, environment, needs, gui, api
 - llm/base.py -> all providers -> factory
 - memory: episodic (standalone), embeddings -> semantic -> retriever
 - personality: traits -> constraints -> prompt_builder
 - creature: state -> evolution, persistence
 - conversation: context_assembler + manager (depends on most subsystems)
 - cli: terminal + commands (depends on conversation manager)
+- audio: tts + stt -> manager
+- environment: clock + tank (standalone, depend on types/config)
+- needs: system (depends on creature state + clock) -> feeding + care + death
+- behavior: mood (depends on needs + traits) -> autonomous -> events
+- gui: window -> tank_renderer, sprites, chat_panel, hud, interactions, audio_integration -> game_loop
+- api: server -> protocol -> streaming
 
 ## Progress Report Format
 
