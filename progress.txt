@@ -395,3 +395,22 @@ Started: 2026-02-25
   - save_to_file() + runAndWait() is the pyttsx3 pattern for getting audio bytes (no direct API)
   - 35 tests: protocol (4), noop (4), init (4), engine config (6), synthesize (4), speak (4), factory (6), edge cases (3)
 ---
+
+## 2026-02-25 - US-024
+- Implemented STT speech recognition provider in audio/stt.py
+- STTProvider Protocol (runtime-checkable) with async listen() -> str
+- SpeechRecognitionSTTProvider: wraps SpeechRecognition library with configurable backend (google, vosk)
+- NoopSTTProvider: silent fallback returning empty string
+- create_stt_provider() factory with graceful fallback to NoopSTTProvider
+- Handles microphone permission errors, no-mic, timeout, unintelligible input — all return empty string
+- All blocking mic operations run in single-thread ThreadPoolExecutor
+- Updated audio/__init__.py to export STTProvider, SpeechRecognitionSTTProvider, NoopSTTProvider, create_stt_provider
+- Files changed: src/seaman_brain/audio/stt.py, src/seaman_brain/audio/__init__.py, tests/test_audio/test_stt.py, prd.json
+- **Learnings for future iterations:**
+  - SpeechRecognition exception classes (WaitTimeoutError, UnknownValueError, RequestError) are attributes of the `sr` module — must reference via `sr.WaitTimeoutError` not standalone
+  - PyAudio missing causes AttributeError on `sr.Microphone()`, not ImportError — handle separately
+  - For mocking speech_recognition: create mock exception classes on the mock module so `except sr.WaitTimeoutError` works
+  - Same lazy-import + sys.modules mock pattern as pyttsx3 in tts.py
+  - AudioConfig defaults: stt_enabled=False, stt_provider="speech_recognition"
+  - 30 tests: protocol (4), noop (3), init (5), listen (8), recognize (4), factory (6)
+---
