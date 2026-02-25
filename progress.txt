@@ -478,3 +478,26 @@ Started: 2026-02-25
   - to_dict/from_dict pattern matches CreatureState: enum as .value, datetime as .isoformat()
   - 63 tests: clamp (4), enum (3), creation (6), update (9), temperature (7), clean (3), drain/fill (4), habitability (7), optimal temp (4), warnings (10), serialization (6)
 ---
+
+## 2026-02-25 - US-028
+- Implemented creature needs system in needs/system.py
+- CreatureNeeds dataclass with hunger (0=full, 1=starving), comfort (0=miserable, 1=comfortable), health (0=dead, 1=healthy), stimulation (0=bored, 1=engaged), last_update
+- All fields clamped to [0.0, 1.0] via __post_init__
+- STAGE_HUNGER_MULTIPLIER dict scales hunger rate by evolutionary stage (0.5x MUSHROOMER to 1.5x FROGMAN)
+- NeedsEngine class:
+  - update(elapsed_seconds, creature_state, tank, interaction_count_delta) -> CreatureNeeds
+  - Hunger increases at config rate * stage multiplier * elapsed time
+  - Comfort derived from tank conditions: 50% temperature comfort (linear interpolation between lethal/optimal) + 50% cleanliness
+  - Health degrades when hunger >= critical_hunger_threshold or comfort < 0.2, regenerates otherwise
+  - Stimulation decays without interaction, boosted by interaction_count_delta (0.2 per interaction, capped at 1.0)
+  - get_urgent_needs(needs) -> list[str] returns warnings for starving, low health, discomfort, boredom
+  - apply_to_state(creature_state, needs) mutates state in place (hunger, comfort, health)
+- Files changed: src/seaman_brain/needs/system.py, tests/test_needs/test_system.py
+- **Learnings for future iterations:**
+  - NeedsEngine depends on CreatureState, TankEnvironment, NeedsConfig, and EnvironmentConfig — 4 collaborators
+  - Comfort is a derived value (not stored on CreatureState directly) — recalculated from tank each update
+  - Stimulation is not stored on CreatureState — uses creature_state.comfort as proxy/fallback
+  - Health damage/regen checks use the NEWLY computed hunger/comfort (not the state's old values)
+  - Test durations must be short enough that hunger doesn't cap at 1.0 — use 10s not 100s for differential tests
+  - 49 tests: CreatureNeeds dataclass (5), _clamp (5), engine init (2), hunger growth (6), comfort from tank (7), health degradation (5), stimulation (3), urgent needs (8), apply_to_state (4), integration (4)
+---

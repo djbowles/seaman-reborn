@@ -495,8 +495,8 @@
         "ruff check passes, pytest passes"
       ],
       "priority": 28,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "CreatureNeeds dataclass with hunger/comfort/health/stimulation. NeedsEngine with stage-scaled hunger, tank-derived comfort, health regen/damage, stimulation decay/boost, get_urgent_needs(), apply_to_state(). 49 tests."
     },
     {
       "id": "US-029",
