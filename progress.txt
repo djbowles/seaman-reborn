@@ -870,3 +870,23 @@ Started: 2026-02-25
   - Periodic loop supports both sync and async snapshot_fn callables
   - 80 tests: EventChannel (4), ClientSubscription (8), _flatten_dict (4), compute_state_diff (6), diff_to_channels (10), client management (11), state updates (7), event notifications (7), disconnect handling (4), periodic loop (5), infer channel (7), edge cases (7)
 ---
+
+## 2026-02-25 - US-046
+- Implemented comprehensive end-to-end integration tests in tests/test_integration/test_full_game.py
+- 26 new tests across 6 test classes covering all acceptance criteria:
+  - TestConversationThroughGUIBridge (3 tests): WebSocket round-trip, multi-turn state, REST state after conversation
+  - TestNeedsDegradationAndFeeding (4 tests): needs degradation, feeding restores, full cycle, wrong food rejection
+  - TestEvolutionPropagation (3 tests): evolution updates traits+mood, triggers events, propagates to system prompt
+  - TestDeathFromNeglect (7 tests): starvation with grace period, suffocation, illness, reset to egg, full neglect cycle, death record persistence
+  - TestAPIWebSocketIntegration (4 tests): input/state response, error on invalid message, error on empty text, REST health/reset
+  - TestSaveLoadFullState (6 tests): creature state round-trip, tank serialization, full session save/reload, evolution persistence, death record round-trip, event system state persistence
+- All 47 integration tests pass with `pytest -m integration` (21 existing brain_core + 26 new full_game)
+- Files changed: tests/test_integration/test_full_game.py (new), prd.json, progress.txt
+- **Learnings for future iterations:**
+  - starlette.testclient.TestClient works for sync WebSocket testing of FastAPI apps (no async needed)
+  - BrainServer lifespan initializes ConversationManager — TestClient triggers lifespan automatically
+  - DeathEngine grace periods require injectable now_func for deterministic testing
+  - NeedsEngine hunger_rate can be accelerated for integration tests (e.g. 0.5 instead of 0.02)
+  - EventSystem rng_seed parameter enables deterministic event firing in tests
+  - Integration tests should mock only at external boundaries (LLM, embeddings) — let internal subsystems interact naturally
+---

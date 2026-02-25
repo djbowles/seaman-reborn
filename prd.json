@@ -831,8 +831,8 @@
         "ruff check passes, pytest passes"
       ],
       "priority": 46,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "47 integration tests total (21 brain_core + 26 full_game). Covers conversation via WebSocket, needs/feeding cycle, evolution propagation, death from neglect, API endpoints, and save/load persistence."
     },
     {
       "id": "US-047",
