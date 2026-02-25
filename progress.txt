@@ -15,6 +15,7 @@ Started: 2026-02-25
 - LanceDB async: `connect_async()`, `table.search()` is a coroutine (await it), then chain `.limit(k).to_list()`
 - LanceDB `list_tables()` returns a response object — access `.tables` for the list of names (replaces deprecated `table_names()`)
 - LanceDB stores timestamps as ISO strings, reconstruct with `datetime.fromisoformat()`
+- prompt_toolkit PromptSession must be lazy-initialized (not in __init__) — fails in non-console environments like pytest
 
 ## 2026-02-25 - US-001
 - Initialized git repo, created full project scaffold
@@ -341,4 +342,20 @@ Started: 2026-02-25
   - MockLLM for tests: just needs chat as AsyncMock — stream() not exercised by ConversationManager
   - Fallback response uses evolved flag to give stage-transition message on LLM failure
   - 35 tests: init (6), happy path (8), evolution (4), degradation (6), shutdown (3), summary (3), fallback (3), extraction (2)
+---
+
+## 2026-02-25 - US-021
+- Implemented terminal CLI interface with rich output and prompt_toolkit input
+- commands.py: 7 slash commands (/state, /memory, /stage, /traits, /reset, /quit, /help) with CommandResult dataclass and parse_command/execute_command functions
+- terminal.py: SeamanTerminal class with stage/mood/trust header display, streaming-ready response processing, Ctrl+C/EOF graceful shutdown with state save
+- Updated __main__.py to launch SeamanTerminal via asyncio.run when no --gui/--api flags
+- Updated cli/__init__.py to export key classes
+- Files changed: src/seaman_brain/cli/commands.py, src/seaman_brain/cli/terminal.py, src/seaman_brain/cli/__init__.py, src/seaman_brain/__main__.py, tests/test_cli/test_commands.py, tests/test_cli/test_terminal.py, prd.json
+- **Learnings for future iterations:**
+  - PromptSession() from prompt_toolkit fails in non-console environments (e.g. pytest on Windows bash) — must defer creation to first use (lazy init in _get_input)
+  - ConversationManager is imported inside TYPE_CHECKING block + initialize() method in terminal.py — can't patch at module level, must patch at source (e.g. create_provider)
+  - Signal handlers (SIGINT) may fail to install when not on main thread — wrap in try/except (ValueError, OSError)
+  - _running flag must be set to False in finally block, not just via break — break exits loop but doesn't clear flag
+  - MockLLM for CLI tests: same pattern as test_manager.py — AsyncMock for chat, async generator for stream
+  - 54 tests: command parsing (7), help (2), state (2), memory (4), stage (2), traits (3), reset (2), quit (2), unknown (1), format_header (8), format_response (4), terminal init (4), display (3), run loop (6), shutdown (4)
 ---

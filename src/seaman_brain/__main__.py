@@ -45,9 +45,17 @@ def main() -> None:
         print(f"Seaman Brain v{__version__} - API server mode not yet implemented")
         sys.exit(0)
     else:
-        # TODO: Launch terminal UI (US-021)
-        print(f"Seaman Brain v{__version__} - interactive mode not yet implemented")
-        sys.exit(0)
+        # Launch interactive terminal
+        import asyncio
+
+        from seaman_brain.cli.terminal import SeamanTerminal
+
+        async def _run_terminal() -> None:
+            terminal = SeamanTerminal()
+            await terminal.initialize()
+            await terminal.run()
+
+        asyncio.run(_run_terminal())
 
 
 if __name__ == "__main__":
