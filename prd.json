@@ -681,8 +681,8 @@
         "ruff check passes, pytest passes"
       ],
       "priority": 38,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "ChatPanel with semi-transparent overlay, scrollable message history (user right-aligned, creature left-aligned), text input with cursor/editing (backspace, delete, home, end, left, right, pageup, pagedown), Enter submits via callback, streaming display (start/append/finish), Tab toggle visibility, word wrap, scroll clamping. 69 tests."
     },
     {
       "id": "US-039",

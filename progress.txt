@@ -703,3 +703,23 @@ Started: 2026-02-25
   - Eye pupil tracking: calculate normalized direction to mouse, offset pupil within eye radius
   - 42 tests: construction (5), stage rendering (6), animation states (7), position interpolation (6), face tracking (3), blinking (3), stage switching (2), update loop (3), eating effect (1), edge cases (6)
 ---
+
+## 2026-02-25 - US-038
+- Implemented ChatPanel class in gui/chat_panel.py — semi-transparent chat overlay at bottom of Pygame window
+- Message history with user messages right-aligned (blue), creature messages left-aligned (green), system messages (gray)
+- Text input field with cursor, basic editing: backspace, delete, home, end, left, right, insert at cursor position
+- Enter/numpad-Enter submits message via on_submit callback; strips whitespace, ignores empty/whitespace-only input
+- Streaming display: start_streaming(), append_stream(chunk), finish_streaming() — shows in-progress creature responses
+- Tab key toggles panel visibility; keys (except Tab) ignored when hidden
+- Word-wrap for message bubbles, scrollbar for overflow, PageUp/PageDown for scrolling
+- Semi-transparent background via pygame.Surface with SRCALPHA, layout calculated from GUIConfig.chat_panel_height_ratio
+- Cursor blink animation (0.53s rate) via update(dt)
+- Files changed: src/seaman_brain/gui/chat_panel.py, tests/test_gui/test_chat_panel.py, prd.json
+- **Learnings for future iterations:**
+  - Font mock must return surfaces with numeric get_width()/get_height() — MagicMock comparisons fail (MagicMock > int)
+  - Same module-level pygame mock pattern as test_sprites.py — set sys.modules["pygame"] before import
+  - ChatPanel follows GameWindow's callback pattern: register as event handler + render callback
+  - on_submit callback errors are caught and logged, not propagated — prevents game crash from callback bugs
+  - Word wrap uses font.size() for pixel-accurate line breaking, not character count
+  - 69 tests: construction (6), message management (8), text input (14), submit (8), visibility toggle (4), streaming (6), rendering (7), scrolling (4), update (3), word wrap (4), edge cases (5)
+---
