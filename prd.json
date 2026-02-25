@@ -513,8 +513,8 @@
         "ruff check passes, pytest passes"
       ],
       "priority": 29,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "FoodType enum (PELLET, WORM, INSECT, NAUTILUS), FeedingResult dataclass, FeedingEngine with stage validation, cooldown, overfeeding penalty. STAGE_FOODS maps per-stage allowed foods. 52 tests."
     },
     {
       "id": "US-030",
