@@ -525,3 +525,26 @@ Started: 2026-02-25
   - Use mutable list `time = [now]` for advancing clock in multi-feed tests (lambdas capture reference)
   - 52 tests: FoodType (3), FeedingResult (2), stage foods (8), init (3), successful feeding (6), wrong food (7), overfeeding (5), cooldown (6), cooldown helpers (4), available foods (3), priority order (2), edge cases (3)
 ---
+
+## 2026-02-25 - US-030
+- Implemented TankCareEngine class in needs/care.py coordinating all tank maintenance actions
+- CareAction enum: ADJUST_TEMPERATURE, CLEAN_TANK, SPRINKLE, DRAIN, FILL
+- CareResult dataclass: success, action, message, warnings
+- STAGE_OPTIMAL_TEMPS dict: per-stage optimal temperature ranges (Mushroomer 22-26, Gillman 20-28, Podfish 18-26, Tadman 20-30, Frogman 22-32)
+- adjust_temperature(): stage-specific optimal range checking with feedback messages (optimal/suboptimal/dangerous)
+- clean_tank(): partial cleaning (CLEANING_AMOUNT=0.4 per action), cooldown enforcement (5s), not instant
+- sprinkle(): terrarium-only moisture boost for Frogman/Tadman, boosts oxygen and cleanliness
+- drain_tank()/fill_tank(): environment type transitions with stage-aware messaging
+- get_tank_warnings(): combines base TankEnvironment warnings + stage-specific alerts (Frogman needs terrarium, Tadman prefers terrarium, aquatic stages need water, sprinkler needs)
+- get_stage_optimal_range(), is_cleaning_on_cooldown(), cleaning_cooldown_remaining() helper methods
+- Updated needs/__init__.py to export CareAction, CareResult, TankCareEngine
+- Files changed: src/seaman_brain/needs/care.py, src/seaman_brain/needs/__init__.py, tests/test_needs/test_care.py, prd.json
+- **Learnings for future iterations:**
+  - TankCareEngine follows same injectable now_func pattern as FeedingEngine and GameClock
+  - Cleaning is deliberately partial (0.4 per action) to require multiple cleans for very dirty tanks
+  - STAGE_OPTIMAL_TEMPS is separate from EnvironmentConfig's global optimal range — stages have narrower/wider preferences
+  - Warnings combine base TankEnvironment.get_warnings() with stage-specific checks — avoid duplicating critical temp warnings
+  - Use `any("CRITICAL" in w and "Temperature" in w for w in warnings)` to prevent duplicate critical temp messages
+  - CareResult includes remaining warnings after action — caller can display them immediately
+  - 53 tests: CareResult (2), CareAction (1), init (3), temperature (9), cleaning (7), sprinkle (6), drain/fill (4), warnings (10), stage ranges (4), cooldown helpers (3), integration (4)
+---

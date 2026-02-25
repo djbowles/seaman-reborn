@@ -531,8 +531,8 @@
         "ruff check passes, pytest passes"
       ],
       "priority": 30,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "TankCareEngine with adjust_temperature (stage-specific optimal ranges), clean_tank (partial restore + cooldown), sprinkle (terrarium moisture), drain/fill, get_tank_warnings (stage-specific). CareAction enum, CareResult dataclass. STAGE_OPTIMAL_TEMPS per stage. 53 tests."
     },
     {
       "id": "US-031",
