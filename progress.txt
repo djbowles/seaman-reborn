@@ -723,3 +723,24 @@ Started: 2026-02-25
   - Word wrap uses font.size() for pixel-accurate line breaking, not character count
   - 69 tests: construction (6), message management (8), text input (14), submit (8), visibility toggle (4), streaming (6), rendering (7), scrolling (4), update (3), word wrap (4), edge cases (5)
 ---
+
+## 2026-02-25 - US-039
+- Implemented HUD class in gui/hud.py — heads-up display overlay for creature and tank status
+- Top bar: creature name/stage, mood indicator (colored text), session timer (MM:SS / HH:MM:SS)
+- Need bars: hunger (inverted — fullness displayed), health, comfort with green/yellow/red thresholds
+- Tank indicators: temperature (blue=cold, green=optimal, red=hot), cleanliness, oxygen level
+- Trust meter: visual bar representation of trust level (0-1)
+- Color coding: _status_color() helper with optional inverted flag for metrics where high=bad
+- Compact mode (icon + bar only) and expanded mode (icon + label + bar + value)
+- HUDMetric dataclass for structured metric passing between build/render methods
+- _MOOD_COLORS dict maps 8 mood strings to distinct RGB colors
+- _STAGE_NAMES dict maps all CreatureStage values to display names
+- Files changed: src/seaman_brain/gui/hud.py, tests/test_gui/test_hud.py, prd.json
+- **Learnings for future iterations:**
+  - HUD follows same module-level pygame mock pattern as test_chat_panel.py and test_sprites.py
+  - Hunger is displayed inverted (bar_value = 1 - hunger) — fullness bar, not hunger bar
+  - Temperature color uses fixed ranges (optimal 20-28 hardcoded) — could later derive from EnvironmentConfig
+  - HUDMetric dataclass decouples metric building from rendering — easy to add new metrics
+  - _status_color() thresholds: >=0.6 green, >=0.3 yellow, <0.3 red
+  - 45 tests: construction (4), color thresholds (6), mode switching (4), update (2), bar rendering (8), tank indicators (7), trust meter (3), top bar (5), edge cases (6)
+---
