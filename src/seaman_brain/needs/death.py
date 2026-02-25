@@ -140,11 +140,13 @@ class DeathEngine:
         env_config: EnvironmentConfig | None = None,
         death_log_dir: str | Path | None = None,
         now_func: Callable[[], datetime] | None = None,
+        on_death_hook: Callable[[DeathCause, CreatureState], None] | None = None,
     ) -> None:
         self._needs_config = needs_config or NeedsConfig()
         self._env_config = env_config or EnvironmentConfig()
         self._death_log_dir = Path(death_log_dir) if death_log_dir else None
         self._now = now_func or (lambda: datetime.now(UTC))
+        self._on_death_hook = on_death_hook
 
         # Duration tracking for grace periods
         self._starvation_start: datetime | None = None
@@ -355,6 +357,13 @@ class DeathEngine:
         # Save death record to disk if configured
         if self._death_log_dir is not None:
             self._save_death_record(record)
+
+        # Trigger legacy extraction hook (e.g. for genetic legacy)
+        if self._on_death_hook is not None:
+            try:
+                self._on_death_hook(cause, creature_state)
+            except Exception:
+                logger.exception("on_death_hook failed")
 
         # Reset to new egg — a fresh MUSHROOMER
         new_state = CreatureState(
