@@ -305,3 +305,20 @@ Started: 2026-02-25
   - _stage_index() uses STAGE_ORDER.index() — all 5 stages must be in the tuple
   - 38 tests: stage order (3), default thresholds (3), engine init (6), check_evolution happy (5), check_evolution no-evolve (6), evolve happy (4), evolve errors (5), convenience (6)
 ---
+
+## 2026-02-25 - US-019
+- Implemented ContextAssembler class in conversation/context_assembler.py
+- Assembles system prompt (SYSTEM), formatted retrieved memories (SYSTEM), and episodic messages in chronological order
+- _estimate_tokens() helper uses ~4 chars/token heuristic for budget management
+- Token budget trims oldest episodic messages first; memories skipped if they don't fit after system prompt
+- _format_memories() creates bulleted list from MemoryRecord.text fields with instructional header
+- Configurable max_tokens (default 4096), validated >= 1
+- Files changed: src/seaman_brain/conversation/context_assembler.py, tests/test_conversation/test_context_assembler.py, prd.json
+- **Learnings for future iterations:**
+  - ContextAssembler is synchronous — no async needed since it just arranges data
+  - Token estimation uses chars/4 heuristic — good enough for budget management without a tokenizer dependency
+  - Input lists are copied before trimming (episodes = list(...)) to avoid mutating caller's data
+  - Memory block is a SYSTEM message injected between the system prompt and episodic conversation
+  - Budget trimming: system prompt always included, then memories if they fit, then episodic oldest-first trim
+  - 27 tests: basic assembly (5), memory formatting (4), token budget (5), edge cases (6), errors (3), token estimation (4)
+---
