@@ -10,6 +10,7 @@ Smooth position interpolation, mouth sync, face tracking toward mouse cursor.
 
 from __future__ import annotations
 
+import colorsys
 import math
 import random
 from dataclasses import dataclass, field
@@ -18,6 +19,7 @@ from enum import Enum
 import pygame
 
 from seaman_brain.config import GUIConfig
+from seaman_brain.creature.genome import CreatureGenome
 from seaman_brain.types import CreatureStage
 
 # ── Enums ─────────────────────────────────────────────────────────────
@@ -150,6 +152,7 @@ class CreatureRenderer:
     position: CreaturePosition = field(default_factory=CreaturePosition)
     animation_state: AnimationState = AnimationState.IDLE
     gui_config: GUIConfig = field(default_factory=GUIConfig)
+    genome: CreatureGenome | None = None
 
     # Animation timers
     _time: float = field(default=0.0, repr=False)
@@ -199,6 +202,104 @@ class CreatureRenderer:
         self._mouse_x = mx
         self._mouse_y = my
 
+    def set_genome(self, genome: CreatureGenome | None) -> None:
+        """Update the genome used for rendering parameters."""
+        self.genome = genome
+
+    # ── Genome Helpers ────────────────────────────────────────────────
+
+    def _genome_scale(
+        self, trait: str, lo: float = 0.7, hi: float = 1.3
+    ) -> float:
+        """Map a genome trait (0-1) to a scale factor.
+
+        When genome is None, returns 1.0. Trait value 0.5 maps to 1.0.
+        """
+        if self.genome is None:
+            return 1.0
+        return lo + (hi - lo) * self.genome.traits.get(trait, 0.5)
+
+    def _get_colors(
+        self, stage: CreatureStage
+    ) -> dict[str, tuple[int, int, int]]:
+        """Get stage colors with genome HSV adjustments applied."""
+        base_colors = _STAGE_COLORS[stage]
+        if self.genome is None:
+            return base_colors
+        hue_val = self.genome.traits.get("hue", 0.5)
+        sat_val = self.genome.traits.get("saturation", 0.5)
+        if hue_val == 0.5 and sat_val == 0.5:
+            return base_colors
+        return {k: self._shift_color(v) for k, v in base_colors.items()}
+
+    def _shift_color(
+        self, color: tuple[int, int, int]
+    ) -> tuple[int, int, int]:
+        """Apply genome hue/saturation shift to an RGB color."""
+        r, g, b = color[0] / 255.0, color[1] / 255.0, color[2] / 255.0
+        h, s, v = colorsys.rgb_to_hsv(r, g, b)
+
+        hue_val = self.genome.traits.get("hue", 0.5) if self.genome else 0.5
+        sat_val = (
+            self.genome.traits.get("saturation", 0.5) if self.genome else 0.5
+        )
+
+        h = (h + (hue_val - 0.5) * 0.16) % 1.0
+        s = max(0.0, min(1.0, s + (sat_val - 0.5) * 0.6))
+
+        r2, g2, b2 = colorsys.hsv_to_rgb(h, s, v)
+        return (round(r2 * 255), round(g2 * 255), round(b2 * 255))
+
+    def _render_patterns(
+        self,
+        surface: pygame.Surface,
+        cx: int,
+        cy: int,
+        base: float,
+        body_color: tuple[int, int, int],
+    ) -> None:
+        """Draw pattern details (spots, stripes) based on pattern_complexity."""
+        if self.genome is None:
+            return
+        complexity = self.genome.traits.get("pattern_complexity", 0.5)
+        if complexity <= 0.5:
+            return
+
+        # Deterministic seed from genome for consistent patterns
+        seed_val = int(sum(self.genome.traits.values()) * 1000)
+        rng = random.Random(seed_val)
+
+        spot_color = (
+            max(0, body_color[0] - 30),
+            max(0, body_color[1] - 30),
+            max(0, body_color[2] - 30),
+        )
+
+        num_spots = int((complexity - 0.5) * 14)  # 0-7 spots
+        spot_r = max(1, int(base * 0.06))
+        half_w = max(1, int(base * 0.4))
+        half_h = max(1, int(base * 0.25))
+        for _ in range(num_spots):
+            sx = cx + rng.randint(-half_w, half_w)
+            sy = cy + rng.randint(-half_h, half_h)
+            pygame.draw.circle(surface, spot_color, (sx, sy), spot_r)
+
+        if complexity > 0.75:
+            stripe_color = (
+                max(0, body_color[0] - 20),
+                max(0, body_color[1] - 20),
+                max(0, body_color[2] - 20),
+            )
+            num_stripes = max(1, int((complexity - 0.75) * 12))
+            stripe_spacing = max(1, int(base * 0.12))
+            for i in range(num_stripes):
+                sy = cy - int(base * 0.15) + i * stripe_spacing
+                hw = int(base * 0.3)
+                pygame.draw.line(
+                    surface, stripe_color,
+                    (cx - hw, sy), (cx + hw, sy), 2,
+                )
+
     def update(self, dt: float) -> None:
         """Update animation state and position.
 
@@ -220,9 +321,12 @@ class CreatureRenderer:
             self._is_blinking = True
             self._blink_timer = 0.0
 
-        # Mouth animation for talking
+        # Mouth animation for talking (face_expressiveness scales amplitude)
         if self.animation_state == AnimationState.TALKING:
-            self._mouth_open = 0.3 + 0.7 * abs(math.sin(self._time * 8.0))
+            expr = self._genome_scale("face_expressiveness", 0.5, 1.5)
+            self._mouth_open = min(
+                1.0, 0.3 + 0.7 * expr * abs(math.sin(self._time * 8.0))
+            )
         else:
             self._mouth_open = max(0.0, self._mouth_open - dt * 4.0)
 
@@ -267,8 +371,10 @@ class CreatureRenderer:
             eye_dir_x = 0.0
             eye_dir_y = 0.0
 
-        # Base size from stage
-        base = 40 * _STAGE_SIZES.get(self.stage, 1.0)
+        # Base size from stage, scaled by genome body_size
+        base = 40 * _STAGE_SIZES.get(self.stage, 1.0) * self._genome_scale(
+            "body_size"
+        )
 
         # Sleeping bob
         sleep_y_offset = 0.0
@@ -311,12 +417,15 @@ class CreatureRenderer:
         eye_dy: float,
     ) -> None:
         """Mushroomer: small spore with a single large eye and mushroom cap."""
-        colors = _STAGE_COLORS[CreatureStage.MUSHROOMER]
+        colors = self._get_colors(CreatureStage.MUSHROOMER)
         r = int(base * 0.5)
 
         # Stem/body — small oval
         body_rect = pygame.Rect(cx - r, cy - int(r * 0.5), r * 2, int(r * 1.5))
         pygame.draw.ellipse(surface, colors["body"], body_rect)
+
+        # Patterns on body
+        self._render_patterns(surface, cx, cy, base, colors["body"])
 
         # Mushroom cap — wider ellipse on top
         cap_w = int(r * 1.8)
@@ -330,9 +439,10 @@ class CreatureRenderer:
         )
         pygame.draw.ellipse(surface, colors["highlight"], hl_rect)
 
-        # Single large eye — centered on body
+        # Single large eye — centered on body (genome eye_size scales radius)
+        eye_r = int(r * 0.5 * self._genome_scale("eye_size"))
         self._draw_eye(
-            surface, cx, cy - int(r * 0.1), int(r * 0.5), eye_dx, eye_dy, colors
+            surface, cx, cy - int(r * 0.1), eye_r, eye_dx, eye_dy, colors
         )
 
     def _render_gillman(
@@ -345,26 +455,30 @@ class CreatureRenderer:
         eye_dy: float,
     ) -> None:
         """Gillman: fish body with human-like face, gill slits, dorsal fin."""
-        colors = _STAGE_COLORS[CreatureStage.GILLMAN]
+        colors = self._get_colors(CreatureStage.GILLMAN)
         hw = int(base * 0.8)  # half-width
         hh = int(base * 0.5)  # half-height
+        fin_s = self._genome_scale("fin_length")
 
         # Main body — elongated oval
         body_rect = pygame.Rect(cx - hw, cy - hh, hw * 2, hh * 2)
         pygame.draw.ellipse(surface, colors["body"], body_rect)
 
-        # Tail fin
+        # Patterns on body
+        self._render_patterns(surface, cx, cy, base, colors["body"])
+
+        # Tail fin (genome fin_length scales size)
         tail_pts = [
             (cx + hw - 5, cy),
-            (cx + hw + int(base * 0.4), cy - int(base * 0.3)),
-            (cx + hw + int(base * 0.4), cy + int(base * 0.3)),
+            (cx + hw + int(base * 0.4 * fin_s), cy - int(base * 0.3 * fin_s)),
+            (cx + hw + int(base * 0.4 * fin_s), cy + int(base * 0.3 * fin_s)),
         ]
         pygame.draw.polygon(surface, colors["fin"], tail_pts)
 
-        # Dorsal fin
+        # Dorsal fin (genome fin_length scales height)
         dorsal_pts = [
             (cx - int(hw * 0.3), cy - hh),
-            (cx, cy - hh - int(base * 0.3)),
+            (cx, cy - hh - int(base * 0.3 * fin_s)),
             (cx + int(hw * 0.3), cy - hh),
         ]
         pygame.draw.polygon(surface, colors["fin"], dorsal_pts)
@@ -379,8 +493,8 @@ class CreatureRenderer:
                 2,
             )
 
-        # Eyes (two, human-like)
-        eye_r = int(base * 0.14)
+        # Eyes (two, human-like — genome eye_size scales radius)
+        eye_r = int(base * 0.14 * self._genome_scale("eye_size"))
         self._draw_eye(
             surface, cx - int(hw * 0.35), cy - int(hh * 0.15),
             eye_r, eye_dx, eye_dy, colors,
@@ -408,44 +522,49 @@ class CreatureRenderer:
         eye_dy: float,
     ) -> None:
         """Podfish: fish with stubby legs — transitional form."""
-        colors = _STAGE_COLORS[CreatureStage.PODFISH]
+        colors = self._get_colors(CreatureStage.PODFISH)
         hw = int(base * 0.75)
         hh = int(base * 0.45)
+        fin_s = self._genome_scale("fin_length")
+        limb_s = self._genome_scale("limb_proportion")
 
         # Body
         body_rect = pygame.Rect(cx - hw, cy - hh, hw * 2, hh * 2)
         pygame.draw.ellipse(surface, colors["body"], body_rect)
 
-        # Tail fin
+        # Patterns on body
+        self._render_patterns(surface, cx, cy, base, colors["body"])
+
+        # Tail fin (genome fin_length scales)
         tail_pts = [
             (cx + hw - 4, cy),
-            (cx + hw + int(base * 0.3), cy - int(base * 0.25)),
-            (cx + hw + int(base * 0.3), cy + int(base * 0.25)),
+            (cx + hw + int(base * 0.3 * fin_s), cy - int(base * 0.25 * fin_s)),
+            (cx + hw + int(base * 0.3 * fin_s), cy + int(base * 0.25 * fin_s)),
         ]
         pygame.draw.polygon(surface, colors["fin"], tail_pts)
 
-        # Stubby legs (2 pairs)
-        leg_w = int(base * 0.08)
-        leg_h = int(base * 0.25)
+        # Stubby legs (genome limb_proportion scales height)
+        leg_w = int(base * 0.08 * limb_s)
+        leg_h = int(base * 0.25 * limb_s)
         for offset in [-int(hw * 0.4), int(hw * 0.2)]:
-            # Left leg
             lx = cx + offset
             walk_anim = math.sin(self._time * 3.0 + offset) * 3.0
             leg_rect = pygame.Rect(
-                lx - leg_w, cy + hh - 2, leg_w * 2, leg_h + int(walk_anim)
+                lx - max(1, leg_w), cy + hh - 2,
+                max(2, leg_w * 2), max(1, leg_h + int(walk_anim)),
             )
             pygame.draw.ellipse(surface, colors["leg"], leg_rect)
 
-        # Pectoral fins (small)
+        # Pectoral fins (genome fin_length scales)
         fin_pts = [
             (cx - hw + 5, cy),
-            (cx - hw - int(base * 0.15), cy + int(base * 0.1)),
-            (cx - hw + 5, cy + int(base * 0.15)),
+            (cx - hw - int(base * 0.15 * fin_s), cy + int(base * 0.1)),
+            (cx - hw + 5, cy + int(base * 0.15 * fin_s)),
         ]
         pygame.draw.polygon(surface, colors["fin"], fin_pts)
 
-        # Eyes
-        eye_r = int(base * 0.12)
+        # Eyes (genome eye_size scales radius)
+        eye_r = int(base * 0.12 * self._genome_scale("eye_size"))
         self._draw_eye(
             surface, cx - int(hw * 0.3), cy - int(hh * 0.2),
             eye_r, eye_dx, eye_dy, colors,
@@ -473,14 +592,16 @@ class CreatureRenderer:
         eye_dy: float,
     ) -> None:
         """Tadman: tadpole humanoid — large head, stubby arms, long tail."""
-        colors = _STAGE_COLORS[CreatureStage.TADMAN]
+        colors = self._get_colors(CreatureStage.TADMAN)
         head_r = int(base * 0.45)
+        fin_s = self._genome_scale("fin_length")
+        limb_s = self._genome_scale("limb_proportion")
 
-        # Tail (behind body)
+        # Tail (behind body — genome fin_length scales)
         tail_pts = [
             (cx, cy + int(base * 0.2)),
-            (cx + int(base * 0.8), cy + int(base * 0.5)),
-            (cx + int(base * 0.9), cy + int(base * 0.45)),
+            (cx + int(base * 0.8 * fin_s), cy + int(base * 0.5)),
+            (cx + int(base * 0.9 * fin_s), cy + int(base * 0.45)),
         ]
         tail_wave = math.sin(self._time * 4.0) * 5.0
         tail_pts_anim = [
@@ -493,9 +614,12 @@ class CreatureRenderer:
         # Body (round head)
         pygame.draw.circle(surface, colors["body"], (cx, cy), head_r)
 
-        # Stubby arms
-        arm_len = int(base * 0.3)
-        arm_w = int(base * 0.08)
+        # Patterns on body
+        self._render_patterns(surface, cx, cy, base, colors["body"])
+
+        # Stubby arms (genome limb_proportion scales length/width)
+        arm_len = int(base * 0.3 * limb_s)
+        arm_w = int(base * 0.08 * limb_s)
         arm_wave = math.sin(self._time * 2.5) * 4.0
         # Left arm
         pygame.draw.line(
@@ -512,8 +636,8 @@ class CreatureRenderer:
             max(2, arm_w),
         )
 
-        # Short legs
-        leg_len = int(base * 0.2)
+        # Short legs (genome limb_proportion scales)
+        leg_len = int(base * 0.2 * limb_s)
         leg_wave = math.sin(self._time * 3.0) * 3.0
         pygame.draw.line(
             surface, colors["limb"],
@@ -528,8 +652,8 @@ class CreatureRenderer:
             max(2, arm_w),
         )
 
-        # Eyes
-        eye_r = int(base * 0.12)
+        # Eyes (genome eye_size scales radius)
+        eye_r = int(base * 0.12 * self._genome_scale("eye_size"))
         self._draw_eye(
             surface, cx - int(head_r * 0.35), cy - int(head_r * 0.15),
             eye_r, eye_dx, eye_dy, colors,
@@ -557,13 +681,14 @@ class CreatureRenderer:
         eye_dy: float,
     ) -> None:
         """Frogman: frog-man — wide mouth, bulging eyes, strong legs, upright."""
-        colors = _STAGE_COLORS[CreatureStage.FROGMAN]
+        colors = self._get_colors(CreatureStage.FROGMAN)
         body_w = int(base * 0.6)
         body_h = int(base * 0.7)
+        limb_s = self._genome_scale("limb_proportion")
 
-        # Legs (behind body)
-        leg_w = int(base * 0.1)
-        leg_h = int(base * 0.45)
+        # Legs (behind body — genome limb_proportion scales)
+        leg_w = int(base * 0.1 * limb_s)
+        leg_h = int(base * 0.45 * limb_s)
         leg_wave = math.sin(self._time * 2.0) * 4.0
         # Left leg
         pygame.draw.line(
@@ -584,6 +709,9 @@ class CreatureRenderer:
         body_rect = pygame.Rect(cx - body_w, cy - body_h // 2, body_w * 2, body_h)
         pygame.draw.ellipse(surface, colors["body"], body_rect)
 
+        # Patterns on body
+        self._render_patterns(surface, cx, cy, base, colors["body"])
+
         # Belly
         belly_w = int(body_w * 0.7)
         belly_h = int(body_h * 0.5)
@@ -592,9 +720,9 @@ class CreatureRenderer:
         )
         pygame.draw.ellipse(surface, colors["belly"], belly_rect)
 
-        # Arms
-        arm_w = int(base * 0.08)
-        arm_len = int(base * 0.35)
+        # Arms (genome limb_proportion scales)
+        arm_w = int(base * 0.08 * limb_s)
+        arm_len = int(base * 0.35 * limb_s)
         arm_wave = math.sin(self._time * 1.8) * 5.0
         pygame.draw.line(
             surface, colors["limb"],
@@ -609,8 +737,8 @@ class CreatureRenderer:
             max(3, arm_w),
         )
 
-        # Bulging eyes (on top of head)
-        eye_r = int(base * 0.16)
+        # Bulging eyes (on top of head — genome eye_size scales)
+        eye_r = int(base * 0.16 * self._genome_scale("eye_size"))
         eye_y = cy - body_h // 2 - int(eye_r * 0.3)
         self._draw_eye(
             surface, cx - int(body_w * 0.45), eye_y,

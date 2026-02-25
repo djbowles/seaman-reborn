@@ -1,4 +1,4 @@
-"""Tests for the creature sprite and animation system (US-037).
+"""Tests for the creature sprite and animation system (US-037, US-052).
 
 Pygame is mocked to avoid requiring a display server in CI.
 """
@@ -40,6 +40,7 @@ sys.modules["pygame"] = _pygame_mock
 
 # Now import the module under test (pygame is mocked)
 from seaman_brain.config import GUIConfig  # noqa: E402
+from seaman_brain.creature.genome import ALL_TRAITS, CreatureGenome  # noqa: E402
 from seaman_brain.gui.sprites import (  # noqa: E402
     AnimationState,
     CreaturePosition,
@@ -481,3 +482,158 @@ class TestEdgeCases:
         renderer = CreatureRenderer()
         renderer.set_mouse_position(renderer.position.x, renderer.position.y)
         renderer.render(_surface_mock)  # No exception (zero direction handled)
+
+
+# ── Genome-Driven Rendering Tests (US-052) ───────────────────────────
+
+
+class TestGenomeDrivenRendering:
+    """Tests for genome-parameterized visual variations."""
+
+    def test_different_genomes_produce_different_renders(self):
+        """Two different genomes produce visually different draw calls."""
+        g1 = CreatureGenome(traits={
+            "body_size": 0.1, "hue": 0.1, "saturation": 0.1,
+            "eye_size": 0.1, "fin_length": 0.1, "limb_proportion": 0.1,
+        })
+        g2 = CreatureGenome(traits={
+            "body_size": 0.9, "hue": 0.9, "saturation": 0.9,
+            "eye_size": 0.9, "fin_length": 0.9, "limb_proportion": 0.9,
+        })
+
+        r1 = CreatureRenderer(stage=CreatureStage.PODFISH, genome=g1)
+        _pygame_mock.draw.reset_mock()
+        r1.render(_surface_mock)
+        calls_1 = _pygame_mock.draw.method_calls.copy()
+
+        r2 = CreatureRenderer(stage=CreatureStage.PODFISH, genome=g2)
+        _pygame_mock.draw.reset_mock()
+        r2.render(_surface_mock)
+        calls_2 = _pygame_mock.draw.method_calls.copy()
+
+        # Draw calls should differ (different sizes, colors, pattern elements)
+        assert calls_1 != calls_2
+
+    def test_genome_extremes_do_not_break_rendering(self):
+        """Extreme genome values (all 0.0 and all 1.0) don't crash."""
+        for val in (0.0, 1.0):
+            traits = {t: val for t in ALL_TRAITS}
+            genome = CreatureGenome(traits=traits)
+            for stage in CreatureStage:
+                renderer = CreatureRenderer(stage=stage, genome=genome)
+                renderer.render(_surface_mock)  # No exception
+
+    def test_default_genome_matches_original_draw_count(self):
+        """Default genome (all 0.5) produces same draw call count as no genome."""
+        # Without genome
+        r1 = CreatureRenderer(stage=CreatureStage.GILLMAN)
+        _pygame_mock.draw.reset_mock()
+        r1.render(_surface_mock)
+        count_no_genome = len(_pygame_mock.draw.method_calls)
+
+        # With default genome (all traits = 0.5)
+        default_genome = CreatureGenome()
+        r2 = CreatureRenderer(stage=CreatureStage.GILLMAN, genome=default_genome)
+        _pygame_mock.draw.reset_mock()
+        r2.render(_surface_mock)
+        count_with_genome = len(_pygame_mock.draw.method_calls)
+
+        assert count_no_genome == count_with_genome
+
+    def test_body_size_scales_rendering(self):
+        """body_size genome trait changes the base size used for drawing."""
+        small = CreatureGenome(traits={"body_size": 0.0})
+        large = CreatureGenome(traits={"body_size": 1.0})
+
+        r_small = CreatureRenderer(stage=CreatureStage.MUSHROOMER, genome=small)
+        _pygame_mock.draw.reset_mock()
+        r_small.render(_surface_mock)
+        small_calls = _pygame_mock.draw.method_calls.copy()
+
+        r_large = CreatureRenderer(stage=CreatureStage.MUSHROOMER, genome=large)
+        _pygame_mock.draw.reset_mock()
+        r_large.render(_surface_mock)
+        large_calls = _pygame_mock.draw.method_calls.copy()
+
+        # Different body sizes produce different draw arguments
+        assert small_calls != large_calls
+
+    def test_hue_saturation_shift_colors(self):
+        """Hue/saturation genome traits shift the color palette."""
+        cool = CreatureGenome(traits={"hue": 0.0, "saturation": 0.0})
+        warm = CreatureGenome(traits={"hue": 1.0, "saturation": 1.0})
+
+        r_cool = CreatureRenderer(stage=CreatureStage.FROGMAN, genome=cool)
+        _pygame_mock.draw.reset_mock()
+        r_cool.render(_surface_mock)
+        cool_calls = _pygame_mock.draw.method_calls.copy()
+
+        r_warm = CreatureRenderer(stage=CreatureStage.FROGMAN, genome=warm)
+        _pygame_mock.draw.reset_mock()
+        r_warm.render(_surface_mock)
+        warm_calls = _pygame_mock.draw.method_calls.copy()
+
+        assert cool_calls != warm_calls
+
+    def test_pattern_complexity_adds_draw_calls(self):
+        """High pattern_complexity adds extra draw calls (spots/stripes)."""
+        plain = CreatureGenome(traits={"pattern_complexity": 0.0})
+        fancy = CreatureGenome(traits={"pattern_complexity": 1.0})
+
+        r_plain = CreatureRenderer(stage=CreatureStage.GILLMAN, genome=plain)
+        _pygame_mock.draw.reset_mock()
+        r_plain.render(_surface_mock)
+        plain_count = len(_pygame_mock.draw.method_calls)
+
+        r_fancy = CreatureRenderer(stage=CreatureStage.GILLMAN, genome=fancy)
+        _pygame_mock.draw.reset_mock()
+        r_fancy.render(_surface_mock)
+        fancy_count = len(_pygame_mock.draw.method_calls)
+
+        # Fancy genome should produce more draw calls (spots + stripes)
+        assert fancy_count > plain_count
+
+    def test_set_genome_method(self):
+        """set_genome() updates the genome used for rendering."""
+        renderer = CreatureRenderer()
+        assert renderer.genome is None
+
+        genome = CreatureGenome(traits={"body_size": 0.8})
+        renderer.set_genome(genome)
+        assert renderer.genome is genome
+
+        renderer.set_genome(None)
+        assert renderer.genome is None
+
+    def test_face_expressiveness_affects_mouth_amplitude(self):
+        """face_expressiveness genome trait modifies mouth animation range."""
+        stoic = CreatureGenome(traits={"face_expressiveness": 0.0})
+        expressive = CreatureGenome(traits={"face_expressiveness": 1.0})
+
+        r_stoic = CreatureRenderer(genome=stoic)
+        r_stoic.set_animation(AnimationState.TALKING)
+        r_expressive = CreatureRenderer(genome=expressive)
+        r_expressive.set_animation(AnimationState.TALKING)
+
+        # Collect mouth values over time
+        stoic_max = 0.0
+        expressive_max = 0.0
+        for _ in range(20):
+            r_stoic.update(0.05)
+            r_expressive.update(0.05)
+            stoic_max = max(stoic_max, r_stoic._mouth_open)
+            expressive_max = max(expressive_max, r_expressive._mouth_open)
+
+        # Expressive creature should have larger mouth amplitude
+        assert expressive_max > stoic_max
+
+    def test_all_stages_render_with_genome(self):
+        """Every stage renders without error when a genome is set."""
+        genome = CreatureGenome(traits={
+            "body_size": 0.7, "eye_size": 0.3, "fin_length": 0.8,
+            "limb_proportion": 0.6, "hue": 0.3, "saturation": 0.7,
+            "pattern_complexity": 0.8, "face_expressiveness": 0.6,
+        })
+        for stage in CreatureStage:
+            renderer = CreatureRenderer(stage=stage, genome=genome)
+            renderer.render(_surface_mock)  # No exception

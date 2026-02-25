@@ -34,7 +34,10 @@ def _make_legacy(
     death = datetime(2026, 1, 24, tzinfo=UTC)
     return GeneticLegacy(
         genome={"body_size": 0.5, "hue": 0.6} if genome is None else genome,
-        distilled_memories=["Human likes jazz", "Human name is Dave"] if memories is None else memories,
+        distilled_memories=(
+            ["Human likes jazz", "Human name is Dave"]
+            if memories is None else memories
+        ),
         personality_drift={"cynicism": 0.05, "warmth": -0.12} if drift is None else drift,
         behavioral_patterns={
             "total_interactions": 42,
