@@ -37,9 +37,10 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.gui:
-        # TODO: Launch Pygame GUI (US-035)
-        print(f"Seaman Brain v{__version__} - GUI mode not yet implemented")
-        sys.exit(0)
+        from seaman_brain.gui.window import GameWindow
+
+        window = GameWindow()
+        window.run()
     elif args.api:
         # TODO: Launch API server (US-043)
         print(f"Seaman Brain v{__version__} - API server mode not yet implemented")
