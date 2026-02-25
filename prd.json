@@ -176,8 +176,8 @@
         "ruff check passes, pytest passes"
       ],
       "priority": 10,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "EmbeddingProvider wraps Ollama AsyncClient.embed(). Handles empty/whitespace strings, batch with mixed empties. 21 tests covering happy path, edge cases, error handling, configuration."
     },
     {
       "id": "US-011",

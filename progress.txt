@@ -144,3 +144,19 @@ Started: 2026-02-25
   - EpisodicMemory is standalone (no async, no config dependency) — simplest module in memory subsystem
   - 20 tests: happy path (7), overflow (4), edge cases (7), error handling (2)
 ---
+
+## 2026-02-25 - US-010
+- Implemented EmbeddingProvider class in memory/embeddings.py
+- Wraps ollama AsyncClient.embed() API for single and batch text embedding
+- Configurable model via MemoryConfig.embeddings.model (default: all-minilm:l6-v2)
+- embed(text) returns list[float] vector, handles empty/whitespace by returning []
+- embed_batch(texts) supports mixed empty/real texts — only sends non-empty to server
+- All exceptions wrapped as ConnectionError with base_url in message
+- Files changed: src/seaman_brain/memory/embeddings.py, tests/test_memory/test_embeddings.py
+- **Learnings for future iterations:**
+  - ollama AsyncClient.embed() signature: model, input (str or list[str]) -> EmbedResponse
+  - EmbedResponse.embeddings is Sequence[Sequence[float]] — always a list of lists even for single input
+  - Config chain: MemoryConfig.embeddings (EmbeddingsConfig) holds model name — not LLMConfig
+  - For batch with mixed empties: filter empties, send only real texts, then map results back to original indices
+  - 21 tests: happy path (5), edge cases (8), error handling (5), configuration (3)
+---
