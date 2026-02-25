@@ -924,8 +924,8 @@
         "ruff check passes, pytest passes"
       ],
       "priority": 51,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "LineageTracker with LineageEntry dataclass, persistent family_tree.json, add_entry from GeneticLegacy, get_lineage, get_generation_count, get_lineage_summary for prompt injection. 41 tests."
     },
     {
       "id": "US-052",

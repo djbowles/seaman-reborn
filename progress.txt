@@ -969,3 +969,24 @@ Started: 2026-02-25
   - CreatureGenome.from_dict({}) fills all missing traits with 0.5 — safe for empty genome legacies
   - 19 tests: AncestralMemory (2), genome mutation (4), memory fading (6), personality inheritance (4), hatch integration (3)
 ---
+
+## 2026-02-25 - US-051
+- Implemented LineageTracker and LineageEntry in creature/lineage.py
+- LineageEntry dataclass: generation, genome_snapshot, birth_time, death_time, death_cause, stage_reached, trust_at_death, notable_facts, personality_summary
+- LineageEntry.from_legacy(GeneticLegacy) creates entry from dead creature's legacy — extracts timestamps from behavioral_patterns, builds personality summary from drift dict
+- LineageTracker class: manages persistent family_tree.json in lineage directory
+  - add_entry(legacy) converts GeneticLegacy to LineageEntry, appends to file
+  - get_lineage() returns full ancestry as list[LineageEntry]
+  - get_generation_count() returns next generation number (max existing + 1)
+  - get_lineage_summary() builds narrative string for prompt injection ("You are the 4th of your line. Your predecessor lived 23 days and died of starvation.")
+- Lazy-loaded cache: entries read from disk on first access, cached in memory
+- Helper functions: _ordinal() for English ordinals, _compute_lifespan_str() for readable lifespans
+- Files changed: src/seaman_brain/creature/lineage.py, tests/test_creature/test_lineage.py, prd.json
+- **Learnings for future iterations:**
+  - GeneticLegacy.behavioral_patterns contains birth_time/death_time as ISO strings — extract in from_legacy()
+  - Personality summary built by sorting drift dict by absolute value and describing direction
+  - _ordinal handles 11th/12th/13th exception (teens override standard suffix rules)
+  - LineageTracker uses lazy-loaded cache (_entries=None until first access) — avoids disk I/O on construction
+  - Empty/corrupted family_tree.json gracefully returns empty list (no crash)
+  - 41 tests: LineageEntry (6), add/retrieve (5), generation count (3), summary (4), edge cases (5), helpers (18)
+---
