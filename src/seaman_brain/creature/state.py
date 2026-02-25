@@ -4,9 +4,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from seaman_brain.types import CreatureStage
+
+if TYPE_CHECKING:
+    from seaman_brain.creature.genome import CreatureGenome
 
 
 def _clamp(value: float, min_val: float = 0.0, max_val: float = 1.0) -> float:
@@ -43,6 +46,7 @@ class CreatureState:
     last_fed: datetime = field(default_factory=lambda: datetime.now(UTC))
     last_interaction: datetime = field(default_factory=lambda: datetime.now(UTC))
     birth_time: datetime = field(default_factory=lambda: datetime.now(UTC))
+    genome: CreatureGenome | None = None
 
     def __post_init__(self) -> None:
         """Clamp float fields to valid ranges."""
@@ -55,7 +59,7 @@ class CreatureState:
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize state to a JSON-compatible dict."""
-        return {
+        d: dict[str, Any] = {
             "stage": self.stage.value,
             "age": self.age,
             "interaction_count": self.interaction_count,
@@ -68,6 +72,9 @@ class CreatureState:
             "last_interaction": self.last_interaction.isoformat(),
             "birth_time": self.birth_time.isoformat(),
         }
+        if self.genome is not None:
+            d["genome"] = self.genome.to_dict()
+        return d
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> CreatureState:
@@ -76,6 +83,8 @@ class CreatureState:
         Unknown keys are silently ignored.
         Missing keys use defaults.
         """
+        from seaman_brain.creature.genome import CreatureGenome
+
         kwargs: dict[str, Any] = {}
 
         if "stage" in data:
@@ -94,5 +103,8 @@ class CreatureState:
         for dt_key in ("last_fed", "last_interaction", "birth_time"):
             if dt_key in data:
                 kwargs[dt_key] = datetime.fromisoformat(data[dt_key])
+
+        if "genome" in data and isinstance(data["genome"], dict):
+            kwargs["genome"] = CreatureGenome.from_dict(data["genome"])
 
         return cls(**kwargs)
