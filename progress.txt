@@ -31,3 +31,19 @@ Started: 2026-02-25
   - numpy NDArray[np.float32] works well for embedding type hints
   - 13 tests in test_types.py covering enums, dataclass creation, defaults, edge cases
 ---
+
+## 2026-02-25 - US-003
+- Implemented TOML config loader with Pydantic v2 models
+- 10 sub-config models: LLMConfig, MemoryConfig, PersonalityConfig, CreatureConfig, AudioConfig, EnvironmentConfig, NeedsConfig, GUIConfig, APIConfig, CLIConfig
+- SeamanConfig top-level aggregator
+- load_config() reads default.toml, load_stage_config() reads stage overrides, load_config_with_stage() merges both
+- _deep_merge helper for recursive dict merging
+- Files changed: src/seaman_brain/config.py, tests/test_config.py
+- **Learnings for future iterations:**
+  - Pydantic v2 `model_validate()` works perfectly with tomllib output (dict)
+  - `model_copy(update={...})` is the Pydantic v2 way to create modified copies (replaces deprecated `.copy()`)
+  - Evolution thresholds use nested Pydantic models (EvolutionThreshold) inside a dict field
+  - conftest.py `config_dir` fixture creates tmp_path/config with stages/ subdir — use it for isolated config tests
+  - Empty TOML file loads fine — all Pydantic defaults kick in
+  - 19 tests covering happy path, stage merging, error handling, edge cases, and real config validation
+---
