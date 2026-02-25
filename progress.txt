@@ -830,3 +830,24 @@ Started: 2026-02-25
   - _build_state_snapshot helper extracts state from manager.creature_state.to_dict() — returns {} if state is None
   - 20 tests: health (2), state (2), reset (2), WebSocket (6), helpers (2), init (3), CORS (1), client tracking (2)
 ---
+
+## 2026-02-25 - US-044
+- Implemented brain state protocol schema in api/protocol.py — Pydantic models for all API communication
+- Enums: MessageType (StrEnum: input, response, state_update, event, error), EventSeverity (StrEnum: info, warning, critical)
+- Snapshot sub-models: NeedsSnapshot (hunger, comfort, health, stimulation), TankSnapshot (temperature, cleanliness, oxygen, water_level, environment_type), TraitsSnapshot (8 personality traits), CreatureStateSnapshot (stage, age, interactions, mood, trust, needs, timestamps)
+- BrainStateSnapshot: aggregate model with creature_state, needs, tank, mood, active_traits, current_stage
+- Client -> Server: InputMessage (type, text, protocol_version, timestamp)
+- Server -> Client: ResponseMessage (with BrainStateSnapshot), StateUpdate (with changed_fields), EventNotification (event_type, severity, message, effects), ErrorMessage
+- Protocol version 1.0.0 with check_protocol_version() (major version compatibility)
+- Utilities: parse_client_message() (JSON string or dict -> InputMessage), serialize_response() (model -> JSON string)
+- All models have field validators (stage names, environment types, value ranges)
+- Updated api/__init__.py to export all protocol models and utilities
+- Files changed: src/seaman_brain/api/protocol.py, src/seaman_brain/api/__init__.py, tests/test_api/test_protocol.py
+- **Learnings for future iterations:**
+  - ruff UP042 requires StrEnum (not `str, Enum`) for string enums on Python 3.11+
+  - Pydantic Field(ge=, le=) provides automatic range validation — no need for custom __post_init__ clamping
+  - field_validator with @classmethod decorator for custom validation (stage names, environment types)
+  - model_dump_json() returns a JSON string, model_validate_json() parses directly from JSON string
+  - ServerMessage type alias avoids long union types in function signatures
+  - 55 tests: NeedsSnapshot (4), TankSnapshot (4), TraitsSnapshot (3), CreatureStateSnapshot (5), BrainStateSnapshot (3), InputMessage (3), ResponseMessage (3), StateUpdate (3), EventNotification (4), ErrorMessage (2), parse_client_message (5), serialize_response (4), check_protocol_version (5), MessageType (2), EventSeverity (2), cross-model integration (3)
+---
