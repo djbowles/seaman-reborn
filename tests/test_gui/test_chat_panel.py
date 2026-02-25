@@ -82,11 +82,18 @@ def _make_event(event_type: int, **kwargs) -> MagicMock:
 
 @pytest.fixture(autouse=True)
 def _reset_mocks():
-    """Reset draw mocks between tests."""
+    """Reset draw mocks and re-install pygame mock between tests."""
+    sys.modules["pygame"] = _pygame_mock
+    import seaman_brain.gui.chat_panel as chat_mod
+    chat_mod.pygame = _pygame_mock
     _pygame_mock.draw.reset_mock()
     _surface_mock.reset_mock()
     _font_mock.reset_mock()
     _text_surf_mock.reset_mock()
+    _pygame_mock.Surface = _make_surface
+    _pygame_mock.Rect = lambda x, y, w, h: (x, y, w, h)
+    _pygame_mock.font.SysFont.return_value = _font_mock
+    _pygame_mock.font.Font.return_value = _font_mock
     _font_mock.get_linesize.return_value = 18
     _font_mock.size.return_value = (100, 18)
     _text_surf_mock.get_width.return_value = 100

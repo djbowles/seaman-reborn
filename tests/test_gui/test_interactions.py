@@ -74,11 +74,22 @@ from seaman_brain.types import CreatureStage  # noqa: E402
 
 @pytest.fixture(autouse=True)
 def _reset_mocks():
-    """Reset draw mocks between tests."""
+    """Reset draw mocks and re-install pygame mock between tests.
+
+    Other test_gui modules also set sys.modules["pygame"] at module level,
+    so we must re-install ours before each test to avoid cross-contamination.
+    """
+    sys.modules["pygame"] = _pygame_mock
+    import seaman_brain.gui.interactions as interactions_mod
+    interactions_mod.pygame = _pygame_mock
     _pygame_mock.draw.reset_mock()
     _surface_mock.reset_mock()
     _font_mock.reset_mock()
     _text_surf_mock.reset_mock()
+    _pygame_mock.Surface = _make_surface
+    _pygame_mock.Rect = lambda x, y, w, h: (x, y, w, h)
+    _pygame_mock.font.SysFont.return_value = _font_mock
+    _pygame_mock.font.Font.return_value = _font_mock
     _font_mock.render.return_value = _text_surf_mock
     _font_mock.get_linesize.return_value = 14
     _font_mock.size.return_value = (60, 14)

@@ -50,9 +50,13 @@ from seaman_brain.types import CreatureStage  # noqa: E402
 
 @pytest.fixture(autouse=True)
 def _reset_mocks():
-    """Reset draw mocks between tests."""
+    """Reset draw mocks and re-install pygame mock between tests."""
+    sys.modules["pygame"] = _pygame_mock
+    import seaman_brain.gui.sprites as sprites_mod
+    sprites_mod.pygame = _pygame_mock
     _pygame_mock.draw.reset_mock()
     _surface_mock.reset_mock()
+    _pygame_mock.Rect = lambda x, y, w, h: (x, y, w, h)
     yield
 
 
