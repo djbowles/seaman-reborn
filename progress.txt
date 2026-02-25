@@ -11,6 +11,7 @@ Started: 2026-02-25
 - Use `datetime.UTC` not `timezone.utc` (ruff UP017 rule)
 - Run ruff via `python -m ruff` (not bare `ruff`) — bare command not on PATH
 - Cloud LLM providers (openai, anthropic) are in `[cloud]` optional deps: `pip install -e ".[cloud]"`
+- Anthropic API separates system messages from conversation — pass via `system` kwarg, not in `messages` array
 
 ## 2026-02-25 - US-001
 - Initialized git repo, created full project scaffold
@@ -95,4 +96,22 @@ Started: 2026-02-25
   - openai>=1.50 is in `[cloud]` optional deps — install with `pip install -e ".[cloud]"`
   - Constructor api_key takes precedence over OPENAI_API_KEY env var
   - 18 tests: happy path (6), edge cases (7), error handling (5)
+---
+
+## 2026-02-25 - US-007
+- Implemented AnthropicProvider class in llm/anthropic_provider.py
+- Wraps anthropic AsyncAnthropic client with LLMProvider-conforming chat() and stream() methods
+- Key difference from OpenAI: system messages extracted separately via `system` kwarg (not in messages array)
+- Multiple system messages concatenated with newlines
+- API key from constructor arg or ANTHROPIC_API_KEY env var, with clear ValueError if missing
+- stream() filters for `content_block_delta` events and extracts `event.delta.text`
+- chat() reads `response.content[0].text` from Message response
+- Files changed: src/seaman_brain/llm/anthropic_provider.py, tests/test_llm/test_anthropic_provider.py
+- **Learnings for future iterations:**
+  - Anthropic Messages API separates system messages from conversation — pass via `system` kwarg, not in `messages`
+  - Response is Message with `response.content` list of ContentBlock, each has `.text`
+  - Streaming events have `.type` attribute; only `content_block_delta` has `.delta.text`
+  - When no system messages, omit the `system` kwarg entirely (don't pass None)
+  - anthropic>=0.40 is in `[cloud]` optional deps alongside openai
+  - 21 tests: happy path (7), edge cases (10), error handling (5 including chained exceptions)
 ---

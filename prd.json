@@ -125,8 +125,8 @@
         "ruff check passes, pytest passes"
       ],
       "priority": 7,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "AnthropicProvider implements LLMProvider protocol with AsyncAnthropic. System messages extracted separately per Anthropic API format. API key from env or constructor. 21 tests covering happy path, edge cases, error handling."
     },
     {
       "id": "US-008",
