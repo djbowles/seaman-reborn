@@ -181,3 +181,18 @@ Started: 2026-02-25
   - MemoryRecord.embedding is NDArray, must `.tolist()` before storing in LanceDB
   - 16 tests: happy path (6), edge cases (7), error handling (3)
 ---
+
+## 2026-02-25 - US-012
+- Implemented HybridRetriever class in memory/retriever.py
+- Combines semantic similarity (importance as proxy) with temporal recency scoring
+- Configurable weights via MemoryConfig.similarity_weight and .recency_weight (default 0.7/0.3)
+- Fetches 3x top_k candidates from semantic store, then re-ranks by weighted combination
+- Handles empty store, empty query embeddings, top_k<=0, same-timestamp candidates, importance clamping
+- Files changed: src/seaman_brain/memory/retriever.py, tests/test_memory/test_retriever.py
+- **Learnings for future iterations:**
+  - HybridRetriever uses importance field as similarity proxy (0-1 range, clamped)
+  - Recency score: `1 - (age / max_age)` — newer = higher; handles zero max_age (same timestamps)
+  - Over-fetch from semantic store (3x top_k, capped at 50) to give re-ranking room
+  - All memory module dependencies: embeddings.py -> semantic.py -> retriever.py
+  - 12 tests: happy path (4), edge cases (5), error handling (3)
+---
