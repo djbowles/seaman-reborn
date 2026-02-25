@@ -1,14 +1,13 @@
 {
   "project": "Seaman Reborn - AI Brain Core",
-  "version": "0.1.0",
-  "stories": [
+  "branchName": "ralph/ai-brain-core",
+  "description": "AI Brain Core - Python middleware powering sardonic creature cognition with local LLM inference, persistent vector memory, and evolving personality across 5 creature stages",
+  "userStories": [
     {
       "id": "US-001",
       "title": "Initialize git repo and Python project scaffold",
-      "priority": 1,
-      "status": "done",
-      "depends_on": [],
-      "acceptance_criteria": [
+      "description": "As a developer, I need the project structure in place so all future stories have a foundation to build on.",
+      "acceptanceCriteria": [
         "git repo initialized with .gitignore",
         "pyproject.toml with all dependencies defined",
         "src/seaman_brain/ package structure created with __init__.py files",
@@ -18,15 +17,16 @@
         "python -m seaman_brain --version prints version",
         "ruff check passes with zero errors",
         "pytest collects successfully"
-      ]
+      ],
+      "priority": 1,
+      "passes": true,
+      "notes": "Scaffold complete. Build backend is setuptools.build_meta. pytest-asyncio uses asyncio_mode=auto."
     },
     {
       "id": "US-002",
       "title": "Implement shared types and enums",
-      "priority": 2,
-      "status": "pending",
-      "depends_on": ["US-001"],
-      "acceptance_criteria": [
+      "description": "As a developer, I need shared type definitions so all modules use consistent data structures.",
+      "acceptanceCriteria": [
         "CreatureStage enum with 5 stages: MUSHROOMER, GILLMAN, PODFISH, TADMAN, FROGMAN",
         "MessageRole enum with SYSTEM, USER, ASSISTANT",
         "ChatMessage dataclass with role, content, timestamp fields",
@@ -34,15 +34,16 @@
         "All types have proper type hints and are importable from seaman_brain.types",
         "At least 3 tests covering enum values, dataclass creation, and edge cases",
         "ruff check passes, pytest passes"
-      ]
+      ],
+      "priority": 2,
+      "passes": false,
+      "notes": ""
     },
     {
       "id": "US-003",
       "title": "Implement TOML config loader with Pydantic models",
-      "priority": 3,
-      "status": "pending",
-      "depends_on": ["US-001"],
-      "acceptance_criteria": [
+      "description": "As a developer, I need typed configuration loading so modules can access settings safely.",
+      "acceptanceCriteria": [
         "SeamanConfig Pydantic model aggregating LLMConfig, MemoryConfig, PersonalityConfig",
         "LLMConfig with provider, model, temperature, max_tokens, base_url fields",
         "MemoryConfig with buffer_size, vector_dims, top_k, extraction_interval fields",
@@ -51,30 +52,32 @@
         "Stage-specific TOML files can override personality traits",
         "At least 3 tests: default loading, missing file handling, override merging",
         "ruff check passes, pytest passes"
-      ]
+      ],
+      "priority": 3,
+      "passes": false,
+      "notes": ""
     },
     {
       "id": "US-004",
       "title": "Implement LLM provider abstract protocol",
-      "priority": 4,
-      "status": "pending",
-      "depends_on": ["US-002"],
-      "acceptance_criteria": [
+      "description": "As a developer, I need a provider contract so LLM backends are interchangeable.",
+      "acceptanceCriteria": [
         "LLMProvider Protocol class with async chat() and async stream() methods",
         "chat() takes list[ChatMessage] and returns str",
         "stream() takes list[ChatMessage] and returns AsyncIterator[str]",
         "Protocol is runtime-checkable",
         "At least 3 tests verifying protocol compliance with a mock implementation",
         "ruff check passes, pytest passes"
-      ]
+      ],
+      "priority": 4,
+      "passes": false,
+      "notes": ""
     },
     {
       "id": "US-005",
       "title": "Implement Ollama LLM provider",
-      "priority": 5,
-      "status": "pending",
-      "depends_on": ["US-004"],
-      "acceptance_criteria": [
+      "description": "As a user, I need local LLM inference via Ollama so the creature can think without cloud APIs.",
+      "acceptanceCriteria": [
         "OllamaProvider class implementing LLMProvider protocol",
         "Configurable model name, temperature, and context window",
         "async chat() sends messages to Ollama and returns response text",
@@ -82,30 +85,32 @@
         "Handles connection errors gracefully with clear error messages",
         "At least 3 tests with mocked Ollama client",
         "ruff check passes, pytest passes"
-      ]
+      ],
+      "priority": 5,
+      "passes": false,
+      "notes": ""
     },
     {
       "id": "US-006",
       "title": "Implement OpenAI LLM provider",
-      "priority": 6,
-      "status": "pending",
-      "depends_on": ["US-004"],
-      "acceptance_criteria": [
+      "description": "As a user, I need an OpenAI cloud fallback for when local inference is unavailable.",
+      "acceptanceCriteria": [
         "OpenAIProvider class implementing LLMProvider protocol",
         "Reads API key from OPENAI_API_KEY env var or config",
         "async chat() and stream() work with OpenAI API format",
         "Graceful handling of missing API key with helpful error message",
         "At least 3 tests with mocked OpenAI client",
         "ruff check passes, pytest passes"
-      ]
+      ],
+      "priority": 6,
+      "passes": false,
+      "notes": ""
     },
     {
       "id": "US-007",
       "title": "Implement Anthropic LLM provider",
-      "priority": 7,
-      "status": "pending",
-      "depends_on": ["US-004"],
-      "acceptance_criteria": [
+      "description": "As a user, I need an Anthropic cloud fallback for when local inference is unavailable.",
+      "acceptanceCriteria": [
         "AnthropicProvider class implementing LLMProvider protocol",
         "Reads API key from ANTHROPIC_API_KEY env var or config",
         "Converts ChatMessage format to Anthropic's system+messages format",
@@ -113,30 +118,32 @@
         "Graceful handling of missing API key with helpful error message",
         "At least 3 tests with mocked Anthropic client",
         "ruff check passes, pytest passes"
-      ]
+      ],
+      "priority": 7,
+      "passes": false,
+      "notes": ""
     },
     {
       "id": "US-008",
       "title": "Implement LLM provider factory",
-      "priority": 8,
-      "status": "pending",
-      "depends_on": ["US-005", "US-006", "US-007"],
-      "acceptance_criteria": [
+      "description": "As a developer, I need a factory so the orchestrator can create providers from config.",
+      "acceptanceCriteria": [
         "create_provider(config: LLMConfig) -> LLMProvider factory function",
         "Selects provider based on config.provider string ('ollama', 'openai', 'anthropic')",
         "Validates provider availability before returning",
         "Raises clear error for unknown provider names",
         "At least 3 tests covering each provider selection and error case",
         "ruff check passes, pytest passes"
-      ]
+      ],
+      "priority": 8,
+      "passes": false,
+      "notes": ""
     },
     {
       "id": "US-009",
       "title": "Implement episodic memory buffer",
-      "priority": 9,
-      "status": "pending",
-      "depends_on": ["US-002"],
-      "acceptance_criteria": [
+      "description": "As a creature, I need short-term conversation memory so I can maintain context within a session.",
+      "acceptanceCriteria": [
         "EpisodicMemory class with configurable max_size (default 20)",
         "add(message: ChatMessage) appends to buffer",
         "Buffer automatically evicts oldest messages when full",
@@ -145,15 +152,16 @@
         "clear() empties the buffer",
         "At least 3 tests: add/retrieve, overflow eviction, edge cases",
         "ruff check passes, pytest passes"
-      ]
+      ],
+      "priority": 9,
+      "passes": false,
+      "notes": ""
     },
     {
       "id": "US-010",
       "title": "Implement embedding provider with Ollama embeddings",
-      "priority": 10,
-      "status": "pending",
-      "depends_on": ["US-003"],
-      "acceptance_criteria": [
+      "description": "As a developer, I need text embeddings so memories can be stored and searched as vectors.",
+      "acceptanceCriteria": [
         "EmbeddingProvider class wrapping Ollama embeddings API",
         "Configurable model name (default: all-minilm:l6-v2)",
         "async embed(text: str) -> list[float] returns embedding vector",
@@ -161,15 +169,16 @@
         "Handles empty strings and very long texts gracefully",
         "At least 3 tests with mocked Ollama embed calls",
         "ruff check passes, pytest passes"
-      ]
+      ],
+      "priority": 10,
+      "passes": false,
+      "notes": ""
     },
     {
       "id": "US-011",
       "title": "Implement LanceDB semantic memory store",
-      "priority": 11,
-      "status": "pending",
-      "depends_on": ["US-010"],
-      "acceptance_criteria": [
+      "description": "As a creature, I need persistent long-term memory so I remember the human across sessions.",
+      "acceptanceCriteria": [
         "SemanticMemory class using LanceDB for persistent vector storage",
         "Configurable database path (default: data/lancedb/)",
         "async add(record: MemoryRecord) stores memory with embedding",
@@ -177,15 +186,16 @@
         "Auto-creates table schema on first use",
         "At least 3 tests with temporary database directory",
         "ruff check passes, pytest passes"
-      ]
+      ],
+      "priority": 11,
+      "passes": false,
+      "notes": ""
     },
     {
       "id": "US-012",
       "title": "Implement hybrid memory retriever",
-      "priority": 12,
-      "status": "pending",
-      "depends_on": ["US-011"],
-      "acceptance_criteria": [
+      "description": "As a creature, I need intelligent memory recall that balances relevance with recency.",
+      "acceptanceCriteria": [
         "HybridRetriever class combining semantic similarity and temporal recency",
         "async retrieve(query: str, top_k: int) returns ranked MemoryRecords",
         "Configurable weights for similarity vs recency scoring",
@@ -193,15 +203,16 @@
         "Re-ranks results by weighted combination score",
         "At least 3 tests with mocked semantic memory and embeddings",
         "ruff check passes, pytest passes"
-      ]
+      ],
+      "priority": 12,
+      "passes": false,
+      "notes": ""
     },
     {
       "id": "US-013",
       "title": "Implement memory extraction pipeline",
-      "priority": 13,
-      "status": "pending",
-      "depends_on": ["US-011", "US-004"],
-      "acceptance_criteria": [
+      "description": "As a creature, I need to automatically extract and store facts from conversations.",
+      "acceptanceCriteria": [
         "MemoryExtractor class using LLM to extract facts from conversation",
         "async extract(messages: list[ChatMessage]) -> list[str] extracts key facts",
         "async extract_and_store(messages, memory_store) extracts and persists",
@@ -209,15 +220,16 @@
         "Configurable extraction interval (every N messages)",
         "At least 3 tests with mocked LLM and memory store",
         "ruff check passes, pytest passes"
-      ]
+      ],
+      "priority": 13,
+      "passes": false,
+      "notes": ""
     },
     {
       "id": "US-014",
       "title": "Implement personality trait system",
-      "priority": 14,
-      "status": "pending",
-      "depends_on": ["US-002", "US-003"],
-      "acceptance_criteria": [
+      "description": "As a creature, I need configurable personality traits so my behavior changes with each evolutionary stage.",
+      "acceptanceCriteria": [
         "8 trait dimensions as floats 0.0-1.0: cynicism, wit, patience, curiosity, warmth, verbosity, formality, aggression",
         "TraitProfile dataclass holding all 8 traits",
         "Default TraitProfile for each CreatureStage",
@@ -225,15 +237,16 @@
         "Trait values clamp to [0.0, 1.0] range",
         "At least 3 tests: default profiles, stage loading, clamping",
         "ruff check passes, pytest passes"
-      ]
+      ],
+      "priority": 14,
+      "passes": false,
+      "notes": ""
     },
     {
       "id": "US-015",
       "title": "Implement personality constraints and output filtering",
-      "priority": 15,
-      "status": "pending",
-      "depends_on": ["US-014"],
-      "acceptance_criteria": [
+      "description": "As a creature, I need output filtering so I never break character with AI assistant cliches.",
+      "acceptanceCriteria": [
         "FORBIDDEN_PHRASES list of AI assistant cliches to strip",
         "apply_constraints(response: str, profile: TraitProfile) -> str filters output",
         "Strips phrases like 'As an AI...', 'I would be happy to...', 'I cannot...'",
@@ -241,15 +254,16 @@
         "Handles empty or whitespace-only responses",
         "At least 3 tests: phrase stripping, length enforcement, edge cases",
         "ruff check passes, pytest passes"
-      ]
+      ],
+      "priority": 15,
+      "passes": false,
+      "notes": ""
     },
     {
       "id": "US-016",
       "title": "Implement system prompt builder",
-      "priority": 16,
-      "status": "pending",
-      "depends_on": ["US-014", "US-015"],
-      "acceptance_criteria": [
+      "description": "As a creature, I need a dynamic system prompt so the LLM knows how to roleplay me at each stage.",
+      "acceptanceCriteria": [
         "PromptBuilder class assembling the system prompt for LLM calls",
         "build(stage, traits, memories, creature_state) -> str returns system prompt",
         "Prompt incorporates: creature identity, stage-specific behavior, trait-driven tone",
@@ -258,15 +272,16 @@
         "Prompt clearly instructs LLM to stay in character as Seaman",
         "At least 3 tests: basic build, with memories, different stages",
         "ruff check passes, pytest passes"
-      ]
+      ],
+      "priority": 16,
+      "passes": false,
+      "notes": ""
     },
     {
       "id": "US-017",
       "title": "Implement creature state and persistence",
-      "priority": 17,
-      "status": "pending",
-      "depends_on": ["US-002", "US-003"],
-      "acceptance_criteria": [
+      "description": "As a creature, I need persistent state so I survive between sessions.",
+      "acceptanceCriteria": [
         "CreatureState dataclass with stage, age, interaction_count, mood, trust_level, etc.",
         "StatePersistence class for JSON save/load to data/saves/",
         "save(state: CreatureState, path: str) writes JSON file",
@@ -275,15 +290,16 @@
         "Handles missing save file by returning default state",
         "At least 3 tests: save/load roundtrip, missing file, backup creation",
         "ruff check passes, pytest passes"
-      ]
+      ],
+      "priority": 17,
+      "passes": false,
+      "notes": ""
     },
     {
       "id": "US-018",
       "title": "Implement creature evolution logic",
-      "priority": 18,
-      "status": "pending",
-      "depends_on": ["US-017", "US-014"],
-      "acceptance_criteria": [
+      "description": "As a creature, I need to evolve through 5 stages based on interaction and trust.",
+      "acceptanceCriteria": [
         "EvolutionEngine class managing stage transitions",
         "check_evolution(state: CreatureState) -> CreatureStage | None",
         "Evolution conditions: interaction count thresholds, trust level, time elapsed",
@@ -292,15 +308,16 @@
         "Cannot skip stages or devolve",
         "At least 3 tests: no evolution, threshold reached, max stage",
         "ruff check passes, pytest passes"
-      ]
+      ],
+      "priority": 18,
+      "passes": false,
+      "notes": ""
     },
     {
       "id": "US-019",
       "title": "Implement context assembler",
-      "priority": 19,
-      "status": "pending",
-      "depends_on": ["US-016", "US-009"],
-      "acceptance_criteria": [
+      "description": "As a developer, I need context assembly so the LLM receives a well-structured message array.",
+      "acceptanceCriteria": [
         "ContextAssembler class combining all context for LLM calls",
         "assemble(system_prompt, episodic_messages, retrieved_memories) -> list[ChatMessage]",
         "System prompt goes first as SYSTEM message",
@@ -309,15 +326,16 @@
         "Manages total token budget across components",
         "At least 3 tests: basic assembly, with memories, budget limits",
         "ruff check passes, pytest passes"
-      ]
+      ],
+      "priority": 19,
+      "passes": false,
+      "notes": ""
     },
     {
       "id": "US-020",
       "title": "Implement conversation manager (main orchestrator)",
-      "priority": 20,
-      "status": "pending",
-      "depends_on": ["US-019", "US-012", "US-013", "US-018", "US-008"],
-      "acceptance_criteria": [
+      "description": "As a developer, I need a central orchestrator that coordinates all subsystems into a conversation loop.",
+      "acceptanceCriteria": [
         "ConversationManager class orchestrating the full conversation flow",
         "async process_input(user_input: str) -> str is the main entry point",
         "Flow: add to episodic -> update state -> check evolution -> retrieve memories -> build prompt -> assemble context -> LLM chat -> filter -> store -> save",
@@ -326,15 +344,16 @@
         "async shutdown() cleanly closes connections and saves state",
         "At least 3 tests with mocked subsystems: happy path, degradation, evolution trigger",
         "ruff check passes, pytest passes"
-      ]
+      ],
+      "priority": 20,
+      "passes": false,
+      "notes": ""
     },
     {
       "id": "US-021",
       "title": "Implement terminal CLI interface",
-      "priority": 21,
-      "status": "pending",
-      "depends_on": ["US-020"],
-      "acceptance_criteria": [
+      "description": "As a user, I need a terminal interface so I can talk to the creature interactively.",
+      "acceptanceCriteria": [
         "Terminal UI using rich for output and prompt_toolkit for input",
         "Displays creature stage and mood indicators in header",
         "Streaming response display as LLM generates tokens",
@@ -343,15 +362,16 @@
         "python -m seaman_brain launches the interactive terminal",
         "At least 3 tests: command parsing, display formatting, graceful shutdown",
         "ruff check passes, pytest passes"
-      ]
+      ],
+      "priority": 21,
+      "passes": false,
+      "notes": ""
     },
     {
       "id": "US-022",
       "title": "Integration tests for full conversation loop",
-      "priority": 22,
-      "status": "pending",
-      "depends_on": ["US-020"],
-      "acceptance_criteria": [
+      "description": "As a developer, I need end-to-end tests proving the full system works together.",
+      "acceptanceCriteria": [
         "Full end-to-end test with mocked LLM provider",
         "Test: user sends message, gets personality-appropriate response",
         "Test: memory extraction triggers after N messages",
@@ -360,7 +380,10 @@
         "Test: graceful degradation when embedding service unavailable",
         "All integration tests pass with pytest -m integration",
         "ruff check passes, pytest passes"
-      ]
+      ],
+      "priority": 22,
+      "passes": false,
+      "notes": ""
     }
   ]
 }
