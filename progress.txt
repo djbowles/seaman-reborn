@@ -47,3 +47,14 @@ Started: 2026-02-25
   - Empty TOML file loads fine — all Pydantic defaults kick in
   - 19 tests covering happy path, stage merging, error handling, edge cases, and real config validation
 ---
+
+## 2026-02-25 - US-004
+- Implemented LLMProvider Protocol in llm/base.py — runtime-checkable with async chat() and stream() methods
+- chat() takes list[ChatMessage] -> str, stream() takes list[ChatMessage] -> AsyncIterator[str]
+- Files changed: src/seaman_brain/llm/base.py, tests/test_llm/test_base.py
+- **Learnings for future iterations:**
+  - Python Protocol with `@runtime_checkable` allows isinstance() checks at runtime
+  - ruff import sorting (I001) requires `from __future__` separate from stdlib separate from third-party — use `ruff --fix` to auto-sort
+  - AsyncIterator from collections.abc works for typing async generators in Protocol
+  - 12 tests: protocol compliance (4), edge cases (4), error handling (4)
+---
