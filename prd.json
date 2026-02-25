@@ -108,8 +108,8 @@
         "ruff check passes, pytest passes"
       ],
       "priority": 6,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "OpenAIProvider implements LLMProvider protocol with AsyncOpenAI. API key from env or constructor. 18 tests covering happy path, edge cases, error handling."
     },
     {
       "id": "US-007",
