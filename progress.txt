@@ -455,3 +455,26 @@ Started: 2026-02-25
   - AbsenceSeverity boundaries: 24h=MILD, 48h=MODERATE, 168h(7d)=SEVERE (inclusive at boundary)
   - 41 tests: time_of_day (5), day_of_week (4), session (3), absence (7), context (5), edge cases (12), enums (2), defaults (3)
 ---
+
+## 2026-02-25 - US-027
+- Implemented TankEnvironment dataclass in environment/tank.py
+- EnvironmentType enum: AQUARIUM, TERRARIUM
+- TankEnvironment fields: temperature, cleanliness, oxygen_level, water_level, environment_type, last_update
+- update(elapsed_seconds, config) degrades cleanliness and oxygen over time; terrarium halves oxygen decay
+- set_temperature(value, config) with bounds [lethal_min-5, lethal_max+5]; adjust_temperature(delta, config)
+- clean() restores cleanliness to 1.0
+- drain() transitions aquarium->terrarium (sets water_level=0); fill() transitions terrarium->aquarium
+- is_habitable(config) checks temperature bounds, oxygen>0.1, cleanliness>0.05
+- is_temperature_optimal(config) checks against optimal_temp_min/max
+- get_warnings(config) returns list of urgent maintenance alerts (critical + suboptimal for temp, oxygen, cleanliness)
+- to_dict()/from_dict() for JSON persistence; from_config() factory from EnvironmentConfig
+- Updated environment/__init__.py to export EnvironmentType and TankEnvironment
+- Files changed: src/seaman_brain/environment/tank.py, src/seaman_brain/environment/__init__.py, tests/test_environment/test_tank.py
+- **Learnings for future iterations:**
+  - TankEnvironment follows same dataclass + _clamp pattern as CreatureState and TraitProfile
+  - EnvironmentConfig has all thresholds: initial_temperature, optimal_temp_min/max, lethal_temp_min/max, decay rates
+  - Temperature bounds are lethal_min-5 to lethal_max+5 — allows reaching dangerous but not impossible levels
+  - Terrarium mode halves oxygen decay rate (natural air circulation)
+  - to_dict/from_dict pattern matches CreatureState: enum as .value, datetime as .isoformat()
+  - 63 tests: clamp (4), enum (3), creation (6), update (9), temperature (7), clean (3), drain/fill (4), habitability (7), optimal temp (4), warnings (10), serialization (6)
+---
