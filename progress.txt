@@ -437,3 +437,21 @@ Started: 2026-02-25
   - AudioConfig.sfx_volume default is 0.5, sfx_enabled default is True, stt_enabled default is False
   - 43 tests: init (4), speak (6), synthesize (4), listen (3), sfx (7), play_wav (2), channels (8), volume (4), factory (3), concurrency (2)
 ---
+
+## 2026-02-25 - US-026
+- Implemented GameClock class in environment/clock.py
+- TimeOfDay enum: MORNING (6-11), AFTERNOON (12-17), EVENING (18-21), NIGHT (22-5)
+- AbsenceSeverity enum: NONE (<24h), MILD (24-48h), MODERATE (48h-7d), SEVERE (>7d)
+- GameClock wraps real-time clock with injectable now_func for testing
+- Properties: time_of_day, day_of_week, is_weekend, session_duration_minutes, hours_since_last_session, absence_severity
+- get_time_context() returns dict with all time data for prompt injection
+- Session tracking: session_start recorded at init, end_session() returns timestamp
+- hours_since_last_session clamped to 0.0 for clock skew (future last_session_end)
+- Files changed: src/seaman_brain/environment/clock.py, tests/test_environment/test_clock.py, prd.json
+- **Learnings for future iterations:**
+  - Injectable now_func pattern: `now_func=lambda: datetime(...)` allows deterministic time testing
+  - When now_func is called multiple times (e.g., in get_time_context), use a counter-based mock, not an iterator
+  - GameClock is standalone (no async, no config dependency) — simplest module in environment subsystem
+  - AbsenceSeverity boundaries: 24h=MILD, 48h=MODERATE, 168h(7d)=SEVERE (inclusive at boundary)
+  - 41 tests: time_of_day (5), day_of_week (4), session (3), absence (7), context (5), edge cases (12), enums (2), defaults (3)
+---
