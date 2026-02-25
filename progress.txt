@@ -215,3 +215,20 @@ Started: 2026-02-25
   - Memory module dependency chain updated: embeddings.py -> semantic.py -> retriever.py, extractor.py (parallel leaf)
   - 17 tests: happy path (5), edge cases (7), error handling (5)
 ---
+
+## 2026-02-25 - US-014
+- Implemented personality trait system in personality/traits.py
+- TraitProfile dataclass with 8 float dimensions (cynicism, wit, patience, curiosity, warmth, verbosity, formality, aggression)
+- All values clamped to [0.0, 1.0] via __post_init__
+- STAGE_DEFAULTS dict maps every CreatureStage to a hardcoded TraitProfile (matching TOML files)
+- load_trait_profile() reads stage TOML via load_stage_config(), overlays on defaults, falls back if missing
+- profile_from_config() creates TraitProfile from PersonalityConfig.base_traits
+- to_dict() / from_dict() for serialization, from_dict ignores unknown keys
+- Files changed: src/seaman_brain/personality/traits.py, tests/test_personality/test_traits.py
+- **Learnings for future iterations:**
+  - PersonalityConfig.base_traits is a dict[str, float] with all 8 trait keys — use TraitProfile.from_dict() to convert
+  - Stage TOML [traits] section has exact trait names as keys — load_stage_config() returns StageConfig with .traits dict
+  - Clamping via _clamp() in __post_init__ ensures no invalid values even from external TOML
+  - load_trait_profile overlays TOML values onto STAGE_DEFAULTS (not bare defaults) so unspecified traits inherit stage-specific values
+  - 26 tests: creation (6), stage defaults (6), clamping (4), TOML loading (4), config integration (2), edge cases (4)
+---
