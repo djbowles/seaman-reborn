@@ -21,7 +21,8 @@ Started: 2026-02-25
 - Pygame mocked in tests via `patch.dict(sys.modules, {"pygame": mock})` + force reimport after mocking; mock needs int constants (QUIT=256, KEYDOWN=768, K_ESCAPE=27)
 - For modules that import numpy (via types.py): use module-level `sys.modules["pygame"] = mock` + import once, NOT per-test `patch.dict` (which removes numpy between tests, causing C extension reload error)
 - Background asyncio for GUI: `asyncio.new_event_loop()` + `loop.run_forever()` + daemon thread; `run_coroutine_threadsafe()` to bridge sync->async
-- For gui test modules with shared pygame mock: re-install `sys.modules["pygame"]` in autouse fixture — other test_gui modules overwrite the mock at collection time
+- For gui test modules with shared pygame mock: re-install `sys.modules["pygame"]` in autouse fixture AND patch `module.pygame` on the imported module directly (e.g. `hud_mod.pygame = _pygame_mock`) — other test_gui modules overwrite the mock at collection time, and the target module may have captured a different mock's reference
+- MoodEngine.calculate_mood() requires a non-None TraitProfile — use `TraitProfile()` as default when ConversationManager traits aren't available
 
 ## 2026-02-25 - US-001
 - Initialized git repo, created full project scaffold
@@ -787,4 +788,23 @@ Started: 2026-02-25
   - TTS voice routing: AudioManager.synthesize() -> bytes -> pygame.mixer.Sound(buffer=bytes) -> channel.play()
   - PygameAudioBridge needs an asyncio loop reference for async TTS/STT calls from sync game thread
   - 47 tests: construction (5), volume control (6), ambient loop (7), voice playback (7), SFX (5), microphone toggle (9), lifecycle (5), edge cases (3)
+---
+
+## 2026-02-25 - US-042
+- Implemented GameEngine class in gui/game_loop.py — full orchestrator for all Pygame subsystems
+- Game loop: process input -> update tank/needs/mood/behaviors/events -> check evolution/death -> update animations -> render tank -> render creature -> render interactions -> render HUD -> render chat -> render notifications -> flip display
+- Async bridge: chat panel submits to ConversationManager via asyncio.run_coroutine_threadsafe(), checks Future each frame
+- Needs/tank update every 1s, behavior check every 5s, event check every 3s (all scaled by real elapsed time)
+- Autonomous behaviors trigger idle animations (swim, sleep, eat) and optional speech via chat panel + TTS
+- Events checked each tick, displayed as notifications and optionally as system messages in chat
+- Evolution triggers 3-second golden glow celebration with stage announcement and SFX
+- Death triggers game-over screen with cause, sardonic death message, and click-to-restart (new egg)
+- Fixed cross-test pygame mock contamination in test_hud, test_interactions, test_sprites, test_chat_panel by patching `module.pygame` directly in autouse fixtures
+- Files changed: src/seaman_brain/gui/game_loop.py, src/seaman_brain/gui/__init__.py, tests/test_gui/test_game_loop.py, tests/test_gui/test_hud.py, tests/test_gui/test_interactions.py, tests/test_gui/test_sprites.py, tests/test_gui/test_chat_panel.py
+- **Learnings for future iterations:**
+  - MoodEngine.calculate_mood() requires non-None TraitProfile — use TraitProfile() as default when ConversationManager traits aren't available yet
+  - Cross-test pygame mock contamination: when a new test module with module-level `sys.modules["pygame"] = mock` is added, ALL other gui test modules must add `module.pygame = _pygame_mock` in their autouse fixtures to rebind the module's pygame reference
+  - TankEnvironment is a dataclass — use TankEnvironment.from_config(cfg.environment) not TankEnvironment(config=...)
+  - GameEngine registers update/render callbacks with GameWindow instead of overriding run() — keeps window loop clean
+  - 30 tests: init (4), loop tick (6), async conversation bridge (6), evolution sequence (4), death/restart (3), rendering (4), interaction handling (3)
 ---
