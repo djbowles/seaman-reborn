@@ -287,3 +287,21 @@ Started: 2026-02-25
   - data/saves/ is gitignored — tests must use tmp_path fixture for persistence tests
   - 46 tests: state creation (3), clamping (7), to_dict (3), from_dict (6), save/load (5), backup (3), missing file (4), errors (3), delete (2), all-stages roundtrip (5), helper (5)
 ---
+
+## 2026-02-25 - US-018
+- Implemented EvolutionEngine class in creature/evolution.py
+- STAGE_ORDER tuple defines canonical progression: MUSHROOMER -> GILLMAN -> PODFISH -> TADMAN -> FROGMAN
+- DEFAULT_THRESHOLDS dict provides fallback EvolutionThreshold for each non-first stage
+- EvolutionEngine loads thresholds from CreatureConfig.evolution_thresholds (keyed by stage name), falls back to defaults
+- check_evolution(state) evaluates only the immediate next stage — returns CreatureStage or None
+- evolve(state, new_stage) validates the transition (no skip, no devolve, no same-stage), updates state.stage, returns TraitProfile
+- Convenience: can_evolve() bool, stages_remaining() int
+- Files changed: src/seaman_brain/creature/evolution.py, tests/test_creature/test_evolution.py
+- **Learnings for future iterations:**
+  - EvolutionEngine depends on CreatureConfig, CreatureState, and TraitProfile (via get_default_profile)
+  - Config evolution_thresholds are keyed by stage name string (e.g. "gillman"), not enum — use CreatureStage(name.lower()) to convert
+  - MUSHROOMER is the starting stage — no threshold defined for evolving *into* it
+  - evolve() mutates CreatureState.stage in-place and returns the new TraitProfile
+  - _stage_index() uses STAGE_ORDER.index() — all 5 stages must be in the tuple
+  - 38 tests: stage order (3), default thresholds (3), engine init (6), check_evolution happy (5), check_evolution no-evolve (6), evolve happy (4), evolve errors (5), convenience (6)
+---
