@@ -58,3 +58,21 @@ Started: 2026-02-25
   - AsyncIterator from collections.abc works for typing async generators in Protocol
   - 12 tests: protocol compliance (4), edge cases (4), error handling (4)
 ---
+
+## 2026-02-25 - US-005
+- Implemented OllamaProvider class in llm/ollama_provider.py
+- Wraps ollama.AsyncClient with LLMProvider-conforming chat() and stream() methods
+- Configurable via LLMConfig (model, temperature, num_ctx/max_tokens, base_url)
+- Converts ChatMessage to ollama dict format via _format_messages()
+- Graceful error handling: wraps all exceptions as ConnectionError with base_url in message
+- stream() skips empty/None chunks
+- Files changed: src/seaman_brain/llm/ollama_provider.py, tests/test_llm/test_ollama_provider.py
+- **Learnings for future iterations:**
+  - ollama AsyncClient.chat() signature: model, messages (list of dicts), options (dict), stream (bool)
+  - Response is ChatResponse with response.message.content (can be None)
+  - Streaming returns AsyncIterator[ChatResponse] when stream=True
+  - Options dict keys: "temperature", "num_ctx" (not max_tokens)
+  - Mock AsyncClient.chat with AsyncMock; for streaming, return an async generator
+  - ruff I001 fix: `from __future__` block, blank line, stdlib, blank line, third-party, blank line, local — use `ruff --fix`
+  - 14 tests: happy path (5), edge cases (4), error handling (5 including chained exceptions)
+---
