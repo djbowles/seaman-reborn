@@ -744,3 +744,25 @@ Started: 2026-02-25
   - _status_color() thresholds: >=0.6 green, >=0.3 yellow, <0.3 red
   - 45 tests: construction (4), color thresholds (6), mode switching (4), update (2), bar rendering (8), tank indicators (7), trust meter (3), top bar (5), edge cases (6)
 ---
+
+## 2026-02-25 - US-040
+- Implemented InteractionManager class in gui/interactions.py
+- Mouse-based tank interactions: feeding (food selection menu), temperature up/down, glass tap, clean, drain/fill
+- InteractionType enum: FEED, TAP_GLASS, TEMP_UP, TEMP_DOWN, CLEAN, DRAIN
+- TapReaction enum: STARTLED (low trust), ANNOYED (repeated taps), CURIOUS (high trust)
+- Visual effects: RippleEffect (expanding circles on click) and FoodDropEffect (falling food animation)
+- Button system: _Button dataclass with hover state, positioned at tank edges
+- Food menu: opens on tank center click, shows stage-appropriate foods from FeedingEngine
+- Delegates to FeedingEngine for feeding logic, TankCareEngine for care actions
+- InteractionResult dataclass aggregates type, message, and detailed results
+- Files changed: src/seaman_brain/gui/interactions.py, tests/test_gui/test_interactions.py
+- **Learnings for future iterations:**
+  - InteractionManager wraps FeedingEngine + TankCareEngine — doesn't reimplement game logic
+  - Buttons use _build_buttons() lazy init pattern, invalidated when tank area changes via set_tank_area()
+  - Glass tap detection uses _is_near_wall() with 30px margin from tank edges
+  - Food menu is positioned at click coordinates, items are 28px tall, menu is 120px wide
+  - Tap reaction logic: >=3 recent taps = ANNOYED, trust > 0.6 = CURIOUS, trust < 0.3 = STARTLED
+  - Visual effects use alive property + update loop removal pattern (same as bubbles in tank_renderer)
+  - NeedsConfig(feeding_cooldown_seconds=0) in test fixture removes cooldown for cleaner feeding tests
+  - 39 tests: construction (4), feeding (6), temperature (3), glass tap (6), clean (2), drain/fill (2), visual effects (6), rendering (4), mouse move (2), edge cases (4)
+---
