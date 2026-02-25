@@ -16,6 +16,8 @@ Started: 2026-02-25
 - LanceDB `list_tables()` returns a response object — access `.tables` for the list of names (replaces deprecated `table_names()`)
 - LanceDB stores timestamps as ISO strings, reconstruct with `datetime.fromisoformat()`
 - prompt_toolkit PromptSession must be lazy-initialized (not in __init__) — fails in non-console environments like pytest
+- For local-import modules (pyttsx3, etc.), mock via `patch.dict(sys.modules, {"pkg": mock})` not `patch("module.pkg")`
+- pyttsx3 engines are NOT thread-safe — use single-thread ThreadPoolExecutor; create fresh engine per operation
 
 ## 2026-02-25 - US-001
 - Initialized git repo, created full project scaffold
@@ -373,4 +375,23 @@ Started: 2026-02-25
   - MockLLM with response queue pattern: `side_effect=self._next_response` on AsyncMock allows multi-turn tests with different responses
   - LanceDB `db_path` must be set in MemoryConfig when testing extraction that stores to semantic memory
   - 21 tests: end-to-end (5), extraction (3), evolution (4), persistence (4), degradation (5)
+---
+
+## 2026-02-25 - US-023
+- Implemented TTSProvider Protocol (runtime-checkable) with async synthesize(text) -> bytes and speak(text) -> None
+- Pyttsx3TTSProvider: offline TTS using pyttsx3, runs in ThreadPoolExecutor to avoid blocking event loop
+- NoopTTSProvider: silent fallback returning valid empty WAV bytes
+- create_tts_provider() factory with graceful fallback to NoopTTSProvider on failure
+- Configurable voice, rate, volume from AudioConfig; volume clamped to [0.0, 1.0]
+- synthesize() saves to temp WAV file, reads back bytes; speak() uses engine.say() + runAndWait()
+- Updated audio/__init__.py to export TTSProvider, Pyttsx3TTSProvider, NoopTTSProvider, create_tts_provider
+- Files changed: src/seaman_brain/audio/tts.py, src/seaman_brain/audio/__init__.py, tests/test_audio/test_tts.py, prd.json
+- **Learnings for future iterations:**
+  - pyttsx3 is imported inside methods (not at module level) — mock via `patch.dict(sys.modules, {"pyttsx3": mock_mod})`, NOT `patch("seaman_brain.audio.tts.pyttsx3")`
+  - Setting sys.modules["pyttsx3"] = None triggers ImportError on `import pyttsx3` — useful for testing missing deps
+  - pyttsx3 engines are NOT thread-safe — use single-thread ThreadPoolExecutor for all operations
+  - wave module's `wave.open(buf, "wb")` with BytesIO works for generating valid WAV headers in-memory
+  - pyttsx3.init() must be called fresh per-operation (no reuse) since engines don't survive cross-thread
+  - save_to_file() + runAndWait() is the pyttsx3 pattern for getting audio bytes (no direct API)
+  - 35 tests: protocol (4), noop (4), init (4), engine config (6), synthesize (4), speak (4), factory (6), edge cases (3)
 ---

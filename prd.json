@@ -405,8 +405,8 @@
         "ruff check passes, pytest passes"
       ],
       "priority": 23,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "TTSProvider Protocol (runtime-checkable) with Pyttsx3TTSProvider and NoopTTSProvider fallback. Async via ThreadPoolExecutor. create_tts_provider() factory. 35 tests covering protocol, noop, init, engine config, synthesize, speak, factory, edge cases."
     },
     {
       "id": "US-024",
