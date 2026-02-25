@@ -813,8 +813,8 @@
         "ruff check passes, pytest passes"
       ],
       "priority": 45,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "EventBroadcaster with 6 subscribable channels (mood, needs, evolution, behavior, tank, death), ClientSubscription per-client channel management, state-diff streaming (compute_state_diff + diff_to_channels), configurable broadcast interval (default 500ms), periodic loop with start/stop, instant event broadcasting, graceful disconnect handling. 80 tests."
     },
     {
       "id": "US-046",

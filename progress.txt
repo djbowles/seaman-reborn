@@ -851,3 +851,22 @@ Started: 2026-02-25
   - ServerMessage type alias avoids long union types in function signatures
   - 55 tests: NeedsSnapshot (4), TankSnapshot (4), TraitsSnapshot (3), CreatureStateSnapshot (5), BrainStateSnapshot (3), InputMessage (3), ResponseMessage (3), StateUpdate (3), EventNotification (4), ErrorMessage (2), parse_client_message (5), serialize_response (4), check_protocol_version (5), MessageType (2), EventSeverity (2), cross-model integration (3)
 ---
+
+## 2026-02-25 - US-045
+- Implemented EventBroadcaster class in api/streaming.py for real-time event streaming over WebSocket
+- EventChannel StrEnum with 6 subscribable channels: mood, needs, evolution, behavior, tank, death
+- ClientSubscription wrapper managing per-client channel subscriptions (subscribe/unsubscribe/subscribe_all/unsubscribe_all)
+- State-diff utilities: _flatten_dict, compute_state_diff (dot-path comparison), diff_to_channels (maps diffs to channels)
+- broadcast_state_update() pushes StateUpdate only to clients subscribed to affected channels
+- broadcast_event() pushes EventNotification instantly, with channel inference from event_type keywords
+- Periodic loop (start/stop/is_running) with configurable interval (default 500ms) for needs/tank polling
+- Graceful disconnect: clients removed from registry when send_text raises
+- Files changed: src/seaman_brain/api/streaming.py, src/seaman_brain/api/__init__.py, tests/test_api/test_streaming.py, prd.json
+- **Learnings for future iterations:**
+  - Protocol models (StateUpdate, EventNotification) from protocol.py integrate cleanly via serialize_response()
+  - _flatten_dict + sorted diff approach handles nested Pydantic model_dump() output well
+  - diff_to_channels mapping: creature_state.hunger→needs, active_traits.*→mood, current_stage→evolution
+  - EventBroadcaster._infer_channel uses keyword matching (evolution/stage→evolution, death/die→death, etc.)
+  - Periodic loop supports both sync and async snapshot_fn callables
+  - 80 tests: EventChannel (4), ClientSubscription (8), _flatten_dict (4), compute_state_diff (6), diff_to_channels (10), client management (11), state updates (7), event notifications (7), disconnect handling (4), periodic loop (5), infer channel (7), edge cases (7)
+---

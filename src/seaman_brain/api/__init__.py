@@ -19,10 +19,22 @@ from seaman_brain.api.protocol import (
     serialize_response,
 )
 from seaman_brain.api.server import BrainServer
+from seaman_brain.api.streaming import (
+    ALL_CHANNELS,
+    ClientSubscription,
+    EventBroadcaster,
+    EventChannel,
+    compute_state_diff,
+    diff_to_channels,
+)
 
 __all__ = [
-    "PROTOCOL_VERSION",
+    "ALL_CHANNELS",
     "BrainServer",
+    "ClientSubscription",
+    "EventBroadcaster",
+    "EventChannel",
+    "PROTOCOL_VERSION",
     "BrainStateSnapshot",
     "CreatureStateSnapshot",
     "ErrorMessage",
@@ -36,6 +48,8 @@ __all__ = [
     "TankSnapshot",
     "TraitsSnapshot",
     "check_protocol_version",
+    "compute_state_diff",
+    "diff_to_channels",
     "parse_client_message",
     "serialize_response",
 ]
