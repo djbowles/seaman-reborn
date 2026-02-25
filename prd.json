@@ -885,8 +885,8 @@
         "ruff check passes, pytest passes"
       ],
       "priority": 49,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "GeneticLegacy dataclass with genome, distilled_memories, personality_drift, behavioral_patterns, cause_of_death. extract_legacy() with LLM+heuristic memory distillation. save_legacy/load_legacy/get_latest_legacy for lineage dir persistence. DeathEngine on_death_hook for automatic extraction. 41 tests."
     },
     {
       "id": "US-050",
