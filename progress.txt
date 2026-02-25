@@ -890,3 +890,23 @@ Started: 2026-02-25
   - EventSystem rng_seed parameter enables deterministic event firing in tests
   - Integration tests should mock only at external boundaries (LLM, embeddings) — let internal subsystems interact naturally
 ---
+
+## 2026-02-25 - US-047
+- Implemented CreatureGenome dataclass in creature/genome.py with 12 heritable traits in 3 categories
+- Trait categories: morphological (body_size, head_ratio, eye_size, fin_length, limb_proportion), chromatic (hue, saturation, pattern_complexity), behavioral (metabolism_rate, voice_pitch, face_expressiveness, aggression_baseline)
+- STAGE_DEFAULTS dict: per-stage centre points for gaussian trait generation across all 5 stages
+- generate_random_genome(stage, std_dev, rng): gaussian-distributed traits clamped to [0,1]
+- mutate_genome(parent, mutation_rate, rng): per-trait gaussian drift for genetic inheritance
+- update_epigenetic_drift(genome, care_quality, environment_quality, elapsed_days): gradual life-condition shifts — good care grows body_size/expressiveness, reduces aggression; good environment increases saturation/pattern_complexity
+- Integrated genome into CreatureState: optional genome field, serialized in to_dict()/from_dict()
+- Used TYPE_CHECKING guard + local import in from_dict() to avoid circular import between state.py and genome.py
+- Files changed: src/seaman_brain/creature/genome.py, src/seaman_brain/creature/state.py, tests/test_creature/test_genome.py
+- **Learnings for future iterations:**
+  - CreatureGenome uses dict[str, float] for traits — flexible, avoids rigid field definitions
+  - ALL_TRAITS tuple defines canonical trait order; __post_init__ fills missing traits with 0.5
+  - rng parameter (random.Random instance) enables deterministic testing of random functions
+  - std_dev=0.0 in generate_random_genome produces exact stage defaults (useful for testing)
+  - Epigenetic drift rate is 0.005/day max per trait — very gradual, requires days of play to notice
+  - TYPE_CHECKING guard + local import in from_dict() prevents circular import (state <-> genome)
+  - 55 tests: trait constants (6), stage defaults (3), dataclass (7), serialization (4), random generation (7), mutation (6), epigenetic drift (11), state integration (7)
+---
