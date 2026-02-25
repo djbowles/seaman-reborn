@@ -232,3 +232,19 @@ Started: 2026-02-25
   - load_trait_profile overlays TOML values onto STAGE_DEFAULTS (not bare defaults) so unspecified traits inherit stage-specific values
   - 26 tests: creation (6), stage defaults (6), clamping (4), TOML loading (4), config integration (2), edge cases (4)
 ---
+
+## 2026-02-25 - US-015
+- Implemented personality constraints and output filtering in personality/constraints.py
+- FORBIDDEN_PHRASES: 30+ regex patterns for AI assistant cliches (case-insensitive)
+- apply_constraints(response, profile) -> str: strips phrases, cleans whitespace, enforces length
+- Verbosity-based length: linear interpolation from 10 chars (v=0.0) to 500 chars (v=1.0)
+- _truncate() prefers sentence boundaries, then word boundaries, then hard truncate
+- Files changed: src/seaman_brain/personality/constraints.py, tests/test_personality/test_constraints.py, prd.json
+- **Learnings for future iterations:**
+  - Regex patterns with `re.IGNORECASE` and `\b` word boundaries work well for phrase matching
+  - Pre-compile patterns at module level for performance (list comprehension over FORBIDDEN_PHRASES)
+  - After stripping phrases, clean up leading punctuation/whitespace artifacts (e.g. ", the water...")
+  - Truncation should prefer sentence boundaries (". ") over word boundaries (" ") over hard cut
+  - _max_length_for_verbosity uses linear interpolation: `MIN + (MAX - MIN) * verbosity`
+  - 26 tests: phrase stripping (6), length enforcement (5), edge cases (9), helpers (6)
+---

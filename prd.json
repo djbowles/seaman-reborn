@@ -261,8 +261,8 @@
         "ruff check passes, pytest passes"
       ],
       "priority": 15,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "FORBIDDEN_PHRASES list (30+ regex patterns), apply_constraints() strips phrases and enforces verbosity-based length. 26 tests."
     },
     {
       "id": "US-016",
