@@ -643,8 +643,8 @@
         "ruff check passes, pytest passes"
       ],
       "priority": 36,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "TankRenderer with aquarium (water surface, bubbles, gravel) and terrarium (substrate, rocks, moisture) modes. Temperature overlay (blue=cold, red=hot), cleanliness murkiness, smooth transition animation. 30 tests."
     },
     {
       "id": "US-037",

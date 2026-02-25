@@ -661,3 +661,22 @@ Started: 2026-02-25
   - Shutdown timeout: 5s for ConversationManager.shutdown(), 3s for async thread join
   - 40 tests: construction (6), pygame init (4), event handling (7), update loop (3), render loop (5), async bridge (3), shutdown (6), main loop integration (3), edge cases (3)
 ---
+
+## 2026-02-25 - US-036
+- Implemented TankRenderer class in gui/tank_renderer.py
+- Aquarium mode: animated water surface (wavy line), rising bubbles with wobble, gravel floor, blue-green background
+- Terrarium mode: dry substrate, decorative rocks with highlights, floating moisture/mist particles, green background
+- Temperature overlay: blue tint when cold, red tint when hot, no overlay when in optimal range
+- Cleanliness overlay: murky green/brown overlay that intensifies as cleanliness drops
+- Smooth animated transition between aquarium and terrarium (configurable speed, gradual interpolation)
+- All rendering procedural (Pygame draw calls) — no external assets needed
+- Files changed: src/seaman_brain/gui/tank_renderer.py, tests/test_gui/test_tank_renderer.py
+- **Learnings for future iterations:**
+  - TankRenderer takes GUIConfig + EnvironmentConfig, uses a 45px top margin for HUD space
+  - Decorations (gravel, rocks, bubbles, moisture) are randomly generated once in _init_decorations() and then animated
+  - Transition progress (0.0=aquarium, 1.0=terrarium) interpolates smoothly per frame
+  - Overlay rendering uses pygame.Surface with SRCALPHA flag for transparency — mock _pygame_mock.SRCALPHA = 65536
+  - _lerp_color() helper blends RGB tuples; useful for any gradient/transition coloring
+  - For testing overlays, check _overlay_mock.fill.call_args[0][0] for the (r, g, b, a) tuple
+  - 30 tests: construction (5), aquarium render (3), terrarium render (3), temperature overlay (3), cleanliness overlay (3), animation update (5), transition smoothness (3), edge cases (5)
+---
