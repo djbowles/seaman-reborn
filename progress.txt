@@ -19,6 +19,7 @@ Started: 2026-02-25
 - For local-import modules (pyttsx3, etc.), mock via `patch.dict(sys.modules, {"pkg": mock})` not `patch("module.pkg")`
 - pyttsx3 engines are NOT thread-safe — use single-thread ThreadPoolExecutor; create fresh engine per operation
 - Pygame mocked in tests via `patch.dict(sys.modules, {"pygame": mock})` + force reimport after mocking; mock needs int constants (QUIT=256, KEYDOWN=768, K_ESCAPE=27)
+- For modules that import numpy (via types.py): use module-level `sys.modules["pygame"] = mock` + import once, NOT per-test `patch.dict` (which removes numpy between tests, causing C extension reload error)
 - Background asyncio for GUI: `asyncio.new_event_loop()` + `loop.run_forever()` + daemon thread; `run_coroutine_threadsafe()` to bridge sync->async
 
 ## 2026-02-25 - US-001
@@ -679,4 +680,26 @@ Started: 2026-02-25
   - _lerp_color() helper blends RGB tuples; useful for any gradient/transition coloring
   - For testing overlays, check _overlay_mock.fill.call_args[0][0] for the (r, g, b, a) tuple
   - 30 tests: construction (5), aquarium render (3), terrarium render (3), temperature overlay (3), cleanliness overlay (3), animation update (5), transition smoothness (3), edge cases (5)
+---
+
+## 2026-02-25 - US-037
+- Implemented CreatureRenderer class in gui/sprites.py with procedural art for all 5 evolutionary stages
+- AnimationState enum: IDLE, SWIMMING, TALKING, EATING, SLEEPING
+- CreaturePosition dataclass with smooth interpolation (move_toward_target, at_target, set_target)
+- 5 stage renderers: Mushroomer (spore with mushroom cap + single eye), Gillman (fish with human face + gills + dorsal fin), Podfish (fish with stubby legs + pectoral fins), Tadman (tadpole humanoid with arms/legs + tail), Frogman (upright frog-man with wide mouth + bulging eyes)
+- Face tracking: eyes follow mouse cursor via normalized direction vector
+- Blinking: random interval (2.5-5s), 0.15s blink duration
+- Talking: mouth oscillates via sin(time*8.0) when in TALKING state, gradually closes when switched away
+- Sleeping: gentle bob + floating Z letters above head
+- Idle wander: creature picks random targets within bounds every ~3s when idle
+- Eating effect: food particles converging on creature
+- Updated gui/__init__.py with docstring listing submodules
+- Files changed: src/seaman_brain/gui/sprites.py, src/seaman_brain/gui/__init__.py, tests/test_gui/test_sprites.py, prd.json
+- **Learnings for future iterations:**
+  - DO NOT use `patch.dict(sys.modules, {"pygame": mock})` per-test fixture for sprites — it restores sys.modules between tests, removing numpy (C extension can't reload). Instead, set `sys.modules["pygame"] = mock` at module level and import once.
+  - gui/__init__.py should NOT eagerly import from sprites (or any pygame-dependent module) — causes cascading reimport issues in tests. Users import directly from submodules.
+  - _STAGE_COLORS and _STAGE_SIZES dicts at module level provide per-stage visual config
+  - CreaturePosition.move_toward_target uses distance-normalized movement (speed * dt capped at remaining distance)
+  - Eye pupil tracking: calculate normalized direction to mouse, offset pupil within eye radius
+  - 42 tests: construction (5), stage rendering (6), animation states (7), position interpolation (6), face tracking (3), blinking (3), stage switching (2), update loop (3), eating effect (1), edge cases (6)
 ---

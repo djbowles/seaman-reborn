@@ -1,4 +1,10 @@
-"""GUI subsystem - Pygame visual interface for creature interaction."""
+"""GUI subsystem - Pygame visual interface for creature interaction.
+
+Submodules:
+    window: GameWindow (main game loop)
+    tank_renderer: TankRenderer (habitat rendering)
+    sprites: CreatureRenderer, AnimationState, CreaturePosition (creature art)
+"""
 
 from seaman_brain.gui.window import GameWindow
 
