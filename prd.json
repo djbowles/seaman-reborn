@@ -280,8 +280,8 @@
         "ruff check passes, pytest passes"
       ],
       "priority": 16,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "PromptBuilder with identity, stage speech, trait tone, mood/trust modifiers, needs hints, memories, negative constraints. 42 tests."
     },
     {
       "id": "US-017",

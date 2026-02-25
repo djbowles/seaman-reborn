@@ -248,3 +248,25 @@ Started: 2026-02-25
   - _max_length_for_verbosity uses linear interpolation: `MIN + (MAX - MIN) * verbosity`
   - 26 tests: phrase stripping (6), length enforcement (5), edge cases (9), helpers (6)
 ---
+
+## 2026-02-25 - US-016
+- Implemented PromptBuilder class in personality/prompt_builder.py
+- Assembles system prompt from 7 sections: identity, stage speech, trait tone, mood/trust, needs hints, memories, negative constraints
+- _STAGE_IDENTITIES and _STAGE_SPEECH dicts provide fallback descriptions per CreatureStage
+- _NEGATIVE_CONSTRAINTS block with 11 strict rules preventing AI-assistant behavior
+- _trait_tone_instructions() maps 8 trait dimensions to behavioral instructions via threshold buckets
+- _mood_section() maps 8 named moods + 5 trust levels to prompt modifiers
+- _memories_section() formats remembered facts as bulleted list with usage instruction
+- _needs_hints() generates behavioral hints from hunger, health, interaction_count
+- _get_stage_description() loads from TOML behavior.description, falls back to hardcoded
+- creature_state is a dict[str, Any] to avoid dependency on unimplemented US-017 CreatureState
+- Files changed: src/seaman_brain/personality/prompt_builder.py, tests/test_personality/test_prompt_builder.py, prd.json
+- **Learnings for future iterations:**
+  - PromptBuilder accepts creature_state as dict[str, Any] to decouple from US-017 CreatureState dataclass
+  - Stage TOML behavior.description can override hardcoded _STAGE_IDENTITIES fallbacks
+  - Mood section uses a dict mapping mood name -> prompt text; unknown moods fall back to raw name
+  - Trust is bucketed into 5 levels (<0.2, <0.4, <0.6, <0.8, >=0.8) for graduated language
+  - Trait tone uses threshold-based buckets (not linear interpolation) for clearer behavioral guidance
+  - Negative constraints are the single most important section — they prevent the LLM from breaking character
+  - 42 tests: basic build (5), with memories (4), different stages (4), creature state (8), trait tone (7), mood (6), stage desc (2), needs hints (6)
+---
