@@ -18,6 +18,8 @@ Started: 2026-02-25
 - prompt_toolkit PromptSession must be lazy-initialized (not in __init__) — fails in non-console environments like pytest
 - For local-import modules (pyttsx3, etc.), mock via `patch.dict(sys.modules, {"pkg": mock})` not `patch("module.pkg")`
 - pyttsx3 engines are NOT thread-safe — use single-thread ThreadPoolExecutor; create fresh engine per operation
+- Pygame mocked in tests via `patch.dict(sys.modules, {"pygame": mock})` + force reimport after mocking; mock needs int constants (QUIT=256, KEYDOWN=768, K_ESCAPE=27)
+- Background asyncio for GUI: `asyncio.new_event_loop()` + `loop.run_forever()` + daemon thread; `run_coroutine_threadsafe()` to bridge sync->async
 
 ## 2026-02-25 - US-001
 - Initialized git repo, created full project scaffold
@@ -635,4 +637,27 @@ Started: 2026-02-25
   - apply_effects uses _clamp for creature state but directly sets tank fields via setattr
   - to_dict/load_state serialize one-shot set and last_fired timestamps for session persistence
   - 76 tests: EventType (2), EventEffect (2), GameEvent (2), _clamp (4), init (4), registration (5), check_events (5), one-shot (3), cooldown (3), apply_effects (8), reset (4), persistence (5), built-in events (5), built-in triggers (17), integration (4), edge cases (4)
+---
+
+## 2026-02-25 - US-035
+- Implemented GameWindow class in gui/window.py — Pygame window setup and main game loop
+- GameWindow manages: Pygame init (display, clock, fonts), main loop (handle_events -> update(dt) -> render -> tick), event routing to registered handlers, background asyncio thread for ConversationManager, clean shutdown with state saving
+- Configurable window size (default 1024x768) and FPS (default 30) via GUIConfig
+- Event routing system: register_event_handler/unregister_event_handler for any pygame event type, with error isolation per handler
+- Update/render callback registration: register_update(cb(dt)), register_renderer(cb(surface)) — extensibility points for future subsystems
+- Async bridge: background thread running asyncio event loop, ConversationManager initialized asynchronously, submit_async() for running coroutines from game thread
+- Default status overlay: header bar with "Seaman Reborn" title, brain status indicator, optional FPS counter
+- Clean shutdown: saves creature state via ConversationManager.shutdown(), stops async loop/thread, quits Pygame
+- Wired up --gui flag in __main__.py to launch GameWindow.run()
+- Updated gui/__init__.py to export GameWindow
+- Files changed: src/seaman_brain/gui/window.py, src/seaman_brain/gui/__init__.py, src/seaman_brain/__main__.py, tests/test_gui/test_window.py
+- **Learnings for future iterations:**
+  - Pygame must be mocked in tests via `patch.dict(sys.modules, {"pygame": mock})` — same pattern as pyttsx3/speech_recognition
+  - Must force reimport of gui.window after mocking pygame (delete from sys.modules) to pick up the mock
+  - Mock pygame needs constants set: QUIT=256, KEYDOWN=768, K_ESCAPE=27, etc. — event types are int constants
+  - Background asyncio thread: `asyncio.new_event_loop()` + `loop.run_forever()` + daemon thread; stop with `loop.call_soon_threadsafe(loop.stop)`
+  - `asyncio.run_coroutine_threadsafe(coro, loop)` returns a `concurrent.futures.Future` — call `.result(timeout=N)` for sync wait
+  - GameWindow.run() calls initialize() -> _start_async_bridge() -> _init_manager_async() -> loop -> shutdown()
+  - Shutdown timeout: 5s for ConversationManager.shutdown(), 3s for async thread join
+  - 40 tests: construction (6), pygame init (4), event handling (7), update loop (3), render loop (5), async bridge (3), shutdown (6), main loop integration (3), edge cases (3)
 ---

@@ -624,8 +624,8 @@
         "ruff check passes, pytest passes"
       ],
       "priority": 35,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "GameWindow with Pygame init, main loop (handle_events -> update(dt) -> render -> tick), event routing, async ConversationManager bridge, clean shutdown. --gui CLI flag wired up. 40 tests."
     },
     {
       "id": "US-036",
