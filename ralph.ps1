@@ -63,6 +63,9 @@ if (-not (Test-Path $ProgressFile)) {
 
 Write-Host "Starting Ralph - Tool: $tool - Max iterations: $maxIterations"
 
+$consecutiveErrors = 0
+$maxConsecutiveErrors = 5
+
 for ($i = 1; $i -le $maxIterations; $i++) {
     Write-Host ""
     Write-Host "==============================================================="
@@ -94,6 +97,37 @@ for ($i = 1; $i -le $maxIterations; $i++) {
         Write-Host "Ralph completed all tasks!"
         Write-Host "Completed at iteration $i of $maxIterations"
         exit 0
+    }
+
+    # Detect API errors and apply exponential backoff
+    $isApiError = $false
+    if ($output -and $output -match "API Error: [45]\d\d") {
+        $isApiError = $true
+    }
+    if ($exitCode -ne 0 -and (-not $output -or $output.Trim().Length -lt 50)) {
+        $isApiError = $true
+    }
+
+    if ($isApiError) {
+        $consecutiveErrors++
+        # Exponential backoff: 10s, 20s, 40s, 80s, 160s (capped at 5 min)
+        $backoffSeconds = [math]::Min(300, 10 * [math]::Pow(2, $consecutiveErrors - 1))
+        Write-Host "API error detected ($consecutiveErrors consecutive). Backing off for ${backoffSeconds}s..."
+
+        if ($consecutiveErrors -ge $maxConsecutiveErrors) {
+            Write-Host ""
+            Write-Host "Hit $maxConsecutiveErrors consecutive API errors. Pausing for 10 minutes..."
+            Start-Sleep -Seconds 600
+            $consecutiveErrors = 0
+        } else {
+            Start-Sleep -Seconds $backoffSeconds
+        }
+
+        # Don't count errored iterations against the total — rewind counter
+        $i--
+        continue
+    } else {
+        $consecutiveErrors = 0
     }
 
     Write-Host "Iteration $i complete. Continuing..."

@@ -548,3 +548,44 @@ Started: 2026-02-25
   - CareResult includes remaining warnings after action — caller can display them immediately
   - 53 tests: CareResult (2), CareAction (1), init (3), temperature (9), cleaning (7), sprinkle (6), drain/fill (4), warnings (10), stage ranges (4), cooldown helpers (3), integration (4)
 ---
+
+## 2026-02-25 - US-031
+- Implemented DeathEngine class in needs/death.py monitoring creature health for 6 death conditions
+- DeathCause enum: STARVATION, SUFFOCATION, HYPOTHERMIA, HYPERTHERMIA, ILLNESS, OLD_AGE
+- Duration-based grace periods: starvation (configurable hours), temperature (30 min)
+- check_death() evaluates all death triggers in priority order (suffocation first)
+- on_death() saves sardonic death record and revives as new MUSHROOMER egg
+- get_warnings() provides early warnings before death triggers activate
+- Death record persistence to JSON files in configurable death_log_dir
+- DeathRecord dataclass with to_dict()/from_dict() serialization
+- Files changed: src/seaman_brain/needs/death.py, src/seaman_brain/needs/__init__.py, tests/test_needs/test_death.py
+- **Learnings for future iterations:**
+  - DeathEngine follows same injectable now_func pattern as FeedingEngine and GameClock
+  - Duration-based death conditions track start time internally, reset when condition clears
+  - Suffocation is immediate (no grace period), starvation/temperature have configurable grace periods
+  - TEMPERATURE_DEATH_SECONDS = 1800.0 (30 minutes) is module-level constant
+  - Death record includes sardonic messages from DEATH_MESSAGES dict — personality persists even in death
+  - on_death() resets all internal duration trackers (starvation/hypothermia/hyperthermia starts)
+  - 41 tests: DeathCause (3), DeathRecord (4), init (3), suffocation (3), starvation (4), temperature (4), illness (2), no-death (2), revival (5), persistence (3), warnings (6), message helper (2)
+---
+
+## 2026-02-25 - US-032
+- Implemented MoodEngine class in behavior/mood.py — dynamic emergent mood calculation
+- CreatureMood enum with 8 ordered moods: HOSTILE, IRRITATED, SARDONIC, NEUTRAL, CURIOUS, AMUSED, PHILOSOPHICAL, CONTENT
+- Weighted formula: needs satisfaction (30%), trust level (20%), interaction quality (20%), time factors (15%), personality baseline (15%)
+- _score_needs: avg of (1-hunger), comfort, health, stimulation
+- _score_interactions: diminishing returns (interactions / 10, capped)
+- _score_time: time-of-day base, absence penalty, weekend bonus
+- _score_personality: positive (warmth, patience, curiosity) vs negative (aggression, cynicism) factors
+- Transition smoothing: limits mood change to max_transition_steps per update (default 2)
+- get_mood_modifiers() returns copy of tone/instruction/emoji_hint dict for prompt injection
+- set_mood() for direct override (events/testing)
+- Files changed: src/seaman_brain/behavior/mood.py, src/seaman_brain/behavior/__init__.py, tests/test_behavior/test_mood.py
+- **Learnings for future iterations:**
+  - MoodEngine maintains internal state (_current_mood, _current_score) — not stateless
+  - Score-to-mood mapping uses evenly spaced thresholds (0.125 per mood level)
+  - Transition smoothing prevents jarring jumps — important for believable creature behavior
+  - get_mood_modifiers() returns a copy (dict()) to prevent mutation of internal state
+  - _MOOD_ORDER tuple provides canonical ordering for index-based operations
+  - 67 tests: enum (4), helpers (8), init (4), needs scoring (4), interactions (5), time scoring (6), personality (4), mood index (5), transition smoothing (8), calculate_mood (7), modifiers (4), set_mood (4), edge cases (4)
+---

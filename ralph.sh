@@ -79,7 +79,11 @@ fi
 
 echo "Starting Ralph - Tool: $TOOL - Max iterations: $MAX_ITERATIONS"
 
-for i in $(seq 1 $MAX_ITERATIONS); do
+CONSECUTIVE_ERRORS=0
+MAX_CONSECUTIVE_ERRORS=5
+
+i=1
+while [ $i -le $MAX_ITERATIONS ]; do
   echo ""
   echo "==============================================================="
   echo "  Ralph Iteration $i of $MAX_ITERATIONS ($TOOL)"
@@ -99,8 +103,41 @@ for i in $(seq 1 $MAX_ITERATIONS); do
     exit 0
   fi
 
+  # Detect API errors and apply exponential backoff
+  IS_API_ERROR=false
+  if echo "$OUTPUT" | grep -qE "API Error: [45][0-9][0-9]"; then
+    IS_API_ERROR=true
+  fi
+  OUTPUT_LEN=${#OUTPUT}
+  if [ $? -ne 0 ] && [ $OUTPUT_LEN -lt 50 ]; then
+    IS_API_ERROR=true
+  fi
+
+  if [ "$IS_API_ERROR" = true ]; then
+    CONSECUTIVE_ERRORS=$((CONSECUTIVE_ERRORS + 1))
+    # Exponential backoff: 10s, 20s, 40s, 80s, 160s (capped at 300s)
+    BACKOFF=$((10 * (1 << (CONSECUTIVE_ERRORS - 1))))
+    if [ $BACKOFF -gt 300 ]; then BACKOFF=300; fi
+    echo "API error detected ($CONSECUTIVE_ERRORS consecutive). Backing off for ${BACKOFF}s..."
+
+    if [ $CONSECUTIVE_ERRORS -ge $MAX_CONSECUTIVE_ERRORS ]; then
+      echo ""
+      echo "Hit $MAX_CONSECUTIVE_ERRORS consecutive API errors. Pausing for 10 minutes..."
+      sleep 600
+      CONSECUTIVE_ERRORS=0
+    else
+      sleep $BACKOFF
+    fi
+
+    # Don't count errored iterations — don't increment i
+    continue
+  else
+    CONSECUTIVE_ERRORS=0
+  fi
+
   echo "Iteration $i complete. Continuing..."
   sleep 2
+  i=$((i + 1))
 done
 
 echo ""

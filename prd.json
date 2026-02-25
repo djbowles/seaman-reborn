@@ -550,8 +550,8 @@
         "ruff check passes, pytest passes"
       ],
       "priority": 31,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "DeathEngine with 6 causes, duration-based grace periods, sardonic messages, revival to new egg, death record persistence."
     },
     {
       "id": "US-032",
@@ -567,8 +567,8 @@
         "ruff check passes, pytest passes"
       ],
       "priority": 32,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "MoodEngine with 8 moods, weighted formula (needs 30%, trust 20%, interactions 20%, time 15%, personality 15%), transition smoothing, prompt modifiers."
     },
     {
       "id": "US-033",
