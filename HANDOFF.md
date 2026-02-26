@@ -2,7 +2,7 @@
 
 ## Project Status
 
-The Python "brain" backend is **feature-complete**: 1995 tests passing, ruff clean, all 52 user stories implemented across 14 subpackages (llm, personality, memory, creature, conversation, cli, audio, environment, needs, behavior, gui, api, vision).
+The Python "brain" backend is **feature-complete**: 2041 tests passing, ruff clean, all 52 user stories implemented across 14 subpackages (llm, personality, memory, creature, conversation, cli, audio, environment, needs, behavior, gui, api, vision).
 
 - **Repo**: https://github.com/djbowles/seaman-reborn (private)
 - **Branch**: `ralph/ai-brain-core` (all work), `main` (base)
@@ -22,7 +22,7 @@ The Python "brain" backend is **feature-complete**: 1995 tests passing, ruff cle
 | Environment simulation | Done | `environment/` — real-time clock, tank state |
 | Conversation orchestration | Done | `conversation/` — context assembly, full pipeline |
 | TTS/STT audio | Done | `audio/` — pyttsx3 TTS, speech recognition |
-| Pygame GUI (prototype) | Done | `gui/` — tank, sprites, chat panel, HUD |
+| Pygame GUI (playable) | Done | `gui/` — tank, sprites, chat, HUD, action bar |
 | **FastAPI WebSocket bridge** | **Done** | `api/` — **this is the UE5 connection point** |
 
 ## WebSocket API Contract (for UE5 Client)
@@ -228,6 +228,30 @@ The PRD (`Seaman 2_ Modern Tech Blueprint.txt`) defines UE5 as the rendering fro
 4. **Webcam data injection** — Need a new message type for UE5 to send player emotion/gesture data to the brain for inclusion in LLM prompts.
 
 5. **Creature mesh pipeline** — Need concept art / 3D modeling for the 5 evolutionary stages before UE5 rendering work begins.
+
+## GUI Overhaul (latest)
+
+The `--gui` mode now launches `GameEngine` (was launching bare `GameWindow` with no subsystems).
+
+**What was done:**
+- Entry point fixed: `__main__.py` now uses `GameEngine` instead of bare `GameWindow`
+- Window status overlay only renders when no subsystem renderers are registered
+- Right-side **ActionBar** (160px panel) with 6 large labeled buttons: Feed, Temp+, Temp-, Clean, Drain, Tap
+- **HUD** bars all stacked in left column (no right-column overlap with action bar), compact mode default
+- Settings hotkey changed **F10 → F1** (Windows intercepts F10 for menu bar activation)
+- Settings button changed from `[F10]` text to visible `[Settings]` button with background/border
+- **Chat panel**: increased background opacity (180→220), added "Chat" header bar, added `[Send]` button
+- `TankRenderer.set_render_area()` for flexible layout
+- Old tiny interaction buttons disabled when ActionBar is active (spatial tank clicks still work)
+
+**Remaining GUI issues to investigate:**
+- Verify creature sprite is visible in the resized tank area (864px wide)
+- Verify chat panel Send button click works end-to-end with ConversationManager
+- Chat panel input may need focus management (currently always captures keys when visible)
+- Action bar drain/fill button may need visual state indicator (drained vs filled)
+- No food selection submenu from ActionBar — Feed button auto-picks first available food type
+- HUD compact mode may be too small on high-DPI displays — may need scaling support
+- Settings panel content (LLM model, personality sliders) not verified after F1 change
 
 ## Minor Code Issues (non-blocking)
 
