@@ -506,6 +506,35 @@ class TestShutdown:
         win.shutdown()
         assert win._async_thread is None
 
+    def test_shutdown_timeout_error_logged_with_repr(self, caplog):
+        """TimeoutError during shutdown is logged with repr (not empty str)."""
+        import concurrent.futures
+        import logging
+
+        from seaman_brain.gui.window import GameWindow
+
+        win = GameWindow()
+        win._start_async_bridge()
+        try:
+            mock_manager = MagicMock()
+            mock_manager.shutdown = AsyncMock()
+
+            # Simulate a timeout during shutdown save
+            future_mock = MagicMock()
+            future_mock.result.side_effect = concurrent.futures.TimeoutError()
+
+            win._manager = mock_manager
+            with patch("asyncio.run_coroutine_threadsafe", return_value=future_mock):
+                with caplog.at_level(logging.ERROR):
+                    win.shutdown()
+
+            assert "TimeoutError" in caplog.text
+        finally:
+            if win._loop is not None and win._loop.is_running():
+                win._loop.call_soon_threadsafe(win._loop.stop)
+            if win._async_thread is not None:
+                win._async_thread.join(timeout=2.0)
+
     def test_shutdown_idempotent(self):
         """Calling shutdown() twice doesn't raise."""
         from seaman_brain.gui.window import GameWindow

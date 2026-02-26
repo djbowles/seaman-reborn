@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+import seaman_brain.config as _config_mod
 from seaman_brain.config import (
     PresetConfig,
     SeamanConfig,
@@ -13,9 +14,16 @@ from seaman_brain.config import (
     load_config_with_stage,
     load_presets,
     load_stage_config,
+    save_user_settings,
 )
 
 # --- Fixtures ---
+
+
+@pytest.fixture(autouse=True)
+def _isolate_user_settings(tmp_path, monkeypatch):
+    """Prevent real data/user_settings.toml from leaking into config tests."""
+    monkeypatch.setattr(_config_mod, "_USER_SETTINGS_PATH", tmp_path / "no_user.toml")
 
 MINIMAL_TOML = """\
 [llm]
@@ -390,3 +398,77 @@ class TestVisionConfig:
         cfg = load_config(config_with_toml)
         assert cfg.vision.enabled is False
         assert cfg.vision.vision_model == "qwen3-vl:8b"
+
+
+class TestUserSettingsPersistence:
+    """Tests for save/load of user settings across launches."""
+
+    def test_save_creates_file(self, tmp_path, monkeypatch):
+        """save_user_settings creates the TOML file."""
+        settings_file = tmp_path / "data" / "user_settings.toml"
+        monkeypatch.setattr(_config_mod, "_USER_SETTINGS_PATH", settings_file)
+
+        cfg = SeamanConfig()
+        save_user_settings(cfg)
+        assert settings_file.exists()
+
+    def test_round_trip_audio(self, tmp_path, monkeypatch):
+        """Audio settings survive save/load cycle."""
+        settings_file = tmp_path / "data" / "user_settings.toml"
+        monkeypatch.setattr(_config_mod, "_USER_SETTINGS_PATH", settings_file)
+
+        cfg = SeamanConfig()
+        cfg.audio.tts_volume = 0.42
+        cfg.audio.sfx_enabled = False
+        save_user_settings(cfg)
+
+        loaded = load_config("config", user_settings_path=settings_file)
+        assert loaded.audio.tts_volume == pytest.approx(0.42)
+        assert loaded.audio.sfx_enabled is False
+
+    def test_round_trip_vision(self, tmp_path, monkeypatch):
+        """Vision settings survive save/load cycle."""
+        settings_file = tmp_path / "data" / "user_settings.toml"
+        monkeypatch.setattr(_config_mod, "_USER_SETTINGS_PATH", settings_file)
+
+        cfg = SeamanConfig()
+        cfg.vision.enabled = True
+        cfg.vision.source = "tank"
+        cfg.vision.webcam_index = 2
+        save_user_settings(cfg)
+
+        loaded = load_config("config", user_settings_path=settings_file)
+        assert loaded.vision.enabled is True
+        assert loaded.vision.source == "tank"
+        assert loaded.vision.webcam_index == 2
+
+    def test_round_trip_llm(self, tmp_path, monkeypatch):
+        """LLM settings survive save/load cycle."""
+        settings_file = tmp_path / "data" / "user_settings.toml"
+        monkeypatch.setattr(_config_mod, "_USER_SETTINGS_PATH", settings_file)
+
+        cfg = SeamanConfig()
+        cfg.llm.model = "custom-model:7b"
+        cfg.llm.temperature = 0.3
+        save_user_settings(cfg)
+
+        loaded = load_config("config", user_settings_path=settings_file)
+        assert loaded.llm.model == "custom-model:7b"
+        assert loaded.llm.temperature == pytest.approx(0.3)
+
+    def test_missing_user_settings_uses_defaults(self):
+        """When no user settings file exists, defaults are used."""
+        cfg = load_config("config", user_settings_path="/nonexistent/path.toml")
+        assert cfg.llm.model == "qwen3-coder:30b"
+
+    def test_user_settings_override_defaults(self, tmp_path, monkeypatch):
+        """User settings override default.toml values."""
+        settings_file = tmp_path / "data" / "user_settings.toml"
+        monkeypatch.setattr(_config_mod, "_USER_SETTINGS_PATH", settings_file)
+        settings_file.parent.mkdir(parents=True, exist_ok=True)
+        settings_file.write_text('[vision]\nenabled = true\n')
+
+        loaded = load_config("config", user_settings_path=settings_file)
+        assert loaded.vision.enabled is True
+        # Other vision defaults still intact
+        assert loaded.vision.vision_model == "qwen3-vl:8b"

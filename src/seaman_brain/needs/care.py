@@ -28,6 +28,7 @@ class CareAction(Enum):
 
     ADJUST_TEMPERATURE = "adjust_temperature"
     CLEAN_TANK = "clean_tank"
+    AERATE = "aerate"
     SPRINKLE = "sprinkle"
     DRAIN = "drain"
     FILL = "fill"
@@ -48,6 +49,12 @@ CLEANING_DURATION_SECONDS: float = 5.0
 
 # How much cleanliness is restored per clean action (partial, not full)
 CLEANING_AMOUNT: float = 0.4
+
+# Aerator oxygen boost for aquarium
+AERATOR_OXYGEN_BOOST: float = 0.3
+
+# Aerator cooldown in seconds (same rhythm as cleaning)
+AERATOR_COOLDOWN_SECONDS: float = 5.0
 
 # Sprinkler moisture boost for terrarium
 SPRINKLER_MOISTURE_BOOST: float = 0.3
@@ -93,6 +100,7 @@ class TankCareEngine:
         self._needs_config = needs_config or NeedsConfig()
         self._now_func = now_func or (lambda: datetime.now(UTC))
         self._last_clean_time: datetime | None = None
+        self._last_aerate_time: datetime | None = None
         self._cleaning_in_progress: bool = False
 
     @property
@@ -218,6 +226,66 @@ class TankCareEngine:
         return CareResult(
             success=True,
             action=CareAction.CLEAN_TANK,
+            message=message,
+            warnings=warnings,
+        )
+
+    def aerate_tank(
+        self,
+        tank: TankEnvironment,
+    ) -> CareResult:
+        """Run the aerator to boost oxygen in the aquarium.
+
+        Only works in aquarium mode. Terrarium creatures should use
+        the sprinkler instead. Has a short cooldown to prevent spam.
+
+        Args:
+            tank: Tank environment to aerate (mutated in place).
+
+        Returns:
+            CareResult with outcome and remaining warnings.
+        """
+        if tank.environment_type != EnvironmentType.AQUARIUM:
+            return CareResult(
+                success=False,
+                action=CareAction.AERATE,
+                message="Aerator only works in aquarium mode! Use sprinkler instead.",
+                warnings=self.get_tank_warnings(tank),
+            )
+
+        now = self._now_func()
+
+        if self._last_aerate_time is not None:
+            elapsed = (now - self._last_aerate_time).total_seconds()
+            if elapsed < AERATOR_COOLDOWN_SECONDS:
+                remaining = AERATOR_COOLDOWN_SECONDS - elapsed
+                return CareResult(
+                    success=False,
+                    action=CareAction.AERATE,
+                    message=f"Aerator cycling! Wait {remaining:.0f} more seconds.",
+                    warnings=self.get_tank_warnings(tank),
+                )
+
+        old_oxygen = tank.oxygen_level
+        tank.oxygen_level = _clamp(old_oxygen + AERATOR_OXYGEN_BOOST)
+        self._last_aerate_time = now
+
+        new_oxygen = tank.oxygen_level
+        if new_oxygen >= 1.0:
+            message = "Oxygen fully restored! Bubbles everywhere."
+        elif new_oxygen >= 0.7:
+            message = f"Aerator running. Oxygen at {new_oxygen:.0%}."
+        else:
+            message = (
+                f"Aerator running. Oxygen at {new_oxygen:.0%}. "
+                "Still needs more aeration."
+            )
+
+        warnings = self.get_tank_warnings(tank)
+
+        return CareResult(
+            success=True,
+            action=CareAction.AERATE,
             message=message,
             warnings=warnings,
         )

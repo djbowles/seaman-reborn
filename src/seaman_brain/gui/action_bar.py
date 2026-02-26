@@ -56,6 +56,7 @@ class ActionButton:
 # Button definitions: (key, icon, label)
 _BUTTON_DEFS: list[tuple[str, str, str]] = [
     ("feed", "F", "Feed"),
+    ("aerate", "O", "Aerate"),
     ("temp_up", "^", "Temp +"),
     ("temp_down", "v", "Temp -"),
     ("clean", "*", "Clean"),

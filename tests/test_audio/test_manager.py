@@ -404,3 +404,64 @@ class TestConcurrency:
                 manager.play_sfx("splash"),
                 manager.play_sfx("splash"),
             )
+
+
+# ─── STT provider upgrade ──────────────────────────────────────
+
+
+class TestSTTProviderUpgrade:
+    """Test that enabling STT upgrades NoopSTTProvider to a real one."""
+
+    def test_enable_stt_tries_upgrade(self, mock_tts, sounds_dir):
+        """Setting stt_enabled=True on a noop STT triggers upgrade attempt."""
+        config = AudioConfig(stt_enabled=False)
+        mgr = AudioManager(
+            config=config, tts_provider=mock_tts, sounds_dir=sounds_dir
+        )
+        assert isinstance(mgr.stt_provider, NoopSTTProvider)
+
+        # Mock create_stt_provider to return a real (mock) provider
+        mock_real_stt = AsyncMock()
+        mock_real_stt.listen = AsyncMock(return_value="transcribed text")
+        with patch(
+            "seaman_brain.audio.manager.create_stt_provider",
+            return_value=mock_real_stt,
+        ):
+            mgr.stt_enabled = True
+
+        assert mgr.stt_provider is mock_real_stt
+        assert mgr.stt_enabled is True
+
+    def test_enable_stt_keeps_noop_if_unavailable(self, mock_tts, sounds_dir):
+        """If upgrade still returns NoopSTTProvider, keep the noop."""
+        config = AudioConfig(stt_enabled=False)
+        mgr = AudioManager(
+            config=config, tts_provider=mock_tts, sounds_dir=sounds_dir
+        )
+        noop = mgr.stt_provider
+        assert isinstance(noop, NoopSTTProvider)
+
+        # create_stt_provider returns another noop (e.g., PyAudio missing)
+        with patch(
+            "seaman_brain.audio.manager.create_stt_provider",
+            return_value=NoopSTTProvider(),
+        ):
+            mgr.stt_enabled = True
+
+        # Still noop, no crash
+        assert isinstance(mgr.stt_provider, NoopSTTProvider)
+
+    def test_disable_stt_no_upgrade(self, mock_tts, mock_stt, sounds_dir):
+        """Setting stt_enabled=False does not trigger upgrade."""
+        config = AudioConfig(stt_enabled=True)
+        mgr = AudioManager(
+            config=config,
+            tts_provider=mock_tts,
+            stt_provider=mock_stt,
+            sounds_dir=sounds_dir,
+        )
+        with patch(
+            "seaman_brain.audio.manager.create_stt_provider"
+        ) as mock_create:
+            mgr.stt_enabled = False
+            mock_create.assert_not_called()

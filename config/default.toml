@@ -53,6 +53,8 @@ tts_rate = 150
 tts_volume = 0.8
 sfx_volume = 0.5
 ambient_volume = 0.3
+audio_output_device = ""
+audio_input_device = ""
 
 [environment]
 initial_temperature = 24.0

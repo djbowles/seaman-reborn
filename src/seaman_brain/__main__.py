@@ -76,7 +76,13 @@ def main() -> None:
         from seaman_brain.gui.game_loop import GameEngine
 
         engine = GameEngine()
-        engine.run()
+        try:
+            engine.run()
+        except Exception:
+            logging.getLogger(__name__).critical(
+                "Unhandled crash in GUI mode", exc_info=True,
+            )
+            raise
     elif args.api:
         from seaman_brain.api.server import BrainServer
 

@@ -111,11 +111,12 @@ class Pyttsx3TTSProvider:
 
         engine = pyttsx3.init()
 
-        # Apply voice settings
+        # Apply voice settings — match against both name and id
         if self._config.tts_voice:
             voices = engine.getProperty("voices")
+            target = self._config.tts_voice.lower()
             for voice in voices:
-                if self._config.tts_voice.lower() in voice.id.lower():
+                if target in voice.name.lower() or target in voice.id.lower():
                     engine.setProperty("voice", voice.id)
                     break
 

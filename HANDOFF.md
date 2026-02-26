@@ -2,12 +2,12 @@
 
 ## Project Status
 
-The Python "brain" backend is **feature-complete**: 2041 tests passing, ruff clean, all 52 user stories implemented across 14 subpackages (llm, personality, memory, creature, conversation, cli, audio, environment, needs, behavior, gui, api, vision).
+The Python "brain" backend is **feature-complete**: 2155 tests passing, ruff clean, all 52 user stories implemented across 14 subpackages (llm, personality, memory, creature, conversation, cli, audio, environment, needs, behavior, gui, api, vision).
 
 - **Repo**: https://github.com/djbowles/seaman-reborn (private)
 - **Branch**: `ralph/ai-brain-core` (all work), `main` (base)
 - **Entry points**: `python -m seaman_brain` (terminal), `--gui` (Pygame), `--api` (WebSocket server)
-- **Hardware**: RTX 5090 (32GB VRAM), Ollama with qwen3-coder:30b + all-minilm:l6-v2
+- **Hardware**: RTX 5090 (32GB VRAM), Ollama with qwen3-coder:30b + all-minilm:l6-v2 + qwen3-vl:8b
 
 ## What Exists (Python Brain)
 
@@ -229,7 +229,7 @@ The PRD (`Seaman 2_ Modern Tech Blueprint.txt`) defines UE5 as the rendering fro
 
 5. **Creature mesh pipeline** — Need concept art / 3D modeling for the 5 evolutionary stages before UE5 rendering work begins.
 
-## GUI Overhaul (latest)
+## GUI Overhaul
 
 The `--gui` mode now launches `GameEngine` (was launching bare `GameWindow` with no subsystems).
 
@@ -244,6 +244,71 @@ The `--gui` mode now launches `GameEngine` (was launching bare `GameWindow` with
 - `TankRenderer.set_render_area()` for flexible layout
 - Old tiny interaction buttons disabled when ActionBar is active (spatial tank clicks still work)
 
+## Settings Stabilization & Device Settings (latest)
+
+### Settings Crash Fixes
+- **Vision source change**: `_on_vision_change` now creates `VisionBridge` on-demand when source changes to "webcam"/"tank" (was only triggering on `"enabled"` key which the panel never sent)
+- **Thread-safe model list**: `_load_model_list_async` callback now queues model list via `_pending_model_list`, applied on the main game loop thread (fixes pygame thread-safety)
+- **Try/except wrappers**: All settings callbacks (`_on_personality_change`, `_on_llm_apply`, `_on_audio_change`, `_on_vision_change`) wrapped to prevent crashes from propagating to game loop
+- **Change detection**: Vision source dropdown only fires callback on actual value change (not re-selection of same source)
+
+### Granular Device Settings
+- **Config**: `AudioConfig` has new `audio_output_device` and `audio_input_device` fields (empty = system default)
+- **New `gui/device_utils.py`**: Enumerates audio output/input devices (via `sounddevice`), webcams (via `cv2` + `pygrabber`), and TTS voices (via `pyttsx3`) — all gracefully handle missing libraries
+- **Audio tab**: 3 new dropdowns — Output Device, Input Device, TTS Voice
+- **Vision tab**: New Camera dropdown for webcam index selection
+- **`config/default.toml`**: Added `audio_output_device` and `audio_input_device` fields
+
+### Lineage Manager
+- **New overlay**: `gui/lineage_panel.py` — accessible via HUD `[Lineage]` button or **F2** shortcut
+- **Bloodline discovery**: Scans `data/saves/` for subdirectories containing `creature.json`
+- **Migration**: On first launch, if `data/saves/creature.json` exists at root (old flat layout), auto-migrates into `data/saves/default/` subdirectory
+- **Save structure**: Each bloodline is a named subdirectory (`data/saves/<name>/creature.json`)
+- **Active tracking**: `data/saves/_active.txt` stores the active bloodline name
+- **Panel features**: List view with name/stage/generation, New (creates fresh creature), Load (switches active), Delete (with confirmation, can't delete active)
+- **`creature/persistence.py`**: Added `BloodlineInfo` dataclass, `migrate_flat_saves()`, `list_bloodlines()`, `get_active_bloodline()`, `set_active_bloodline()` class methods
+- **`gui/hud.py`**: Added `[Lineage]` button with `lineage_rect` for click detection
+- **`gui/game_loop.py`**: Added `GameState.LINEAGE`, F2 key binding, ESC closes lineage, mouse routing to lineage panel
+
+### New Tests (66 tests, 4 files)
+- `tests/test_gui/test_settings_crash.py` — 12 tests for crash fixes, thread safety, change detection
+- `tests/test_gui/test_device_utils.py` — 10 tests for device enumeration with mocked backends (generic + friendly name paths)
+- `tests/test_gui/test_lineage_panel.py` — 25 tests for panel lifecycle, new/load/delete bloodlines
+- `tests/test_creature/test_persistence_bloodlines.py` — 19 tests for migration, list_bloodlines, multi-directory saves
+
+## Device Enumeration & Vision Fixes (latest)
+
+### Audio Device Enumeration
+- **`sounddevice` added to base dependencies** (`pyproject.toml`) — was missing, causing only "System Default" to appear
+- **WASAPI filtering**: On Windows, filters to WASAPI host API to avoid duplicate entries from MME/DirectSound/WDM-KS (same physical device shows 4x otherwise)
+- **Skip aliases**: Filters out Windows system aliases ("Microsoft Sound Mapper", "Primary Sound Driver")
+- Detected hardware: Speakers (CA DacMagic 200M 2.0), Realtek Digital Output, Speakers (Portacapture X6), LG ULTRAFINE, Microphone (Portacapture X6)
+
+### Webcam Friendly Names
+- **`pygrabber` added to vision optional dependencies** — uses DirectShow via `comtypes` (already installed) to enumerate video capture device names
+- `list_webcams()` now shows real device names (e.g. "OBSBOT Virtual Camera") instead of generic "Camera 0"
+- Falls back to "Camera N" if `pygrabber` is not installed or DirectShow enumeration fails
+
+### Camera Index Mapping Fix
+- **Bug**: Camera dropdown was passing dropdown list index as `webcam_index` instead of actual OpenCV device index (off-by-one since "System Default" occupies index 0)
+- **Fix**: Settings panel now stores `_cam_device_indices` mapping from `list_webcams()` tuples and maps correctly on selection
+
+### "Look Now" Button Wired Up
+- **Was broken**: `_on_vision_change` handler had no case for `key == "look_now"` — button did nothing
+- **Now works**: Creates `VisionBridge` on-demand if needed, calls `trigger_observation()`, polls for result
+- **Settings mode fix**: `_vision_bridge._check_pending()` now runs even during settings overlay (was blocked by early return in `_update()`)
+- Shows "Vision source is off" notification if no source is configured
+- Result displayed in both notification toast and settings panel "Last:" text
+
+### Embedding Model
+- `all-minilm:l6-v2` was not pulled in Ollama — semantic memory embeddings were returning 404
+- Model is now pulled and available
+
+### Crash Diagnostics
+- All `logger.error()` calls in event handlers, update/render callbacks now include `exc_info=True` for full stack traces in `data/seaman.log`
+- Top-level crash catcher added to `__main__.py` — logs `CRITICAL` with full traceback before re-raising
+- Run with `--debug` for DEBUG-level logging to diagnose intermittent issues
+
 **Remaining GUI issues to investigate:**
 - Verify creature sprite is visible in the resized tank area (864px wide)
 - Verify chat panel Send button click works end-to-end with ConversationManager
@@ -251,7 +316,33 @@ The `--gui` mode now launches `GameEngine` (was launching bare `GameWindow` with
 - Action bar drain/fill button may need visual state indicator (drained vs filled)
 - No food selection submenu from ActionBar — Feed button auto-picks first available food type
 - HUD compact mode may be too small on high-DPI displays — may need scaling support
-- Settings panel content (LLM model, personality sliders) not verified after F1 change
+- Lineage manager: rename bloodline not yet implemented (panel has list/new/load/delete only)
+- Lineage manager: switching bloodline does not yet reinitialize ConversationManager with new save path (callbacks are stubs that log + notify)
+- Device dropdowns: selecting a device updates config but doesn't reinitialize TTS/STT providers at runtime
+- Intermittent crash on settings exit — traceback logging now in place, needs reproduction to diagnose
+
+## Vision + Audio Pipeline Fixes (482bcd2)
+
+Fixed 6 bugs preventing vision and audio from functioning at runtime:
+
+1. **Webcam index off-by-one** — `list_webcams()` returned `idx+1` instead of actual OpenCV index; OBSBOT camera (device 0) was requested as device 1 and failed. Fixed to return actual indices, System Default uses `-1` sentinel.
+2. **Webcam index not propagated** — Changing camera in settings only updated config; live `VisionBridge` kept old `WebcamCapture`. Added `set_webcam_index()` that recreates the capture object.
+3. **TTS WAV header parsed as raw audio** — `pygame.mixer.Sound(buffer=wav_bytes)` treated WAV file bytes as raw PCM. Fixed to `Sound(file=io.BytesIO(wav_bytes))`.
+4. **TTS routing** — Changed `play_voice()` to prefer `AudioManager.speak()` (pyttsx3 native audio output) instead of broken synthesize→mixer path. TTS now produces audible output.
+5. **STT results discarded** — `_listen_async()` was fire-and-forget with no callback. Changed to continuous listen loop with `on_stt_result` callback that auto-submits transcriptions to chat.
+6. **STT input device ignored** — `sr.Microphone()` always used system default. Added `_resolve_mic_index()` to map device names to PyAudio indices.
+
+### Confirmed Working
+- TTS produces audible speech (uses pyttsx3 SAPI5 native output)
+- Webcam captures work with correct device index
+- Vision pipeline ("Look Now" button) functional
+
+### Fixed Runtime Bugs
+- **Settings UI not reflecting saved values** — Device dropdowns (output, input, TTS voice, camera) always initialized with `selected_index=0` ("System Default") regardless of saved config. Fixed `settings_panel.py` to find and select the saved value on build. Added `_find_saved_index()` helper.
+- **TTS voice not applied** — `Pyttsx3TTSProvider._create_engine()` matched `config.tts_voice` against `voice.id` (Windows registry key) but the settings panel stored `voice.name` (display name). Fixed to match against both `voice.name` and `voice.id`.
+- **STT non-functional** — Two fixes: (1) PyAudio was missing (installed via `pip install pyaudio`); (2) When STT enabled at runtime, `NoopSTTProvider` wasn't replaced. Added `_try_upgrade_stt()` to `AudioManager` that recreates the STT provider when `stt_enabled` is set to True while using a noop provider.
+- **Creature age stuck at 0.0** — `creature_state.age` was never incremented anywhere in the game loop or needs engine. Creature died with `age=0.0` in death records. Fixed: `game_loop.py` now increments `self._creature_state.age += elapsed` in the periodic needs-update block.
+- **Empty shutdown error log** — `window.py` logged `TimeoutError` with `%s` format which produces an empty string (TimeoutError has no message). Fixed: changed to `%r` format with `exc_info=True` for full traceback.
 
 ## Minor Code Issues (non-blocking)
 

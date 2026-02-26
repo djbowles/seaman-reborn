@@ -164,12 +164,13 @@ class TestPyttsx3TTSProviderEngine:
             engine = provider._create_engine()
             engine.setProperty.assert_any_call("volume", 0.0)
 
-    def test_create_engine_selects_voice(self):
+    def test_create_engine_selects_voice_by_id(self):
         config = AudioConfig(tts_voice="english")
         mock_mod = MagicMock()
         mock_engine = MagicMock()
         voice_obj = MagicMock()
         voice_obj.id = "com.apple.speech.synthesis.voice.english"
+        voice_obj.name = "Apple English"
         mock_engine.getProperty.return_value = [voice_obj]
         mock_mod.init.return_value = mock_engine
         with patch.dict(sys.modules, {"pyttsx3": mock_mod}):
@@ -179,12 +180,33 @@ class TestPyttsx3TTSProviderEngine:
                 "voice", "com.apple.speech.synthesis.voice.english"
             )
 
+    def test_create_engine_selects_voice_by_name(self):
+        """Voice matching works when config stores display name (not registry id)."""
+        config = AudioConfig(
+            tts_voice="Microsoft David Desktop - English (United States)"
+        )
+        mock_mod = MagicMock()
+        mock_engine = MagicMock()
+        voice_obj = MagicMock()
+        voice_obj.id = "HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\Speech\\Tokens\\TTS_MS_DAVID"
+        voice_obj.name = "Microsoft David Desktop - English (United States)"
+        mock_engine.getProperty.return_value = [voice_obj]
+        mock_mod.init.return_value = mock_engine
+        with patch.dict(sys.modules, {"pyttsx3": mock_mod}):
+            provider = Pyttsx3TTSProvider(config)
+            engine = provider._create_engine()
+            engine.setProperty.assert_any_call(
+                "voice",
+                "HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\Speech\\Tokens\\TTS_MS_DAVID",
+            )
+
     def test_create_engine_no_matching_voice(self):
         config = AudioConfig(tts_voice="nonexistent_voice")
         mock_mod = MagicMock()
         mock_engine = MagicMock()
         voice_obj = MagicMock()
         voice_obj.id = "com.apple.speech.synthesis.voice.english"
+        voice_obj.name = "Apple English"
         mock_engine.getProperty.return_value = [voice_obj]
         mock_mod.init.return_value = mock_engine
         with patch.dict(sys.modules, {"pyttsx3": mock_mod}):

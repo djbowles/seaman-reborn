@@ -170,8 +170,17 @@ class GameWindow:
             self.config.fps,
         )
 
+        # Start async bridge early so subsystem bridges get a valid loop
+        self._start_async_bridge()
+
     def _start_async_bridge(self) -> None:
-        """Start the background asyncio loop for ConversationManager."""
+        """Start the background asyncio loop for ConversationManager.
+
+        Idempotent — safe to call multiple times.
+        """
+        if self._loop is not None:
+            return
+
         self._loop = asyncio.new_event_loop()
 
         def _run_loop() -> None:
@@ -236,7 +245,7 @@ class GameWindow:
                 try:
                     handler(event)
                 except Exception as exc:
-                    logger.error("Event handler error: %s", exc)
+                    logger.error("Event handler error: %s", exc, exc_info=True)
 
     def update(self, dt: float) -> None:
         """Update all game subsystems.
@@ -250,7 +259,7 @@ class GameWindow:
             try:
                 callback(dt)
             except Exception as exc:
-                logger.error("Update callback error: %s", exc)
+                logger.error("Update callback error: %s", exc, exc_info=True)
 
     def render(self) -> None:
         """Render the current frame.
@@ -269,7 +278,7 @@ class GameWindow:
             try:
                 callback(self._screen)
             except Exception as exc:
-                logger.error("Render callback error: %s", exc)
+                logger.error("Render callback error: %s", exc, exc_info=True)
 
         # Default status overlay (only when no subsystem renderers registered)
         if not self._render_callbacks:
@@ -345,7 +354,9 @@ class GameWindow:
                 future.result(timeout=5.0)
                 logger.info("Creature state saved.")
             except Exception as exc:
-                logger.error("Error saving state during shutdown: %s", exc)
+                logger.error(
+                    "Error saving state during shutdown: %r", exc, exc_info=True
+                )
 
         # Stop async loop
         if self._loop is not None:

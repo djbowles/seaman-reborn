@@ -325,6 +325,7 @@ class GameEngine:
         if self._needs_timer >= _NEEDS_UPDATE_INTERVAL:
             elapsed = self._needs_timer
             self._needs_timer = 0.0
+            self._creature_state.age += elapsed
             self._update_needs(elapsed)
 
         # Check death

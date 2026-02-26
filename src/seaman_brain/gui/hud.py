@@ -166,8 +166,9 @@ class HUD:
         # Session timer
         self._session_time = 0.0
 
-        # Settings button bounding rect (for click detection by GameEngine)
+        # Button bounding rects (for click detection by GameEngine)
         self.settings_rect: pygame.Rect | None = None
+        self.lineage_rect: pygame.Rect | None = None
 
     @property
     def session_time(self) -> float:
@@ -398,7 +399,21 @@ class HUD:
         mood_y = (_TOP_BAR_HEIGHT - mood_surf.get_height()) // 2
         surface.blit(mood_surf, (mood_x, mood_y))
 
-        # Settings button (right of mood, left of timer)
+        # Lineage button (right of mood)
+        lineage_text = "[Lineage]"
+        lineage_surf = self._font.render(lineage_text, True, _TEXT_COLOR)
+        lineage_x = w - 280
+        lineage_y = (_TOP_BAR_HEIGHT - lineage_surf.get_height()) // 2
+        lin_rect = pygame.Rect(
+            lineage_x - 6, lineage_y - 3,
+            lineage_surf.get_width() + 12, lineage_surf.get_height() + 6,
+        )
+        pygame.draw.rect(surface, (30, 50, 80), lin_rect)
+        pygame.draw.rect(surface, (80, 120, 180), lin_rect, 1)
+        surface.blit(lineage_surf, (lineage_x, lineage_y))
+        self.lineage_rect = lin_rect
+
+        # Settings button (right of lineage, left of timer)
         settings_text = "[Settings]"
         settings_surf = self._font.render(settings_text, True, _TEXT_COLOR)
         settings_x = w - 180

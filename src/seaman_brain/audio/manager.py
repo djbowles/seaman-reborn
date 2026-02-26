@@ -11,7 +11,7 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from seaman_brain.audio.stt import STTProvider, create_stt_provider
+from seaman_brain.audio.stt import NoopSTTProvider, STTProvider, create_stt_provider
 from seaman_brain.audio.tts import TTSProvider, create_tts_provider
 from seaman_brain.config import AudioConfig
 
@@ -78,6 +78,17 @@ class AudioManager:
     def stt_enabled(self, value: bool) -> None:
         self._stt_enabled = value
         logger.info("STT %s", "enabled" if value else "disabled")
+        # Recreate STT provider if enabling and current is noop
+        if value and isinstance(self._stt, NoopSTTProvider):
+            self._try_upgrade_stt()
+
+    def _try_upgrade_stt(self) -> None:
+        """Attempt to replace NoopSTTProvider with a real one."""
+        self._config.stt_enabled = True
+        provider = create_stt_provider(self._config)
+        if not isinstance(provider, NoopSTTProvider):
+            self._stt = provider
+            logger.info("STT provider upgraded from noop to %s", type(provider).__name__)
 
     @property
     def sfx_enabled(self) -> bool:

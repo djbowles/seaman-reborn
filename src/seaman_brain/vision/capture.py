@@ -55,16 +55,17 @@ class WebcamCapture:
         try:
             cap = cv2.VideoCapture(self._device_index)
             if not cap.isOpened():
-                logger.debug("Webcam %d could not be opened", self._device_index)
+                logger.warning("Webcam %d could not be opened", self._device_index)
                 return None
 
             ret, frame = cap.read()
             if not ret or frame is None:
-                logger.debug("Webcam %d returned no frame", self._device_index)
+                logger.warning("Webcam %d returned no frame", self._device_index)
                 return None
 
             success, buf = cv2.imencode(".jpg", frame)
             if not success:
+                logger.warning("Webcam %d JPEG encoding failed", self._device_index)
                 return None
             return bytes(buf)
         except Exception as exc:

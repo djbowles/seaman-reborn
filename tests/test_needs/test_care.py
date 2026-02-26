@@ -10,6 +10,8 @@ from seaman_brain.config import EnvironmentConfig, NeedsConfig
 from seaman_brain.creature.state import CreatureState
 from seaman_brain.environment.tank import EnvironmentType, TankEnvironment
 from seaman_brain.needs.care import (
+    AERATOR_COOLDOWN_SECONDS,
+    AERATOR_OXYGEN_BOOST,
     CLEANING_AMOUNT,
     CLEANING_DURATION_SECONDS,
     SPRINKLER_MOISTURE_BOOST,
@@ -106,9 +108,10 @@ class TestCareAction:
     """Tests for CareAction enum."""
 
     def test_all_actions_defined(self) -> None:
-        assert len(CareAction) == 5
+        assert len(CareAction) == 6
         assert CareAction.ADJUST_TEMPERATURE.value == "adjust_temperature"
         assert CareAction.CLEAN_TANK.value == "clean_tank"
+        assert CareAction.AERATE.value == "aerate"
         assert CareAction.SPRINKLE.value == "sprinkle"
         assert CareAction.DRAIN.value == "drain"
         assert CareAction.FILL.value == "fill"
@@ -370,6 +373,74 @@ class TestSprinkle:
         engine.sprinkle(tank, creature)
         assert tank.oxygen_level <= 1.0
         assert tank.cleanliness <= 1.0
+
+
+# --- Aerate Tests ---
+
+
+class TestAerate:
+    """Tests for aquarium aerator mechanics."""
+
+    def test_aerate_in_aquarium(self, engine: TankCareEngine,
+                                tank: TankEnvironment) -> None:
+        tank.oxygen_level = 0.5
+        result = engine.aerate_tank(tank)
+        assert result.success is True
+        assert result.action == CareAction.AERATE
+        assert tank.oxygen_level == pytest.approx(0.5 + AERATOR_OXYGEN_BOOST)
+
+    def test_aerate_fails_in_terrarium(self, engine: TankCareEngine) -> None:
+        tank = TankEnvironment(
+            environment_type=EnvironmentType.TERRARIUM,
+            water_level=0.0,
+            oxygen_level=0.5,
+        )
+        result = engine.aerate_tank(tank)
+        assert result.success is False
+        assert "aquarium" in result.message.lower()
+
+    def test_aerate_capped_at_one(self, engine: TankCareEngine,
+                                   tank: TankEnvironment) -> None:
+        tank.oxygen_level = 0.9
+        engine.aerate_tank(tank)
+        assert tank.oxygen_level <= 1.0
+
+    def test_aerate_full_message(self, engine: TankCareEngine,
+                                  tank: TankEnvironment) -> None:
+        tank.oxygen_level = 0.9
+        result = engine.aerate_tank(tank)
+        assert result.success is True
+        assert "fully restored" in result.message.lower()
+
+    def test_aerate_low_oxygen_message(self, engine: TankCareEngine,
+                                        tank: TankEnvironment) -> None:
+        tank.oxygen_level = 0.1
+        result = engine.aerate_tank(tank)
+        assert result.success is True
+        assert "still needs more" in result.message.lower()
+
+    def test_aerate_cooldown(self, now: datetime) -> None:
+        t = now
+        engine = TankCareEngine(now_func=lambda: t)
+        tank = TankEnvironment(oxygen_level=0.5)
+        engine.aerate_tank(tank)
+
+        # Immediate second attempt should fail
+        result = engine.aerate_tank(tank)
+        assert result.success is False
+        assert "cycling" in result.message.lower()
+
+    def test_aerate_cooldown_expires(self, now: datetime) -> None:
+        t = now
+        engine = TankCareEngine(now_func=lambda: t)
+        tank = TankEnvironment(oxygen_level=0.5)
+        engine.aerate_tank(tank)
+
+        # Advance past cooldown
+        t = now + timedelta(seconds=AERATOR_COOLDOWN_SECONDS + 1)
+        engine._now_func = lambda: t
+        result = engine.aerate_tank(tank)
+        assert result.success is True
 
 
 # --- Drain/Fill Tests ---

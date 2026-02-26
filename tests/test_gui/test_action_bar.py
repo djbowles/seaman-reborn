@@ -127,17 +127,19 @@ class TestActionBarConstruction:
         assert bar._on_action is cb
 
     def test_set_panel_area_builds_buttons(self):
-        """set_panel_area() creates 6 buttons."""
+        """set_panel_area() creates 7 buttons."""
         bar = ActionBar()
         bar.set_panel_area(864, 45, 160, 723)
-        assert len(bar.buttons) == 6
+        assert len(bar.buttons) == 7
 
     def test_button_keys(self):
         """Buttons have correct action keys."""
         bar = ActionBar()
         bar.set_panel_area(864, 45, 160, 723)
         keys = [b.key for b in bar.buttons]
-        assert keys == ["feed", "temp_up", "temp_down", "clean", "drain", "tap_glass"]
+        assert keys == [
+            "feed", "aerate", "temp_up", "temp_down", "clean", "drain", "tap_glass",
+        ]
 
     def test_buttons_positioned_within_panel(self):
         """All buttons are positioned within the panel area."""
@@ -180,7 +182,9 @@ class TestActionBarClick:
         cb = MagicMock()
         bar = ActionBar(on_action=cb)
         bar.set_panel_area(864, 45, 160, 723)
-        expected_keys = ["feed", "temp_up", "temp_down", "clean", "drain", "tap_glass"]
+        expected_keys = [
+            "feed", "aerate", "temp_up", "temp_down", "clean", "drain", "tap_glass",
+        ]
         for btn, expected_key in zip(bar.buttons, expected_keys):
             cb.reset_mock()
             bar.handle_click(btn.x + 5, btn.y + 5)

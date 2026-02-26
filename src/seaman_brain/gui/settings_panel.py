@@ -16,6 +16,12 @@ from typing import Any
 import pygame
 
 from seaman_brain.config import PresetConfig, SeamanConfig, load_presets
+from seaman_brain.gui.device_utils import (
+    list_audio_input_devices,
+    list_audio_output_devices,
+    list_tts_voices,
+    list_webcams,
+)
 from seaman_brain.gui.widgets import Button, Dropdown, Slider, Toggle
 
 logger = logging.getLogger(__name__)
@@ -50,6 +56,19 @@ _TRAIT_NAMES = [
 ]
 
 
+def _find_saved_index(items: list[str], saved_value: str) -> int:
+    """Find the dropdown index matching a saved config value.
+
+    Returns 0 (System Default) if not found or saved_value is empty.
+    """
+    if not saved_value:
+        return 0
+    for i, name in enumerate(items):
+        if name == saved_value:
+            return i
+    return 0
+
+
 class SettingsTab(Enum):
     """Settings panel tabs."""
 
@@ -79,6 +98,7 @@ class SettingsPanel:
         on_llm_apply: Callable[[str, float], Any] | None = None,
         on_audio_change: Callable[[str, Any], Any] | None = None,
         on_vision_change: Callable[[str, Any], Any] | None = None,
+        on_close: Callable[[], Any] | None = None,
     ) -> None:
         self._config = config
         self._screen_w = screen_width
@@ -87,6 +107,7 @@ class SettingsPanel:
         self.on_llm_apply = on_llm_apply
         self.on_audio_change = on_audio_change
         self.on_vision_change = on_vision_change
+        self.on_close = on_close
 
         self.visible = False
         self.active_tab = SettingsTab.PERSONALITY
@@ -136,7 +157,14 @@ class SettingsPanel:
         self._vision_source_dropdown: Dropdown | None = None
         self._vision_interval_slider: Slider | None = None
         self._vision_look_button: Button | None = None
+        self._vision_cam_dropdown: Dropdown | None = None
         self._last_observation_text = ""
+        self._last_vision_source: str = config.vision.source
+
+        # Device dropdowns
+        self._output_device_dropdown: Dropdown | None = None
+        self._input_device_dropdown: Dropdown | None = None
+        self._tts_voice_dropdown: Dropdown | None = None
 
         self._widgets_built = False
 
@@ -249,7 +277,7 @@ class SettingsPanel:
         self._llm_widgets = [self._model_dropdown, self._temp_slider, self._llm_apply_button]
 
     def _build_audio_widgets(self, x: int, y: int) -> None:
-        """Build audio toggles and volume sliders."""
+        """Build audio toggles, volume sliders, and device dropdowns."""
         w = _PANEL_WIDTH - 2 * _CONTENT_PADDING
 
         self._tts_toggle = Toggle(
@@ -285,13 +313,44 @@ class SettingsPanel:
             on_change=lambda v: self._on_audio_setting("ambient_volume", v),
         )
 
+        # Device dropdowns — match saved config values to find correct index
+        device_y = slider_y + 104
+        out_devs = list_audio_output_devices()
+        out_names = [name for _, name in out_devs]
+        out_idx = _find_saved_index(out_names, self._config.audio.audio_output_device)
+        self._output_device_dropdown = Dropdown(
+            x, device_y, w, 26, "Output",
+            items=out_names, selected_index=out_idx,
+            on_change=lambda _i, v: self._on_audio_setting("audio_output_device", v),
+        )
+
+        in_devs = list_audio_input_devices()
+        in_names = [name for _, name in in_devs]
+        in_idx = _find_saved_index(in_names, self._config.audio.audio_input_device)
+        self._input_device_dropdown = Dropdown(
+            x, device_y + 34, w, 26, "Input",
+            items=in_names, selected_index=in_idx,
+            on_change=lambda _i, v: self._on_audio_setting("audio_input_device", v),
+        )
+
+        voices = list_tts_voices()
+        voice_names = [name for _, name in voices]
+        voice_idx = _find_saved_index(voice_names, self._config.audio.tts_voice)
+        self._tts_voice_dropdown = Dropdown(
+            x, device_y + 68, w, 26, "TTS Voice",
+            items=voice_names, selected_index=voice_idx,
+            on_change=lambda _i, v: self._on_audio_setting("tts_voice", v),
+        )
+
         self._audio_widgets = [
             self._tts_toggle, self._stt_toggle, self._sfx_toggle,
             self._tts_vol_slider, self._sfx_vol_slider, self._ambient_vol_slider,
+            self._output_device_dropdown, self._input_device_dropdown,
+            self._tts_voice_dropdown,
         ]
 
     def _build_vision_widgets(self, x: int, y: int) -> None:
-        """Build vision source dropdown, interval slider, and look button."""
+        """Build vision source dropdown, camera dropdown, interval slider, and look button."""
         w = _PANEL_WIDTH - 2 * _CONTENT_PADDING
 
         source_items = ["Webcam", "Tank", "Off"]
@@ -304,20 +363,40 @@ class SettingsPanel:
             items=source_items, selected_index=idx,
         )
 
+        # Camera selection dropdown — store device indices for mapping
+        cams = list_webcams()
+        cam_names = [name for _, name in cams]
+        self._cam_device_indices = [dev_idx for dev_idx, _ in cams]
+        cam_idx = 0
+        saved_cam = self._config.vision.webcam_index
+        for i, dev_idx in enumerate(self._cam_device_indices):
+            if dev_idx == saved_cam:
+                cam_idx = i
+                break
+        self._vision_cam_dropdown = Dropdown(
+            x, y + 34, w, 26, "Camera",
+            items=cam_names, selected_index=cam_idx,
+            on_change=lambda _i, _v: self._on_vision_setting(
+                "webcam_index",
+                self._cam_device_indices[_i] if _i < len(self._cam_device_indices) else _i,
+            ),
+        )
+
         self._vision_interval_slider = Slider(
-            x, y + 40, w, 24, "Capture Interval",
+            x, y + 74, w, 24, "Capture Interval",
             value=self._config.vision.capture_interval,
             min_val=5.0, max_val=120.0,
             on_change=lambda v: self._on_vision_setting("capture_interval", v),
         )
 
         self._vision_look_button = Button(
-            x, y + 80, 120, 30, "Look Now",
+            x, y + 114, 120, 30, "Look Now",
             on_click=self._on_vision_look,
         )
 
         self._vision_widgets = [
             self._vision_source_dropdown,
+            self._vision_cam_dropdown,
             self._vision_interval_slider,
             self._vision_look_button,
         ]
@@ -333,10 +412,16 @@ class SettingsPanel:
         """Hide the settings panel."""
         self.visible = False
         # Close any open dropdowns
-        if self._model_dropdown is not None:
-            self._model_dropdown.expanded = False
-        if self._vision_source_dropdown is not None:
-            self._vision_source_dropdown.expanded = False
+        for dd in (
+            self._model_dropdown,
+            self._vision_source_dropdown,
+            self._vision_cam_dropdown,
+            self._output_device_dropdown,
+            self._input_device_dropdown,
+            self._tts_voice_dropdown,
+        ):
+            if dd is not None:
+                dd.expanded = False
 
     def set_model_list(self, models: list[str]) -> None:
         """Update the LLM model dropdown with available models.
@@ -473,7 +558,7 @@ class SettingsPanel:
             status_surf = self._font.render(status, True, color)
             surface.blit(status_surf, (
                 self._panel_x + _CONTENT_PADDING,
-                self._panel_y + _HEADER_HEIGHT + _TAB_HEIGHT + _CONTENT_PADDING + 120,
+                self._panel_y + _HEADER_HEIGHT + _TAB_HEIGHT + _CONTENT_PADDING + 154,
             ))
 
             # Last observation text
@@ -483,7 +568,7 @@ class SettingsPanel:
                 )
                 surface.blit(obs_surf, (
                     self._panel_x + _CONTENT_PADDING,
-                    self._panel_y + _HEADER_HEIGHT + _TAB_HEIGHT + _CONTENT_PADDING + 145,
+                    self._panel_y + _HEADER_HEIGHT + _TAB_HEIGHT + _CONTENT_PADDING + 179,
                 ))
 
     # ── Event handling ────────────────────────────────────────────────
@@ -528,10 +613,13 @@ class SettingsPanel:
                 self._vision_source_dropdown is not None
                 and self._vision_source_dropdown.handle_click(mx, my)
             ):
-                # Apply source change
+                # Apply source change only if value actually changed
                 val = self._vision_source_dropdown.selected_value
                 if val:
-                    self._on_vision_setting("source", val.lower())
+                    new_source = val.lower()
+                    if new_source != self._last_vision_source:
+                        self._last_vision_source = new_source
+                        self._on_vision_setting("source", new_source)
                 return True
             for widget in self._vision_widgets:
                 if widget is not self._vision_source_dropdown:
@@ -597,8 +685,10 @@ class SettingsPanel:
     # ── Callbacks ─────────────────────────────────────────────────────
 
     def _close(self) -> None:
-        """Close the settings panel."""
+        """Close the settings panel and notify the owner."""
         self.close()
+        if self.on_close is not None:
+            self.on_close()
 
     def _switch_tab(self, tab: SettingsTab) -> None:
         """Switch to a different tab."""

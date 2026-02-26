@@ -5,11 +5,32 @@ from __future__ import annotations
 import json
 import logging
 import shutil
+from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 from seaman_brain.creature.state import CreatureState
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class BloodlineInfo:
+    """Summary information about a saved bloodline.
+
+    Fields:
+        name: Directory name of the bloodline.
+        save_dir: Full path to the bloodline's save directory.
+        generation_count: Number of generation files in lineage/.
+        stage: Current creature stage name.
+        last_modified: Last modification time of creature.json.
+    """
+
+    name: str
+    save_dir: Path
+    generation_count: int
+    stage: str
+    last_modified: datetime
 
 
 class StatePersistence:
@@ -109,3 +130,123 @@ class StatePersistence:
             logger.debug("Deleted save file %s", save_path)
             return True
         return False
+
+    @classmethod
+    def migrate_flat_saves(cls, base_dir: str | Path = "data/saves") -> None:
+        """Migrate old flat save layout into default/ subdirectory.
+
+        If ``base_dir/creature.json`` exists at the root level (old layout),
+        moves it and related files into ``base_dir/default/``.
+
+        Args:
+            base_dir: The base saves directory.
+        """
+        base = Path(base_dir)
+        old_save = base / "creature.json"
+        if not old_save.exists():
+            return
+
+        default_dir = base / "default"
+        if default_dir.exists():
+            logger.debug("default/ already exists, skipping migration")
+            return
+
+        default_dir.mkdir(parents=True, exist_ok=True)
+
+        # Move creature files
+        for pattern in ("creature.json", "creature.json.bak"):
+            src = base / pattern
+            if src.exists():
+                shutil.move(str(src), str(default_dir / pattern))
+
+        # Move lineage directory
+        old_lineage = base / "lineage"
+        if old_lineage.exists() and old_lineage.is_dir():
+            shutil.move(str(old_lineage), str(default_dir / "lineage"))
+
+        # Write active marker
+        (base / "_active.txt").write_text("default", encoding="utf-8")
+
+        logger.info("Migrated flat saves into %s", default_dir)
+
+    @classmethod
+    def list_bloodlines(cls, base_dir: str | Path = "data/saves") -> list[BloodlineInfo]:
+        """Scan for bloodline subdirectories containing creature.json.
+
+        Args:
+            base_dir: The base saves directory.
+
+        Returns:
+            List of BloodlineInfo for each discovered bloodline.
+        """
+        base = Path(base_dir)
+        if not base.exists():
+            return []
+
+        bloodlines: list[BloodlineInfo] = []
+        for entry in sorted(base.iterdir()):
+            if not entry.is_dir():
+                continue
+            if entry.name.startswith("_"):
+                continue
+            creature_file = entry / "creature.json"
+            if not creature_file.exists():
+                continue
+
+            # Count generation files
+            lineage_dir = entry / "lineage"
+            gen_count = 0
+            if lineage_dir.exists():
+                gen_count = sum(
+                    1 for f in lineage_dir.iterdir()
+                    if f.name.startswith("gen_") and f.suffix == ".json"
+                )
+
+            # Read stage from creature.json
+            stage = "unknown"
+            try:
+                data = json.loads(creature_file.read_text(encoding="utf-8"))
+                stage = data.get("stage", "unknown")
+            except Exception:
+                pass
+
+            last_mod = datetime.fromtimestamp(creature_file.stat().st_mtime)
+
+            bloodlines.append(BloodlineInfo(
+                name=entry.name,
+                save_dir=entry,
+                generation_count=gen_count,
+                stage=stage,
+                last_modified=last_mod,
+            ))
+
+        return bloodlines
+
+    @classmethod
+    def get_active_bloodline(cls, base_dir: str | Path = "data/saves") -> str:
+        """Read the active bloodline name from _active.txt.
+
+        Args:
+            base_dir: The base saves directory.
+
+        Returns:
+            Name of the active bloodline, or "default".
+        """
+        active_file = Path(base_dir) / "_active.txt"
+        if active_file.exists():
+            return active_file.read_text(encoding="utf-8").strip()
+        return "default"
+
+    @classmethod
+    def set_active_bloodline(
+        cls, name: str, base_dir: str | Path = "data/saves"
+    ) -> None:
+        """Write the active bloodline name to _active.txt.
+
+        Args:
+            name: Bloodline name to set as active.
+            base_dir: The base saves directory.
+        """
+        base = Path(base_dir)
+        base.mkdir(parents=True, exist_ok=True)
+        (base / "_active.txt").write_text(name, encoding="utf-8")

@@ -1,16 +1,22 @@
 """TOML configuration loader with Pydantic models.
 
 Loads config/default.toml and provides typed access to all subsystem settings.
+User-changed settings are saved to data/user_settings.toml and merged on load.
 Stage-specific TOML files can override personality traits.
 """
 
 from __future__ import annotations
 
+import logging
 import tomllib
 from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, Field
+
+logger = logging.getLogger(__name__)
+
+_USER_SETTINGS_PATH = Path("data/user_settings.toml")
 
 
 class LLMConfig(BaseModel):
@@ -97,6 +103,8 @@ class AudioConfig(BaseModel):
     tts_volume: float = 0.8
     sfx_volume: float = 0.5
     ambient_volume: float = 0.3
+    audio_output_device: str = ""  # empty = system default
+    audio_input_device: str = ""  # empty = system default
 
 
 class EnvironmentConfig(BaseModel):
@@ -201,14 +209,20 @@ def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any
     return result
 
 
-def load_config(config_dir: str | Path = "config") -> SeamanConfig:
+def load_config(
+    config_dir: str | Path = "config",
+    user_settings_path: str | Path | None = None,
+) -> SeamanConfig:
     """Load configuration from TOML files.
 
-    Reads config_dir/default.toml and returns a SeamanConfig.
+    Reads config_dir/default.toml, then merges user settings on top
+    if they exist, so user-changed settings persist across launches.
     Raises FileNotFoundError if default.toml does not exist.
 
     Args:
         config_dir: Path to the configuration directory.
+        user_settings_path: Override for user settings file location.
+            Defaults to data/user_settings.toml.
 
     Returns:
         Fully populated SeamanConfig instance.
@@ -222,7 +236,88 @@ def load_config(config_dir: str | Path = "config") -> SeamanConfig:
     with open(default_toml, "rb") as f:
         raw = tomllib.load(f)
 
+    # Merge user settings on top of defaults
+    settings_path = Path(user_settings_path) if user_settings_path else _USER_SETTINGS_PATH
+    user = _load_user_settings(settings_path)
+    if user:
+        raw = _deep_merge(raw, user)
+        logger.info("Merged user settings from %s", settings_path)
+
     return SeamanConfig.model_validate(raw)
+
+
+def _load_user_settings(path: Path | None = None) -> dict[str, Any]:
+    """Load user settings overlay from a TOML file.
+
+    Args:
+        path: Settings file path. Defaults to _USER_SETTINGS_PATH.
+
+    Returns:
+        Dict of user overrides, or empty dict if file doesn't exist.
+    """
+    p = path or _USER_SETTINGS_PATH
+    if not p.exists():
+        return {}
+    try:
+        with open(p, "rb") as f:
+            return tomllib.load(f)
+    except Exception as exc:
+        logger.warning("Failed to load user settings: %s", exc)
+        return {}
+
+
+def save_user_settings(config: SeamanConfig) -> None:
+    """Save user-configurable settings to data/user_settings.toml.
+
+    Only saves sections that the user can change via the settings panel:
+    audio, vision, personality (base_traits), llm (model, temperature).
+
+    Args:
+        config: Current SeamanConfig to extract settings from.
+    """
+    _USER_SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
+
+    lines: list[str] = ["# Auto-saved user settings — overrides defaults", ""]
+
+    # LLM
+    lines.append("[llm]")
+    lines.append(f'model = "{config.llm.model}"')
+    lines.append(f"temperature = {config.llm.temperature}")
+    lines.append("")
+
+    # Personality traits
+    lines.append("[personality.base_traits]")
+    for trait, val in config.personality.base_traits.items():
+        lines.append(f"{trait} = {val}")
+    lines.append("")
+
+    # Audio
+    lines.append("[audio]")
+    lines.append(f"tts_enabled = {str(config.audio.tts_enabled).lower()}")
+    lines.append(f"stt_enabled = {str(config.audio.stt_enabled).lower()}")
+    lines.append(f"sfx_enabled = {str(config.audio.sfx_enabled).lower()}")
+    lines.append(f'tts_voice = "{config.audio.tts_voice}"')
+    lines.append(f"tts_rate = {config.audio.tts_rate}")
+    lines.append(f"tts_volume = {config.audio.tts_volume}")
+    lines.append(f"sfx_volume = {config.audio.sfx_volume}")
+    lines.append(f"ambient_volume = {config.audio.ambient_volume}")
+    lines.append(f'audio_output_device = "{config.audio.audio_output_device}"')
+    lines.append(f'audio_input_device = "{config.audio.audio_input_device}"')
+    lines.append("")
+
+    # Vision
+    lines.append("[vision]")
+    lines.append(f"enabled = {str(config.vision.enabled).lower()}")
+    lines.append(f'source = "{config.vision.source}"')
+    lines.append(f"capture_interval = {config.vision.capture_interval}")
+    lines.append(f"webcam_index = {config.vision.webcam_index}")
+    lines.append("")
+
+    try:
+        _USER_SETTINGS_PATH.write_text("\n".join(lines), encoding="utf-8")
+        logger.debug("User settings saved to %s", _USER_SETTINGS_PATH)
+    except Exception as exc:
+        logger.warning("Failed to save user settings: %s", exc)
 
 
 def load_stage_config(
