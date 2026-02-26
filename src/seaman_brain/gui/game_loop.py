@@ -461,11 +461,13 @@ class GameEngine:
             "trust": self._creature_state.trust_level,
             "hunger": self._creature_state.hunger,
         }
+        traits = self._get_traits()
         behavior = self._behavior_engine.get_idle_behavior(
             creature_state=creature_dict,
             needs=self._needs,
             mood=self._mood_engine.current_mood,
             time_context=time_context,
+            traits=traits,
         )
         if behavior is not None:
             if behavior.needs_llm:
@@ -500,12 +502,19 @@ class GameEngine:
         """
         # LLM busy — fall back to canned message
         if self._pending_response is not None or self._pending_autonomous is not None:
+            logger.debug(
+                "Autonomous LLM busy (chat=%s, auto=%s), using canned for %s",
+                self._pending_response is not None,
+                self._pending_autonomous is not None,
+                behavior.action_type.value,
+            )
             self._apply_behavior(behavior)
             return
 
         manager = self.window.manager
         loop = self.window._loop
         if manager is None or loop is None or not manager.is_initialized:
+            logger.debug("Autonomous LLM: manager not ready, using canned")
             self._apply_behavior(behavior)
             return
 
@@ -518,6 +527,11 @@ class GameEngine:
             self._apply_behavior(behavior)
             return
 
+        logger.info(
+            "Requesting autonomous LLM remark: %s (mood=%s)",
+            behavior.action_type.value,
+            self._mood_engine.current_mood.value,
+        )
         self._pending_autonomous_behavior = behavior
 
         async def _generate() -> str | None:
@@ -539,11 +553,12 @@ class GameEngine:
         try:
             result = self._pending_autonomous.result(timeout=0)
             if result:
+                logger.info("Autonomous LLM remark delivered: %s", result[:80])
                 self._chat_panel.add_message(MessageRole.ASSISTANT, result)
                 if self._audio_bridge is not None:
                     self._audio_bridge.play_voice(result)
             elif behavior is not None:
-                # LLM returned None — fall back to canned message
+                logger.warning("Autonomous LLM returned None, using canned fallback")
                 self._apply_behavior(behavior)
         except Exception as exc:
             logger.warning("Autonomous remark failed: %s", exc)
@@ -571,6 +586,8 @@ class GameEngine:
         situation = _INTERACTION_SITUATIONS.get(action_key)
         if situation is None:
             return
+
+        logger.info("Requesting interaction reaction: %s", action_key)
 
         async def _generate() -> str | None:
             return await manager.generate_autonomous_remark(situation)
