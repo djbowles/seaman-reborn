@@ -4,7 +4,9 @@ Submodules:
     window: GameWindow (main game loop)
     tank_renderer: TankRenderer (habitat rendering)
     sprites: CreatureRenderer, AnimationState, CreaturePosition (creature art)
-    game_loop: GameEngine (full game engine orchestrating all subsystems)
+    game_loop: GameEngine, GameState (full game engine orchestrating all subsystems)
+    widgets: Button, Toggle, Slider, Dropdown (reusable widget library)
+    settings_panel: SettingsPanel, SettingsTab (settings screen overlay)
 """
 
 from seaman_brain.gui.window import GameWindow

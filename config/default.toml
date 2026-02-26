@@ -75,6 +75,14 @@ critical_health_threshold = 0.2
 starvation_time_hours = 1.0
 feeding_cooldown_seconds = 30
 
+[vision]
+enabled = false
+vision_model = "qwen3-vl:8b"
+source = "webcam"
+capture_interval = 30.0
+max_observations = 3
+webcam_index = 0
+
 [gui]
 window_width = 1024
 window_height = 768

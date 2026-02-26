@@ -5,10 +5,13 @@ from __future__ import annotations
 import pytest
 
 from seaman_brain.config import (
+    PresetConfig,
     SeamanConfig,
     StageConfig,
+    VisionConfig,
     load_config,
     load_config_with_stage,
+    load_presets,
     load_stage_config,
 )
 
@@ -254,3 +257,136 @@ class TestConfigEdgeCases:
         cfg_path = load_config(config_with_toml)
 
         assert cfg_str.llm.model == cfg_path.llm.model
+
+
+# --- Preset config tests ---
+
+PRESET_TOML = """\
+[traditional]
+name = "Traditional (1999)"
+description = "Classic Seaman"
+
+[traditional.traits]
+cynicism = 0.95
+wit = 0.6
+
+[modern]
+name = "Modern"
+description = "Sardonic philosopher"
+
+[modern.traits]
+cynicism = 0.7
+wit = 0.9
+"""
+
+
+class TestPresetConfig:
+    """Tests for personality preset loading."""
+
+    def test_load_presets_from_file(self, tmp_path):
+        """Presets TOML loads and parses into PresetConfig dict."""
+        preset_file = tmp_path / "presets.toml"
+        preset_file.write_text(PRESET_TOML)
+        presets = load_presets(preset_file)
+
+        assert "traditional" in presets
+        assert "modern" in presets
+        assert isinstance(presets["traditional"], PresetConfig)
+
+    def test_preset_values_correct(self, tmp_path):
+        """Preset name, description, and traits are correct."""
+        preset_file = tmp_path / "presets.toml"
+        preset_file.write_text(PRESET_TOML)
+        presets = load_presets(preset_file)
+
+        trad = presets["traditional"]
+        assert trad.name == "Traditional (1999)"
+        assert trad.description == "Classic Seaman"
+        assert trad.traits["cynicism"] == 0.95
+        assert trad.traits["wit"] == 0.6
+
+    def test_preset_missing_file_raises(self, tmp_path):
+        """FileNotFoundError when presets file doesn't exist."""
+        with pytest.raises(FileNotFoundError, match="Presets file not found"):
+            load_presets(tmp_path / "nonexistent.toml")
+
+    def test_real_presets_toml_loads(self):
+        """The actual config/presets.toml loads successfully."""
+        presets = load_presets("config/presets.toml")
+
+        assert "traditional" in presets
+        assert "modern" in presets
+        assert "custom" in presets
+        assert presets["traditional"].traits["cynicism"] == 0.95
+        assert presets["modern"].traits["wit"] == 0.9
+        assert presets["custom"].traits["cynicism"] == 0.5
+
+    def test_personality_config_has_presets_path(self):
+        """PersonalityConfig includes presets_path field."""
+        cfg = SeamanConfig()
+        assert cfg.personality.presets_path == "config/presets.toml"
+
+    def test_preset_config_model(self):
+        """PresetConfig can be constructed directly."""
+        p = PresetConfig(name="Test", description="Desc", traits={"wit": 0.5})
+        assert p.name == "Test"
+        assert p.traits["wit"] == 0.5
+
+    def test_preset_config_default_traits(self):
+        """PresetConfig defaults to empty traits dict."""
+        p = PresetConfig(name="Bare", description="Bare preset")
+        assert p.traits == {}
+
+
+# --- Vision config tests ---
+
+
+class TestVisionConfig:
+    """Tests for VisionConfig and integration with SeamanConfig."""
+
+    def test_vision_config_defaults(self):
+        """VisionConfig has sensible defaults."""
+        vc = VisionConfig()
+        assert vc.enabled is False
+        assert vc.vision_model == "qwen3-vl:8b"
+        assert vc.source == "webcam"
+        assert vc.capture_interval == 30.0
+        assert vc.max_observations == 3
+        assert vc.webcam_index == 0
+
+    def test_vision_config_on_seaman_config(self):
+        """SeamanConfig includes vision field with defaults."""
+        cfg = SeamanConfig()
+        assert hasattr(cfg, "vision")
+        assert isinstance(cfg.vision, VisionConfig)
+        assert cfg.vision.enabled is False
+
+    def test_vision_config_from_toml(self):
+        """Real default.toml loads vision section correctly."""
+        cfg = load_config("config")
+        assert cfg.vision.vision_model == "qwen3-vl:8b"
+        assert cfg.vision.source == "webcam"
+        assert cfg.vision.capture_interval == 30.0
+
+    def test_vision_config_custom_values(self):
+        """VisionConfig accepts custom values."""
+        vc = VisionConfig(
+            enabled=True,
+            vision_model="custom-vl:7b",
+            source="tank",
+            capture_interval=10.0,
+            max_observations=5,
+            webcam_index=1,
+        )
+        assert vc.enabled is True
+        assert vc.vision_model == "custom-vl:7b"
+        assert vc.source == "tank"
+        assert vc.capture_interval == 10.0
+        assert vc.max_observations == 5
+        assert vc.webcam_index == 1
+
+    def test_vision_config_from_minimal_toml(self, config_with_toml):
+        """Vision defaults fill in when not specified in TOML."""
+        cfg = load_config(config_with_toml)
+        assert cfg.vision.enabled is False
+        assert cfg.vision.vision_model == "qwen3-vl:8b"

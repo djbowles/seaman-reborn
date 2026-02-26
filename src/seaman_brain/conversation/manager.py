@@ -80,6 +80,7 @@ class ConversationManager:
         self._prompt_builder: PromptBuilder | None = None
         self._context_assembler: ContextAssembler | None = None
         self._traits: TraitProfile | None = None
+        self._vision_observations: list[str] = []
 
     @property
     def creature_state(self) -> CreatureState | None:
@@ -95,6 +96,14 @@ class ConversationManager:
     def is_initialized(self) -> bool:
         """Whether initialize() has been called."""
         return self._initialized
+
+    def set_vision_observations(self, observations: list[str]) -> None:
+        """Update the current vision observations for prompt injection.
+
+        Args:
+            observations: Recent vision description strings.
+        """
+        self._vision_observations = observations
 
     async def initialize(self) -> None:
         """Set up all subsystems from configuration.
@@ -234,6 +243,7 @@ class ConversationManager:
             traits=self._traits,
             memories=memory_texts if memory_texts else None,
             creature_state=self._creature_state.to_dict(),
+            observations=self._vision_observations if self._vision_observations else None,
         )
 
         # 6. Assemble context

@@ -26,6 +26,7 @@ _pygame_mock.K_RETURN = 13
 _pygame_mock.K_TAB = 9
 _pygame_mock.K_h = 104
 _pygame_mock.K_m = 109
+_pygame_mock.K_v = 118
 _pygame_mock.K_KP_ENTER = 271
 _pygame_mock.K_BACKSPACE = 8
 _pygame_mock.K_LEFT = 276
@@ -98,7 +99,7 @@ sys.modules["pygame.mixer"] = _mixer_mock
 sys.modules["pygame.font"] = _pygame_mock.font
 
 from seaman_brain.config import SeamanConfig  # noqa: E402
-from seaman_brain.gui.game_loop import GameEngine  # noqa: E402
+from seaman_brain.gui.game_loop import GameEngine, GameState  # noqa: E402
 from seaman_brain.needs.death import DeathCause  # noqa: E402
 from seaman_brain.types import CreatureStage  # noqa: E402
 
@@ -125,6 +126,7 @@ def _reset_mocks():
     _pygame_mock.K_TAB = 9
     _pygame_mock.K_h = 104
     _pygame_mock.K_m = 109
+    _pygame_mock.K_v = 118
     _pygame_mock.K_KP_ENTER = 271
     _pygame_mock.K_BACKSPACE = 8
     _pygame_mock.K_LEFT = 276
@@ -441,3 +443,171 @@ class TestInteractionHandling:
     def test_shutdown_cleans_up(self, engine: GameEngine):
         """Shutdown doesn't raise exceptions."""
         engine.shutdown()
+
+    def test_escape_quits_during_gameplay(self, engine: GameEngine):
+        """ESC during gameplay sets window.running to False."""
+        engine.window.running = True
+        event = MagicMock()
+        event.key = 27  # K_ESCAPE
+        engine._on_key_down(event)
+        assert engine.window.running is False
+
+    def test_escape_closes_settings(self, engine: GameEngine):
+        """ESC while settings open closes settings instead of quitting."""
+        engine.window.running = True
+        engine._game_state = GameState.SETTINGS
+        if engine._settings_panel is not None:
+            engine._settings_panel.visible = True
+
+        event = MagicMock()
+        event.key = 27  # K_ESCAPE
+        engine._on_key_down(event)
+
+        assert engine._game_state == GameState.PLAYING
+        assert engine.window.running is True
+
+    def test_f10_opens_settings(self, engine: GameEngine):
+        """F10 toggles settings overlay open."""
+        assert engine._game_state == GameState.PLAYING
+        event = MagicMock()
+        event.key = _pygame_mock.K_F10 if hasattr(_pygame_mock, "K_F10") else 291
+        # Ensure K_F10 is set
+        _pygame_mock.K_F10 = 291
+        import seaman_brain.gui.game_loop as gl_mod
+        gl_mod.pygame = _pygame_mock
+        event.key = 291
+        engine._on_key_down(event)
+        assert engine._game_state == GameState.SETTINGS
+
+    def test_f10_closes_settings(self, engine: GameEngine):
+        """F10 toggles settings overlay closed."""
+        _pygame_mock.K_F10 = 291
+        import seaman_brain.gui.game_loop as gl_mod
+        gl_mod.pygame = _pygame_mock
+        engine._game_state = GameState.SETTINGS
+        if engine._settings_panel is not None:
+            engine._settings_panel.visible = True
+
+        event = MagicMock()
+        event.key = 291
+        engine._on_key_down(event)
+        assert engine._game_state == GameState.PLAYING
+
+    def test_update_skipped_during_settings(self, engine: GameEngine):
+        """Gameplay updates are skipped when settings overlay is open."""
+        engine._game_state = GameState.SETTINGS
+        initial_needs_timer = engine._needs_timer
+        engine._update(1.0)
+        assert engine._needs_timer == initial_needs_timer
+
+    def test_settings_panel_created_on_init(self, engine: GameEngine):
+        """Settings panel is created during initialize."""
+        assert engine._settings_panel is not None
+
+    def test_render_with_settings_open(self, engine: GameEngine):
+        """Rendering with settings open doesn't crash."""
+        engine._game_state = GameState.SETTINGS
+        if engine._settings_panel is not None:
+            engine._settings_panel.visible = True
+        engine._render(_surface_mock)
+
+    def test_mouse_click_routed_to_settings(self, engine: GameEngine):
+        """Mouse clicks route to settings panel when it's open."""
+        engine._game_state = GameState.SETTINGS
+        if engine._settings_panel is not None:
+            engine._settings_panel.visible = True
+        event = MagicMock()
+        event.pos = (500, 400)
+        # Should not crash or restart game
+        engine._on_mouse_click(event)
+        assert engine.game_over is False
+
+    def test_mouse_move_routed_to_settings(self, engine: GameEngine):
+        """Mouse moves route to settings panel when it's open."""
+        engine._game_state = GameState.SETTINGS
+        event = MagicMock()
+        event.pos = (500, 400)
+        # Should not update creature eye tracking
+        initial_x = engine._creature_renderer._mouse_x
+        engine._on_mouse_move(event)
+        assert engine._creature_renderer._mouse_x == initial_x
+
+    def test_keys_consumed_during_settings(self, engine: GameEngine):
+        """Non-ESC/F10 keys are consumed when settings are open."""
+        engine._game_state = GameState.SETTINGS
+        event = MagicMock()
+        event.key = 104  # K_h
+        initial_compact = engine._hud.compact
+        engine._on_key_down(event)
+        assert engine._hud.compact == initial_compact  # Not toggled
+
+
+# ── Vision Bridge Integration Tests ──────────────────────────────────
+
+
+class TestVisionBridgeIntegration:
+    """Tests for vision bridge integration in GameEngine."""
+
+    def test_no_vision_bridge_by_default(self, engine: GameEngine):
+        """Vision bridge is None when config.vision.enabled is False."""
+        assert engine._vision_bridge is None
+
+    def test_vision_bridge_created_when_enabled(self, config: SeamanConfig):
+        """Vision bridge is created when vision.enabled is True."""
+        config.vision.enabled = True
+        eng = GameEngine(config=config)
+        eng.initialize()
+        assert eng._vision_bridge is not None
+
+    def test_v_key_without_bridge_is_noop(self, engine: GameEngine):
+        """Pressing V without vision bridge doesn't crash."""
+        import seaman_brain.gui.game_loop as gl_mod
+        gl_mod.pygame = _pygame_mock
+        engine._chat_panel.visible = False
+        event = MagicMock()
+        event.key = 118  # K_v
+        initial_notifs = len(engine._notifications)
+        engine._on_key_down(event)
+        # No notification added since no vision bridge
+        assert len(engine._notifications) == initial_notifs
+
+    def test_v_key_with_bridge_triggers_observation(self, config: SeamanConfig):
+        """Pressing V with vision bridge triggers observation and notification."""
+        config.vision.enabled = True
+        eng = GameEngine(config=config)
+        eng.initialize()
+
+        import seaman_brain.gui.game_loop as gl_mod
+        gl_mod.pygame = _pygame_mock
+
+        # Mock the vision bridge
+        eng._vision_bridge = MagicMock()
+        eng._chat_panel.visible = False
+
+        event = MagicMock()
+        event.key = 118  # K_v
+        eng._on_key_down(event)
+
+        eng._vision_bridge.trigger_observation.assert_called_once()
+        assert any("Looking" in n[0] for n in eng._notifications)
+
+    def test_shutdown_with_vision_bridge(self, config: SeamanConfig):
+        """Shutdown cleans up vision bridge."""
+        config.vision.enabled = True
+        eng = GameEngine(config=config)
+        eng.initialize()
+        eng._vision_bridge = MagicMock()
+        eng.shutdown()
+        eng._vision_bridge.shutdown.assert_called_once()
+
+    def test_on_vision_change_source(self, engine: GameEngine):
+        """_on_vision_change with source key updates vision bridge."""
+        engine._vision_bridge = MagicMock()
+        engine._on_vision_change("source", "tank")
+        engine._vision_bridge.set_source.assert_called_once_with("tank")
+
+    def test_on_vision_change_creates_bridge(self, engine: GameEngine):
+        """_on_vision_change with enabled=True creates bridge on demand."""
+        assert engine._vision_bridge is None
+        engine._on_vision_change("enabled", True)
+        assert engine._vision_bridge is not None

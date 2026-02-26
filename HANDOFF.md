@@ -2,7 +2,7 @@
 
 ## Project Status
 
-The Python "brain" backend is **feature-complete**: 1815 tests passing, ruff clean, all 52 user stories implemented across 13 subpackages (llm, personality, memory, creature, conversation, cli, audio, environment, needs, behavior, gui, api).
+The Python "brain" backend is **feature-complete**: 1995 tests passing, ruff clean, all 52 user stories implemented across 14 subpackages (llm, personality, memory, creature, conversation, cli, audio, environment, needs, behavior, gui, api, vision).
 
 - **Repo**: https://github.com/djbowles/seaman-reborn (private)
 - **Branch**: `ralph/ai-brain-core` (all work), `main` (base)

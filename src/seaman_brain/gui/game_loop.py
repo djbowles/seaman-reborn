@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from enum import Enum
 from typing import Any
 
 import pygame
@@ -29,6 +30,7 @@ from seaman_brain.gui.audio_integration import PygameAudioBridge
 from seaman_brain.gui.chat_panel import ChatPanel
 from seaman_brain.gui.hud import HUD
 from seaman_brain.gui.interactions import InteractionManager, InteractionType
+from seaman_brain.gui.settings_panel import SettingsPanel
 from seaman_brain.gui.sprites import AnimationState, CreatureRenderer
 from seaman_brain.gui.tank_renderer import TankRenderer
 from seaman_brain.gui.window import GameWindow
@@ -36,6 +38,7 @@ from seaman_brain.needs.death import DeathCause, DeathEngine
 from seaman_brain.needs.system import CreatureNeeds, NeedsEngine
 from seaman_brain.personality.traits import TraitProfile
 from seaman_brain.types import CreatureStage, MessageRole
+from seaman_brain.vision.bridge import VisionBridge
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +52,14 @@ _NOTIFICATION_BG = (20, 40, 60, 200)
 _NOTIFICATION_TEXT = (220, 220, 180)
 
 # ── Game state enum ──────────────────────────────────────────────────
+
+
+class GameState(Enum):
+    """Top-level game state for input/update gating."""
+
+    PLAYING = "playing"
+    SETTINGS = "settings"
+
 
 _NEEDS_UPDATE_INTERVAL = 1.0  # seconds between needs ticks
 _BEHAVIOR_CHECK_INTERVAL = 5.0  # seconds between behavior checks
@@ -100,6 +111,7 @@ class GameEngine:
             needs_config=cfg.needs,
         )
         self._audio_bridge: PygameAudioBridge | None = None
+        self._vision_bridge: VisionBridge | None = None
 
         # Game logic engines
         self._needs_engine = NeedsEngine(config=cfg.needs, env_config=cfg.environment)
@@ -130,6 +142,10 @@ class GameEngine:
         # Notifications
         self._notifications: list[tuple[str, float]] = []  # (text, remaining_seconds)
         self._notification_duration = 4.0
+
+        # Game state (playing vs settings overlay)
+        self._game_state = GameState.PLAYING
+        self._settings_panel: SettingsPanel | None = None
 
         # Pending conversation future
         self._pending_response: Any = None
@@ -168,14 +184,33 @@ class GameEngine:
             async_loop=self.window._loop,
         )
 
+        # Set up vision bridge if enabled
+        if self._config.vision.enabled:
+            self._vision_bridge = VisionBridge(
+                vision_config=self._config.vision,
+                async_loop=self.window._loop,
+            )
+
         # Sync tank area to renderers
         render_area = self._tank_renderer.render_area
         self._creature_renderer.set_bounds(*render_area)
         self._interaction_manager.set_tank_area(*render_area)
 
+        # Settings panel
+        self._settings_panel = SettingsPanel(
+            config=self._config,
+            screen_width=self._config.gui.window_width,
+            screen_height=self._config.gui.window_height,
+            on_personality_change=self._on_personality_change,
+            on_llm_apply=self._on_llm_apply,
+            on_audio_change=self._on_audio_change,
+            on_vision_change=self._on_vision_change,
+        )
+
         # Register event handlers
         self.window.register_event_handler(pygame.MOUSEBUTTONDOWN, self._on_mouse_click)
         self.window.register_event_handler(pygame.MOUSEMOTION, self._on_mouse_move)
+        self.window.register_event_handler(pygame.MOUSEBUTTONUP, self._on_mouse_up)
         self.window.register_event_handler(pygame.KEYDOWN, self._on_key_down)
 
         # Register update and render callbacks
@@ -195,6 +230,15 @@ class GameEngine:
         Args:
             dt: Delta time in seconds since last frame.
         """
+        # Settings overlay: only update the panel, skip gameplay
+        if self._game_state == GameState.SETTINGS:
+            if self._settings_panel is not None:
+                try:
+                    self._settings_panel.update(dt)
+                except Exception as exc:
+                    logger.error("Settings panel update error: %s", exc)
+            return
+
         if self.game_over:
             return
 
@@ -257,6 +301,15 @@ class GameEngine:
         self._interaction_manager.update(dt)
         if self._audio_bridge is not None:
             self._audio_bridge.update(dt)
+
+        # Update vision pipeline
+        if self._vision_bridge is not None:
+            self._vision_bridge.update(dt, self.window.screen)
+            manager = self.window.manager
+            if manager is not None:
+                manager.set_vision_observations(
+                    self._vision_bridge.get_recent_observations()
+                )
 
         # Update notifications
         alive: list[tuple[str, float]] = []
@@ -437,12 +490,26 @@ class GameEngine:
 
     def _on_mouse_click(self, event: pygame.event.Event) -> None:
         """Handle mouse click events."""
+        mx, my = event.pos
+
+        # Settings overlay gets first priority
+        if self._game_state == GameState.SETTINGS and self._settings_panel is not None:
+            try:
+                self._settings_panel.handle_click(mx, my)
+            except Exception as exc:
+                logger.error("Settings click error: %s", exc)
+            return
+
+        # Check HUD settings button
+        if self._hud.settings_rect is not None:
+            if self._hud.settings_rect.collidepoint(mx, my):
+                self._toggle_settings()
+                return
+
         if self.game_over:
             # Any click during game over restarts
             self._restart_game()
             return
-
-        mx, my = event.pos
         result = self._interaction_manager.handle_click(
             mx, my, self._creature_state, self._tank
         )
@@ -462,11 +529,44 @@ class GameEngine:
     def _on_mouse_move(self, event: pygame.event.Event) -> None:
         """Handle mouse motion events."""
         mx, my = event.pos
+
+        if self._game_state == GameState.SETTINGS and self._settings_panel is not None:
+            try:
+                self._settings_panel.handle_mouse_move(mx, my)
+            except Exception as exc:
+                logger.error("Settings mouse move error: %s", exc)
+            return
+
         self._creature_renderer.set_mouse_position(float(mx), float(my))
         self._interaction_manager.handle_mouse_move(mx, my)
 
+    def _on_mouse_up(self, event: pygame.event.Event) -> None:
+        """Handle mouse button release (slider drag stop)."""
+        if self._game_state == GameState.SETTINGS and self._settings_panel is not None:
+            try:
+                self._settings_panel.handle_mouse_up()
+            except Exception as exc:
+                logger.error("Settings mouse up error: %s", exc)
+
     def _on_key_down(self, event: pygame.event.Event) -> None:
         """Handle key press events."""
+        # ESC: close settings if open, quit if in gameplay
+        if event.key == pygame.K_ESCAPE:
+            if self._game_state == GameState.SETTINGS:
+                self._toggle_settings()
+            else:
+                self.window.running = False
+            return
+
+        # F10: toggle settings
+        if event.key == pygame.K_F10:
+            self._toggle_settings()
+            return
+
+        # When settings are open, consume all other keys
+        if self._game_state == GameState.SETTINGS:
+            return
+
         # Chat panel gets first chance
         if self._chat_panel.handle_event(event):
             return
@@ -476,9 +576,84 @@ class GameEngine:
             if self._audio_bridge.handle_key_event(event.key):
                 return
 
+        # Vision trigger
+        if event.key == pygame.K_v:
+            if self._vision_bridge is not None:
+                self._vision_bridge.trigger_observation(self.window.screen)
+                self._add_notification("Looking...")
+            return
+
         # HUD toggle
         if event.key == pygame.K_h:
             self._hud.toggle_mode()
+
+    def _toggle_settings(self) -> None:
+        """Toggle the settings overlay open/closed."""
+        if self._settings_panel is None:
+            return
+
+        if self._game_state == GameState.SETTINGS:
+            self._game_state = GameState.PLAYING
+            self._settings_panel.close()
+        else:
+            self._game_state = GameState.SETTINGS
+            self._settings_panel.open()
+            # Async-load Ollama model list when opening settings
+            self._load_model_list_async()
+
+    def _load_model_list_async(self) -> None:
+        """Fetch available Ollama models in the background."""
+        if self.window._loop is None or self._settings_panel is None:
+            return
+
+        async def _fetch_models() -> list[str]:
+            try:
+                import ollama
+                client = ollama.AsyncClient()
+                response = await client.list()
+                return [m.model for m in response.models]
+            except Exception as exc:
+                logger.warning("Failed to fetch Ollama models: %s", exc)
+                return [self._config.llm.model]
+
+        def _on_done(future: Any) -> None:
+            try:
+                models = future.result(timeout=0)
+                if self._settings_panel is not None:
+                    self._settings_panel.set_model_list(models)
+            except Exception as exc:
+                logger.error("Failed to load Ollama model list: %s", exc)
+                if self._settings_panel is not None:
+                    self._settings_panel.set_model_list(
+                        [self._config.llm.model + " (offline)"]
+                    )
+
+        future = asyncio.run_coroutine_threadsafe(_fetch_models(), self.window._loop)
+        future.add_done_callback(_on_done)
+
+    def _on_personality_change(self, traits: dict[str, float]) -> None:
+        """Callback when personality settings change."""
+        logger.info("Personality traits updated: %s", traits)
+
+    def _on_llm_apply(self, model: str, temperature: float) -> None:
+        """Callback when LLM settings are applied."""
+        logger.info("LLM settings applied: model=%s, temp=%.1f", model, temperature)
+
+    def _on_audio_change(self, key: str, value: Any) -> None:
+        """Callback when audio settings change."""
+        logger.info("Audio setting changed: %s = %s", key, value)
+        if self._audio_bridge is not None:
+            # Apply audio changes at runtime where possible
+            if key == "tts_enabled":
+                self._audio_bridge._audio_config.tts_enabled = value
+            elif key == "sfx_enabled":
+                self._audio_bridge._audio_config.sfx_enabled = value
+            elif key == "tts_volume":
+                self._audio_bridge._audio_config.tts_volume = value
+            elif key == "sfx_volume":
+                self._audio_bridge._audio_config.sfx_volume = value
+            elif key == "ambient_volume":
+                self._audio_bridge._audio_config.ambient_volume = value
 
     def _restart_game(self) -> None:
         """Restart with a fresh creature (new egg)."""
@@ -539,6 +714,10 @@ class GameEngine:
         # 7. Evolution celebration overlay
         if self._evolution_active:
             self._render_evolution_overlay(surface)
+
+        # 8. Settings overlay (on top of everything)
+        if self._game_state == GameState.SETTINGS and self._settings_panel is not None:
+            self._settings_panel.render(surface)
 
     def _render_game_over(self, surface: pygame.Surface) -> None:
         """Render the game-over screen."""
@@ -623,8 +802,25 @@ class GameEngine:
             surface.blit(text_surf, (bg_x + 10, y + 4))
             y += 32
 
+    def _on_vision_change(self, key: str, value: Any) -> None:
+        """Callback when vision settings change."""
+        logger.info("Vision setting changed: %s = %s", key, value)
+        if self._vision_bridge is not None:
+            if key == "source":
+                self._vision_bridge.set_source(str(value))
+            elif key == "capture_interval":
+                self._vision_bridge._config.capture_interval = float(value)
+        elif key == "enabled" and value:
+            # Create the bridge on-demand when vision is enabled at runtime
+            self._vision_bridge = VisionBridge(
+                vision_config=self._config.vision,
+                async_loop=self.window._loop,
+            )
+
     def shutdown(self) -> None:
         """Clean shutdown of all subsystems."""
+        if self._vision_bridge is not None:
+            self._vision_bridge.shutdown()
         if self._audio_bridge is not None:
             self._audio_bridge.shutdown()
         self.window.shutdown()

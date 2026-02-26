@@ -31,6 +31,10 @@ stt = [
     "SpeechRecognition>=3.10",
     "pyaudio>=0.2.14",
 ]
+vision = [
+    "opencv-python>=4.8",
+    "Pillow>=10.0",
+]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.24",
@@ -38,7 +42,7 @@ dev = [
     "ruff>=0.8",
     "httpx>=0.28",
 ]
-all = ["seaman-brain[cloud,stt,dev]"]
+all = ["seaman-brain[cloud,stt,vision,dev]"]
 
 [project.scripts]
 seaman-brain = "seaman_brain.__main__:main"

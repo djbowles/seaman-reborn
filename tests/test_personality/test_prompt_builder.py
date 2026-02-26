@@ -10,6 +10,7 @@ from seaman_brain.personality.prompt_builder import (
     _memories_section,
     _mood_section,
     _trait_tone_instructions,
+    _vision_section,
 )
 from seaman_brain.personality.traits import TraitProfile
 from seaman_brain.types import CreatureStage
@@ -366,3 +367,54 @@ class TestNeedsHints:
         """Empty state produces no hints."""
         hint = builder._needs_hints({})
         assert hint == ""
+
+
+# ---------------------------------------------------------------------------
+# Vision section tests
+# ---------------------------------------------------------------------------
+
+class TestVisionSection:
+    """Test vision observation section generation."""
+
+    def test_empty_observations(self):
+        """Empty observations produce no section."""
+        assert _vision_section([]) == ""
+
+    def test_single_observation(self):
+        """Single observation produces a formatted section."""
+        section = _vision_section(["The human looks bored"])
+        assert "WHAT YOU CAN SEE RIGHT NOW:" in section
+        assert "- The human looks bored" in section
+        assert "React naturally" in section
+
+    def test_multiple_observations(self):
+        """Multiple observations are all listed."""
+        obs = ["Human is typing", "The room is dark", "A cat sits nearby"]
+        section = _vision_section(obs)
+        for o in obs:
+            assert f"- {o}" in section
+
+    def test_vision_in_build_output(self, builder, default_traits):
+        """Observations appear in the full build() output."""
+        result = builder.build(
+            CreatureStage.PODFISH, default_traits,
+            observations=["The human is smiling"],
+        )
+        assert "WHAT YOU CAN SEE RIGHT NOW:" in result
+        assert "The human is smiling" in result
+
+    def test_no_vision_when_none(self, builder, default_traits):
+        """None observations produce no vision section."""
+        result = builder.build(
+            CreatureStage.PODFISH, default_traits,
+            observations=None,
+        )
+        assert "WHAT YOU CAN SEE" not in result
+
+    def test_no_vision_when_empty(self, builder, default_traits):
+        """Empty observations list produces no vision section."""
+        result = builder.build(
+            CreatureStage.PODFISH, default_traits,
+            observations=[],
+        )
+        assert "WHAT YOU CAN SEE" not in result

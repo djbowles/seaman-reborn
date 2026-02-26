@@ -187,19 +187,24 @@ class TestEventHandling:
         win.handle_events()
         assert win.running is False
 
-    def test_escape_key_stops_loop(self):
-        """Escape key sets running to False."""
+    def test_escape_key_dispatched_to_handlers(self):
+        """Escape key is dispatched to registered KEYDOWN handlers (not hard-quit)."""
         from seaman_brain.gui.window import GameWindow
 
         win = GameWindow()
         win.initialize()
         win.running = True
 
+        handler = MagicMock()
+        win.register_event_handler(_pygame_mock.KEYDOWN, handler)
+
         esc_ev = _make_event(_pygame_mock.KEYDOWN, key=_pygame_mock.K_ESCAPE)
         _pygame_mock.event.get.return_value = [esc_ev]
 
         win.handle_events()
-        assert win.running is False
+        # ESC is now dispatched to handlers, not consumed by window
+        handler.assert_called_once_with(esc_ev)
+        assert win.running is True  # Window doesn't quit on ESC directly
 
     def test_registered_handler_called(self):
         """Registered event handlers are called for matching events."""

@@ -43,6 +43,14 @@ class MemoryConfig(BaseModel):
     embeddings: EmbeddingsConfig = Field(default_factory=EmbeddingsConfig)
 
 
+class PresetConfig(BaseModel):
+    """A personality preset definition."""
+
+    name: str
+    description: str
+    traits: dict[str, float] = Field(default_factory=dict)
+
+
 class PersonalityConfig(BaseModel):
     """Personality subsystem configuration."""
 
@@ -57,6 +65,7 @@ class PersonalityConfig(BaseModel):
         "aggression": 0.4,
     })
     stages_path: str = "config/stages"
+    presets_path: str = "config/presets.toml"
 
 
 class EvolutionThreshold(BaseModel):
@@ -117,6 +126,17 @@ class NeedsConfig(BaseModel):
     feeding_cooldown_seconds: int = 30
 
 
+class VisionConfig(BaseModel):
+    """Vision pipeline configuration."""
+
+    enabled: bool = False
+    vision_model: str = "qwen3-vl:8b"
+    source: str = "webcam"  # "webcam" | "tank" | "off"
+    capture_interval: float = 30.0
+    max_observations: int = 3
+    webcam_index: int = 0
+
+
 class GUIConfig(BaseModel):
     """Pygame GUI configuration."""
 
@@ -164,6 +184,7 @@ class SeamanConfig(BaseModel):
     audio: AudioConfig = Field(default_factory=AudioConfig)
     environment: EnvironmentConfig = Field(default_factory=EnvironmentConfig)
     needs: NeedsConfig = Field(default_factory=NeedsConfig)
+    vision: VisionConfig = Field(default_factory=VisionConfig)
     gui: GUIConfig = Field(default_factory=GUIConfig)
     api: APIConfig = Field(default_factory=APIConfig)
     cli: CLIConfig = Field(default_factory=CLIConfig)
@@ -256,3 +277,34 @@ def load_config_with_stage(
         )
 
     return config
+
+
+def load_presets(path: str | Path = "config/presets.toml") -> dict[str, PresetConfig]:
+    """Load personality presets from a TOML file.
+
+    Each top-level key in the TOML becomes a preset name. Keys must have
+    ``name``, ``description``, and ``traits`` sub-keys.
+
+    Args:
+        path: Path to the presets TOML file.
+
+    Returns:
+        Dict mapping preset key to PresetConfig.
+
+    Raises:
+        FileNotFoundError: If the presets file does not exist.
+    """
+    preset_path = Path(path)
+
+    if not preset_path.exists():
+        raise FileNotFoundError(f"Presets file not found: {preset_path}")
+
+    with open(preset_path, "rb") as f:
+        raw = tomllib.load(f)
+
+    presets: dict[str, PresetConfig] = {}
+    for key, data in raw.items():
+        if isinstance(data, dict):
+            presets[key] = PresetConfig.model_validate(data)
+
+    return presets

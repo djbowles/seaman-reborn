@@ -166,6 +166,9 @@ class HUD:
         # Session timer
         self._session_time = 0.0
 
+        # Settings button bounding rect (for click detection by GameEngine)
+        self.settings_rect: pygame.Rect | None = None
+
     @property
     def session_time(self) -> float:
         """Elapsed session time in seconds."""
@@ -399,6 +402,17 @@ class HUD:
         mood_x = (w - mood_surf.get_width()) // 2
         mood_y = (_TOP_BAR_HEIGHT - mood_surf.get_height()) // 2
         surface.blit(mood_surf, (mood_x, mood_y))
+
+        # Settings button [F10] (right of mood, left of timer)
+        settings_text = "[F10]"
+        settings_surf = self._font.render(settings_text, True, _TEXT_DIM)
+        settings_x = w - 160
+        settings_y = (_TOP_BAR_HEIGHT - settings_surf.get_height()) // 2
+        surface.blit(settings_surf, (settings_x, settings_y))
+        self.settings_rect = pygame.Rect(
+            settings_x - 2, settings_y - 2,
+            settings_surf.get_width() + 4, settings_surf.get_height() + 4,
+        )
 
         # Session timer (right)
         timer_text = self._format_session_time()

@@ -521,3 +521,56 @@ class TestMemoryExtraction:
 
         response = await mgr.process_input("Hello")
         assert isinstance(response, str)
+
+
+# ---------------------------------------------------------------------------
+# Vision observation wiring tests
+# ---------------------------------------------------------------------------
+
+class TestVisionObservations:
+    """Tests for vision observation injection into prompt builder."""
+
+    async def test_set_vision_observations(self, tmp_path):
+        """set_vision_observations stores observations for prompt injection."""
+        cfg = _make_config(save_path=str(tmp_path / "saves"))
+        mgr = ConversationManager(config=cfg, llm=MockLLM(), creature_state=CreatureState())
+        await mgr.initialize()
+
+        mgr.set_vision_observations(["Human looks bored", "Room is dark"])
+        assert mgr._vision_observations == ["Human looks bored", "Room is dark"]
+
+    async def test_observations_injected_into_prompt(self, tmp_path):
+        """Vision observations appear in the system prompt sent to LLM."""
+        cfg = _make_config(save_path=str(tmp_path / "saves"))
+        llm = MockLLM("I see you.")
+        mgr = ConversationManager(config=cfg, llm=llm, creature_state=CreatureState())
+        await mgr.initialize()
+
+        mgr.set_vision_observations(["Human is smiling"])
+        await mgr.process_input("What do you see?")
+
+        # Check system prompt in the LLM call
+        call_args = llm.chat.call_args[0][0]
+        system_content = call_args[0].content
+        assert "WHAT YOU CAN SEE RIGHT NOW:" in system_content
+        assert "Human is smiling" in system_content
+
+    async def test_empty_observations_not_injected(self, tmp_path):
+        """Empty observations don't add a vision section."""
+        cfg = _make_config(save_path=str(tmp_path / "saves"))
+        llm = MockLLM("Whatever.")
+        mgr = ConversationManager(config=cfg, llm=llm, creature_state=CreatureState())
+        await mgr.initialize()
+
+        mgr.set_vision_observations([])
+        await mgr.process_input("Hello")
+
+        call_args = llm.chat.call_args[0][0]
+        system_content = call_args[0].content
+        assert "WHAT YOU CAN SEE" not in system_content
+
+    async def test_default_observations_empty(self, tmp_path):
+        """Default vision observations are empty."""
+        cfg = _make_config(save_path=str(tmp_path / "saves"))
+        mgr = ConversationManager(config=cfg, llm=MockLLM(), creature_state=CreatureState())
+        assert mgr._vision_observations == []

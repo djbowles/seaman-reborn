@@ -184,6 +184,19 @@ def _memories_section(memories: list[str]) -> str:
     return f"{header}\n{facts}\n{footer}"
 
 
+def _vision_section(observations: list[str]) -> str:
+    """Format vision observations for the system prompt."""
+    if not observations:
+        return ""
+    header = "WHAT YOU CAN SEE RIGHT NOW:"
+    bullets = "\n".join(f"- {obs}" for obs in observations)
+    footer = (
+        "React naturally to what you see. Reference visual details when relevant.\n"
+        "Do not narrate that you are \"looking\" — you simply know what's there."
+    )
+    return f"{header}\n{bullets}\n{footer}"
+
+
 def _get_stage_description(
     stage: CreatureStage,
     config_dir: str = "config",
@@ -217,6 +230,7 @@ class PromptBuilder:
         traits: TraitProfile,
         memories: list[str] | None = None,
         creature_state: dict[str, Any] | None = None,
+        observations: list[str] | None = None,
     ) -> str:
         """Build the full system prompt for an LLM call.
 
@@ -227,6 +241,7 @@ class PromptBuilder:
             creature_state: Optional dict with mood, trust_level, and other
                 state fields. Keys used: "mood" (str), "trust_level" (float),
                 "interaction_count" (int), "hunger" (float), "health" (float).
+            observations: Recent vision observations (what the creature sees).
 
         Returns:
             Complete system prompt string for the LLM.
@@ -255,6 +270,11 @@ class PromptBuilder:
         )
         if mood_text:
             sections.append(mood_text)
+
+        # 4b. Vision observations
+        vision_text = _vision_section(observations or [])
+        if vision_text:
+            sections.append(vision_text)
 
         # 5. Needs-driven behavior hints
         needs_text = self._needs_hints(state)

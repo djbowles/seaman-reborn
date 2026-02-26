@@ -230,12 +230,7 @@ class GameWindow:
                 self.running = False
                 return
 
-            if event.type == pygame.KEYDOWN:
-                if event.key == pygame.K_ESCAPE:
-                    self.running = False
-                    return
-
-            # Dispatch to registered handlers
+            # Dispatch to registered handlers (ESC handled by GameEngine)
             handlers = self._event_handlers.get(event.type, [])
             for handler in handlers:
                 try:

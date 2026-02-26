@@ -486,3 +486,30 @@ class TestEdgeCases:
         assert m.display_text == "50%"
         assert m.color == (60, 200, 100)
         assert m.bar_value == 0.5
+
+
+# ── Settings Button Tests ────────────────────────────────────────────
+
+
+class TestSettingsButton:
+    """Tests for the HUD settings button indicator."""
+
+    def test_settings_rect_none_before_render(self, hud: HUD):
+        """settings_rect is None before first render."""
+        assert hud.settings_rect is None
+
+    def test_settings_rect_set_after_render(
+        self, hud: HUD, default_creature: CreatureState, default_tank: TankEnvironment
+    ):
+        """settings_rect is set after rendering the top bar."""
+        hud.render(_surface_mock, default_creature, default_tank)
+        assert hud.settings_rect is not None
+
+    def test_settings_button_renders_text(
+        self, hud: HUD, default_creature: CreatureState, default_tank: TankEnvironment
+    ):
+        """Top bar renders [F10] text for settings indicator."""
+        hud.render(_surface_mock, default_creature, default_tank)
+        # Check that "[F10]" was rendered
+        rendered_texts = [call.args[0] for call in _font_mock.render.call_args_list]
+        assert any("[F10]" in str(t) for t in rendered_texts)
