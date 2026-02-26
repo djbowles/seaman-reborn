@@ -534,3 +534,30 @@ class TankCareEngine:
         elapsed = (now - self._last_clean_time).total_seconds()
         remaining = CLEANING_DURATION_SECONDS - elapsed
         return max(0.0, remaining)
+
+    def is_aerating_on_cooldown(self) -> bool:
+        """Check if aerator is on cooldown.
+
+        Returns:
+            True if aerator cooldown is still active.
+        """
+        if self._last_aerate_time is None:
+            return False
+
+        now = self._now_func()
+        elapsed = (now - self._last_aerate_time).total_seconds()
+        return elapsed < AERATOR_COOLDOWN_SECONDS
+
+    def aerating_cooldown_remaining(self) -> float:
+        """Get remaining aerator cooldown time in seconds.
+
+        Returns:
+            Seconds remaining (0.0 if no cooldown active).
+        """
+        if self._last_aerate_time is None:
+            return 0.0
+
+        now = self._now_func()
+        elapsed = (now - self._last_aerate_time).total_seconds()
+        remaining = AERATOR_COOLDOWN_SECONDS - elapsed
+        return max(0.0, remaining)

@@ -84,11 +84,39 @@ class AudioManager:
 
     def _try_upgrade_stt(self) -> None:
         """Attempt to replace NoopSTTProvider with a real one."""
+        logger.info("Attempting STT upgrade from %s...", type(self._stt).__name__)
         self._config.stt_enabled = True
-        provider = create_stt_provider(self._config)
-        if not isinstance(provider, NoopSTTProvider):
-            self._stt = provider
-            logger.info("STT provider upgraded from noop to %s", type(provider).__name__)
+        try:
+            provider = create_stt_provider(self._config)
+        except Exception:
+            logger.warning("STT provider creation failed", exc_info=True)
+            return
+        if isinstance(provider, NoopSTTProvider):
+            logger.warning(
+                "STT upgrade returned NoopSTTProvider — check that PyAudio "
+                "and speech_recognition are installed"
+            )
+            return
+        self._stt = provider
+        logger.info("STT provider upgraded to %s", type(provider).__name__)
+
+    def update_tts_voice(self, voice_name: str) -> None:
+        """Update the TTS voice at runtime.
+
+        Normalizes "System Default" to empty string (engine default).
+        Updates both the manager config and the provider config so the
+        next speak/synthesize call picks up the new voice.
+
+        Args:
+            voice_name: Display name of the voice, or "System Default".
+        """
+        normalized = "" if voice_name == "System Default" else voice_name
+        self._config.tts_voice = normalized
+        # Also update the provider's config if it's pyttsx3
+        from seaman_brain.audio.tts import Pyttsx3TTSProvider
+        if isinstance(self._tts, Pyttsx3TTSProvider):
+            self._tts._config.tts_voice = normalized
+        logger.info("TTS voice updated to %r", normalized or "(system default)")
 
     @property
     def sfx_enabled(self) -> bool:

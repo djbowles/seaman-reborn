@@ -12,6 +12,7 @@ Renders creature vital statistics as a Pygame overlay:
 from __future__ import annotations
 
 import logging
+import math
 from dataclasses import dataclass
 
 import pygame
@@ -40,6 +41,11 @@ _COLOR_BLUE = (60, 140, 220)
 # Bar background
 _BAR_BG = (30, 40, 60)
 _BAR_BORDER = (60, 80, 110)
+
+# Audio indicator colors
+_MIC_ACTIVE_COLOR = (60, 220, 180)
+_MIC_INACTIVE_COLOR = (100, 120, 140)
+_TTS_ACTIVE_COLOR = (220, 180, 60)
 
 # Mood colors
 _MOOD_COLORS: dict[str, tuple[int, int, int]] = {
@@ -169,6 +175,12 @@ class HUD:
         # Button bounding rects (for click detection by GameEngine)
         self.settings_rect: pygame.Rect | None = None
         self.lineage_rect: pygame.Rect | None = None
+        self.mic_rect: pygame.Rect | None = None
+
+        # Audio indicator state
+        self.mic_active: bool = False
+        self.tts_active: bool = False
+        self._mic_pulse_timer: float = 0.0
 
     @property
     def session_time(self) -> float:
@@ -197,6 +209,10 @@ class HUD:
             dt: Delta time in seconds since last frame.
         """
         self._session_time += dt
+        if self.mic_active:
+            self._mic_pulse_timer += dt
+        else:
+            self._mic_pulse_timer = 0.0
 
     def _build_need_metrics(self, creature: CreatureState) -> list[HUDMetric]:
         """Build the need bar metrics from creature state.
@@ -399,40 +415,97 @@ class HUD:
         mood_y = (_TOP_BAR_HEIGHT - mood_surf.get_height()) // 2
         surface.blit(mood_surf, (mood_x, mood_y))
 
-        # Lineage button (right of mood)
-        lineage_text = "[Lineage]"
-        lineage_surf = self._font.render(lineage_text, True, _TEXT_COLOR)
-        lineage_x = w - 280
-        lineage_y = (_TOP_BAR_HEIGHT - lineage_surf.get_height()) // 2
-        lin_rect = pygame.Rect(
-            lineage_x - 6, lineage_y - 3,
-            lineage_surf.get_width() + 12, lineage_surf.get_height() + 6,
-        )
-        pygame.draw.rect(surface, (30, 50, 80), lin_rect)
-        pygame.draw.rect(surface, (80, 120, 180), lin_rect, 1)
-        surface.blit(lineage_surf, (lineage_x, lineage_y))
-        self.lineage_rect = lin_rect
-
-        # Settings button (right of lineage, left of timer)
-        settings_text = "[Settings]"
-        settings_surf = self._font.render(settings_text, True, _TEXT_COLOR)
-        settings_x = w - 180
-        settings_y = (_TOP_BAR_HEIGHT - settings_surf.get_height()) // 2
-        btn_rect = pygame.Rect(
-            settings_x - 6, settings_y - 3,
-            settings_surf.get_width() + 12, settings_surf.get_height() + 6,
-        )
-        pygame.draw.rect(surface, (30, 50, 80), btn_rect)
-        pygame.draw.rect(surface, (80, 120, 180), btn_rect, 1)
-        surface.blit(settings_surf, (settings_x, settings_y))
-        self.settings_rect = btn_rect
-
-        # Session timer (right)
+        # ── Right-side buttons: flow right-to-left from timer ──
+        # Session timer (rightmost)
         timer_text = self._format_session_time()
         timer_surf = self._font.render(timer_text, True, _TEXT_DIM)
         timer_x = w - timer_surf.get_width() - 10
         timer_y = (_TOP_BAR_HEIGHT - timer_surf.get_height()) // 2
         surface.blit(timer_surf, (timer_x, timer_y))
+
+        # Cursor flows leftward from the timer
+        cursor_x = timer_x - 12
+
+        # [Settings] button
+        cursor_x = self._render_top_button(
+            surface, cursor_x, "[Settings]", _TEXT_COLOR, (30, 50, 80), (80, 120, 180),
+        )
+        self.settings_rect = self._last_btn_rect
+
+        cursor_x -= 6
+
+        # [Lineage] button
+        cursor_x = self._render_top_button(
+            surface, cursor_x, "[Lineage]", _TEXT_COLOR, (30, 50, 80), (80, 120, 180),
+        )
+        self.lineage_rect = self._last_btn_rect
+
+        cursor_x -= 6
+
+        # [TTS] indicator (passive, not clickable)
+        tts_color = _TTS_ACTIVE_COLOR if self.tts_active else _MIC_INACTIVE_COLOR
+        cursor_x = self._render_top_button(
+            surface, cursor_x, "[TTS]", tts_color, (30, 50, 80), tts_color,
+        )
+
+        cursor_x -= 6
+
+        # [Mic] button (clickable, pulsing when active)
+        if self.mic_active:
+            # Pulse between base color and bright via sin wave
+            pulse = self._mic_pulse_timer * 2.0 * math.pi * 1.5
+            t = math.sin(pulse) * 0.5 + 0.5
+            lo, hi = _MIC_INACTIVE_COLOR, _MIC_ACTIVE_COLOR
+            mic_color = (
+                int(lo[0] + (hi[0] - lo[0]) * t),
+                int(lo[1] + (hi[1] - lo[1]) * t),
+                int(lo[2] + (hi[2] - lo[2]) * t),
+            )
+        else:
+            mic_color = _MIC_INACTIVE_COLOR
+        cursor_x = self._render_top_button(
+            surface, cursor_x, "[Mic]", mic_color, (30, 50, 80), mic_color,
+        )
+        self.mic_rect = self._last_btn_rect
+
+    def _render_top_button(
+        self,
+        surface: pygame.Surface,
+        right_x: int,
+        text: str,
+        text_color: tuple[int, int, int],
+        bg_color: tuple[int, int, int],
+        border_color: tuple[int, int, int],
+    ) -> int:
+        """Render a top-bar button anchored to the right edge.
+
+        Args:
+            surface: Surface to draw on.
+            right_x: Right edge x position for this button.
+            text: Button label text.
+            text_color: RGB color for text.
+            bg_color: RGB color for background.
+            border_color: RGB color for border.
+
+        Returns:
+            The new right_x (left edge of this button) for the next button.
+        """
+        if self._font is None:
+            self._last_btn_rect = None
+            return right_x
+
+        text_surf = self._font.render(text, True, text_color)
+        text_x = right_x - text_surf.get_width()
+        text_y = (_TOP_BAR_HEIGHT - text_surf.get_height()) // 2
+        btn_rect = pygame.Rect(
+            text_x - 6, text_y - 3,
+            text_surf.get_width() + 12, text_surf.get_height() + 6,
+        )
+        pygame.draw.rect(surface, bg_color, btn_rect)
+        pygame.draw.rect(surface, border_color, btn_rect, 1)
+        surface.blit(text_surf, (text_x, text_y))
+        self._last_btn_rect = btn_rect
+        return text_x - 6
 
     def _render_metric_bar(
         self,

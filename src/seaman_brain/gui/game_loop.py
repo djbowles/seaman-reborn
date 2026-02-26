@@ -38,6 +38,7 @@ from seaman_brain.gui.settings_panel import SettingsPanel
 from seaman_brain.gui.sprites import AnimationState, CreatureRenderer
 from seaman_brain.gui.tank_renderer import TankRenderer
 from seaman_brain.gui.window import GameWindow
+from seaman_brain.needs.care import AERATOR_COOLDOWN_SECONDS, CLEANING_DURATION_SECONDS
 from seaman_brain.needs.death import DeathCause, DeathEngine
 from seaman_brain.needs.system import CreatureNeeds, NeedsEngine
 from seaman_brain.personality.traits import TraitProfile
@@ -367,8 +368,24 @@ class GameEngine:
         self._chat_panel.update(dt)
         self._hud.update(dt)
         self._interaction_manager.update(dt)
+
+        # Update action bar cooldowns
+        im = self._interaction_manager
+        self._action_bar.update_cooldowns(
+            feed_remaining=im.feeding_engine.cooldown_remaining(self._creature_state),
+            feed_max=self._config.needs.feeding_cooldown_seconds,
+            clean_remaining=im.care_engine.cleaning_cooldown_remaining(),
+            clean_max=CLEANING_DURATION_SECONDS,
+            aerate_remaining=im.care_engine.aerating_cooldown_remaining(),
+            aerate_max=AERATOR_COOLDOWN_SECONDS,
+        )
         if self._audio_bridge is not None:
             self._audio_bridge.update(dt)
+            # Sync HUD audio indicators from bridge state
+            self._hud.mic_active = self._audio_bridge.mic_active
+        self._hud.tts_active = (
+            self._audio_manager is not None and self._audio_manager.tts_enabled
+        )
 
         # Update vision pipeline
         if self._vision_bridge is not None:
@@ -660,6 +677,12 @@ class GameEngine:
                 self._toggle_lineage()
                 return
 
+        # Check HUD mic button
+        if self._hud.mic_rect is not None:
+            if self._hud.mic_rect.collidepoint(mx, my):
+                self._toggle_mic()
+                return
+
         if self.game_over:
             # Any click during game over restarts
             self._restart_game()
@@ -855,6 +878,11 @@ class GameEngine:
                         if self._audio_bridge.mic_active:
                             self._audio_bridge.toggle_microphone()
                         self._add_notification("Speech-to-text disabled")
+                elif key == "tts_voice":
+                    voice_name = str(value)
+                    if self._audio_manager is not None:
+                        self._audio_manager.update_tts_voice(voice_name)
+                    self._add_notification(f"Voice: {voice_name}")
                 elif key == "audio_input_device":
                     device_name = str(value)
                     if self._audio_manager is not None:
@@ -1119,6 +1147,16 @@ class GameEngine:
         else:
             self._game_state = GameState.LINEAGE
             self._lineage_panel.open()
+
+    def _toggle_mic(self) -> None:
+        """Toggle microphone input on/off via the audio bridge."""
+        if self._audio_bridge is not None:
+            self._audio_bridge.toggle_microphone()
+            self._hud.mic_active = self._audio_bridge.mic_active
+            state = "on" if self._hud.mic_active else "off"
+            self._add_notification(f"Mic {state}")
+        else:
+            self._add_notification("Audio not available")
 
     def _switch_bloodline(self, name: str) -> None:
         """Switch to a different bloodline save directory."""

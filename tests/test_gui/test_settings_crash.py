@@ -217,6 +217,18 @@ class TestCallbacksTryCatch:
         """_on_audio_change applies value to audio bridge."""
         engine._on_audio_change("tts_volume", 0.5)
 
+    def test_tts_voice_change_propagates(self, engine: GameEngine):
+        """_on_audio_change with tts_voice calls update_tts_voice."""
+        mock_mgr = MagicMock()
+        engine._audio_manager = mock_mgr
+        engine._on_audio_change("tts_voice", "Microsoft Zira")
+        mock_mgr.update_tts_voice.assert_called_once_with("Microsoft Zira")
+
+    def test_tts_voice_change_no_crash_without_manager(self, engine: GameEngine):
+        """_on_audio_change with tts_voice when audio_manager is None."""
+        engine._audio_manager = None
+        engine._on_audio_change("tts_voice", "Some Voice")
+
 
 class TestCreatureAgeIncrement:
     """Creature age is updated during the game loop."""

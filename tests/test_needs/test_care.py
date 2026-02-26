@@ -701,3 +701,60 @@ class TestCareIntegration:
             assert any("water" in w.lower() or "fill" in w.lower() for w in warnings), (
                 f"No water warning for {stage.value} in terrarium"
             )
+
+
+# --- Aerator Cooldown Methods ---
+
+
+class TestAeratorCooldownMethods:
+    """Tests for is_aerating_on_cooldown() and aerating_cooldown_remaining()."""
+
+    def test_no_cooldown_initially(self, engine: TankCareEngine) -> None:
+        """No cooldown before any aeration."""
+        assert engine.is_aerating_on_cooldown() is False
+        assert engine.aerating_cooldown_remaining() == 0.0
+
+    def test_cooldown_active_after_aerate(self, now: datetime) -> None:
+        """Cooldown is active immediately after aerating."""
+        current = now
+        eng = TankCareEngine(now_func=lambda: current)
+        tank = TankEnvironment(
+            oxygen_level=0.5,
+            environment_type=EnvironmentType.AQUARIUM,
+        )
+        eng.aerate_tank(tank)
+        assert eng.is_aerating_on_cooldown() is True
+        assert eng.aerating_cooldown_remaining() == pytest.approx(AERATOR_COOLDOWN_SECONDS)
+
+    def test_cooldown_decreases_over_time(self, now: datetime) -> None:
+        """Cooldown remaining decreases as time passes."""
+        current = now
+        eng = TankCareEngine(now_func=lambda: current)
+        tank = TankEnvironment(
+            oxygen_level=0.5,
+            environment_type=EnvironmentType.AQUARIUM,
+        )
+        eng.aerate_tank(tank)
+
+        # Advance time by 2 seconds
+        current = now + timedelta(seconds=2)
+        eng._now_func = lambda: current
+        remaining = eng.aerating_cooldown_remaining()
+        assert remaining == pytest.approx(AERATOR_COOLDOWN_SECONDS - 2.0)
+        assert eng.is_aerating_on_cooldown() is True
+
+    def test_cooldown_expired(self, now: datetime) -> None:
+        """Cooldown is no longer active after full duration."""
+        current = now
+        eng = TankCareEngine(now_func=lambda: current)
+        tank = TankEnvironment(
+            oxygen_level=0.5,
+            environment_type=EnvironmentType.AQUARIUM,
+        )
+        eng.aerate_tank(tank)
+
+        # Advance time past cooldown
+        current = now + timedelta(seconds=AERATOR_COOLDOWN_SECONDS + 1.0)
+        eng._now_func = lambda: current
+        assert eng.is_aerating_on_cooldown() is False
+        assert eng.aerating_cooldown_remaining() == 0.0

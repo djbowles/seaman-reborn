@@ -465,3 +465,58 @@ class TestSTTProviderUpgrade:
         ) as mock_create:
             mgr.stt_enabled = False
             mock_create.assert_not_called()
+
+    def test_stt_upgrade_exception_handled(self, mock_tts, sounds_dir):
+        """If create_stt_provider raises, upgrade logs and keeps noop."""
+        config = AudioConfig(stt_enabled=False)
+        mgr = AudioManager(
+            config=config, tts_provider=mock_tts, sounds_dir=sounds_dir
+        )
+        assert isinstance(mgr.stt_provider, NoopSTTProvider)
+
+        with patch(
+            "seaman_brain.audio.manager.create_stt_provider",
+            side_effect=RuntimeError("no audio"),
+        ):
+            mgr.stt_enabled = True
+
+        assert isinstance(mgr.stt_provider, NoopSTTProvider)
+
+
+# ─── TTS voice update ────────────────────────────────────────────
+
+
+class TestUpdateTTSVoice:
+    """Test update_tts_voice() runtime voice switching."""
+
+    def test_updates_manager_config(self, manager):
+        """update_tts_voice sets the manager config."""
+        manager.update_tts_voice("Microsoft Zira")
+        assert manager._config.tts_voice == "Microsoft Zira"
+
+    def test_normalizes_system_default(self, manager):
+        """'System Default' is normalized to empty string."""
+        manager.update_tts_voice("System Default")
+        assert manager._config.tts_voice == ""
+
+    def test_updates_pyttsx3_provider_config(self, mock_stt, sounds_dir):
+        """update_tts_voice propagates to Pyttsx3TTSProvider config."""
+        from seaman_brain.audio.tts import Pyttsx3TTSProvider
+
+        mock_provider = MagicMock(spec=Pyttsx3TTSProvider)
+        mock_provider._config = AudioConfig()
+        config = AudioConfig()
+        mgr = AudioManager(
+            config=config,
+            tts_provider=mock_provider,
+            stt_provider=mock_stt,
+            sounds_dir=sounds_dir,
+        )
+        mgr.update_tts_voice("Test Voice")
+        assert mock_provider._config.tts_voice == "Test Voice"
+        assert mgr._config.tts_voice == "Test Voice"
+
+    def test_non_pyttsx3_provider_no_crash(self, manager):
+        """update_tts_voice with mock TTS provider doesn't crash."""
+        manager.update_tts_voice("Any Voice")
+        assert manager._config.tts_voice == "Any Voice"

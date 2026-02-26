@@ -282,3 +282,113 @@ class TestActionBarRender:
         bar.set_panel_area(864, 45, 160, 723)
         bar.buttons[0].hover = True
         bar.render(_surface_mock)
+
+
+# ── Cooldown Tests ──────────────────────────────────────────────────
+
+
+class TestActionButtonCooldown:
+    """Tests for ActionButton cooldown fields."""
+
+    def test_default_cooldown_zero(self):
+        """Button starts with cooldown=0 and cooldown_max=0."""
+        btn = ActionButton(key="feed", icon="F", label="Feed")
+        assert btn.cooldown == 0.0
+        assert btn.cooldown_max == 0.0
+
+
+class TestUpdateCooldowns:
+    """Tests for ActionBar.update_cooldowns()."""
+
+    def test_sets_feed_cooldown(self):
+        """update_cooldowns sets feed button cooldown."""
+        bar = ActionBar()
+        bar.set_panel_area(864, 45, 160, 723)
+        bar.update_cooldowns(feed_remaining=15.0, feed_max=30.0)
+        feed_btn = next(b for b in bar.buttons if b.key == "feed")
+        assert feed_btn.cooldown == 15.0
+        assert feed_btn.cooldown_max == 30.0
+
+    def test_sets_clean_cooldown(self):
+        """update_cooldowns sets clean button cooldown."""
+        bar = ActionBar()
+        bar.set_panel_area(864, 45, 160, 723)
+        bar.update_cooldowns(clean_remaining=3.0, clean_max=5.0)
+        clean_btn = next(b for b in bar.buttons if b.key == "clean")
+        assert clean_btn.cooldown == 3.0
+        assert clean_btn.cooldown_max == 5.0
+
+    def test_sets_aerate_cooldown(self):
+        """update_cooldowns sets aerate button cooldown."""
+        bar = ActionBar()
+        bar.set_panel_area(864, 45, 160, 723)
+        bar.update_cooldowns(aerate_remaining=2.0, aerate_max=5.0)
+        aerate_btn = next(b for b in bar.buttons if b.key == "aerate")
+        assert aerate_btn.cooldown == 2.0
+        assert aerate_btn.cooldown_max == 5.0
+
+    def test_other_buttons_stay_zero(self):
+        """Buttons without cooldown mappings stay at 0."""
+        bar = ActionBar()
+        bar.set_panel_area(864, 45, 160, 723)
+        bar.update_cooldowns(feed_remaining=10.0, feed_max=30.0)
+        drain_btn = next(b for b in bar.buttons if b.key == "drain")
+        assert drain_btn.cooldown == 0.0
+
+    def test_cooldowns_reset_to_zero(self):
+        """Cooldowns can be reset to 0."""
+        bar = ActionBar()
+        bar.set_panel_area(864, 45, 160, 723)
+        bar.update_cooldowns(feed_remaining=10.0, feed_max=30.0)
+        bar.update_cooldowns(feed_remaining=0.0, feed_max=30.0)
+        feed_btn = next(b for b in bar.buttons if b.key == "feed")
+        assert feed_btn.cooldown == 0.0
+
+
+class TestCooldownClickBlocking:
+    """Tests for click blocking during cooldown."""
+
+    def test_click_blocked_during_cooldown(self):
+        """Click on button with active cooldown returns True but no callback."""
+        cb = MagicMock()
+        bar = ActionBar(on_action=cb)
+        bar.set_panel_area(864, 45, 160, 723)
+        feed_btn = bar.buttons[0]
+        feed_btn.cooldown = 5.0
+        feed_btn.cooldown_max = 30.0
+        result = bar.handle_click(feed_btn.x + 5, feed_btn.y + 5)
+        assert result is True
+        cb.assert_not_called()
+
+    def test_click_allowed_when_no_cooldown(self):
+        """Click on button with cooldown=0 fires callback normally."""
+        cb = MagicMock()
+        bar = ActionBar(on_action=cb)
+        bar.set_panel_area(864, 45, 160, 723)
+        feed_btn = bar.buttons[0]
+        feed_btn.cooldown = 0.0
+        result = bar.handle_click(feed_btn.x + 5, feed_btn.y + 5)
+        assert result is True
+        cb.assert_called_once_with("feed")
+
+
+class TestCooldownRender:
+    """Tests for rendering buttons with cooldowns."""
+
+    def test_render_with_cooldown_no_crash(self):
+        """Render with active cooldown doesn't crash."""
+        bar = ActionBar()
+        bar.set_panel_area(864, 45, 160, 723)
+        bar.buttons[0].cooldown = 10.0
+        bar.buttons[0].cooldown_max = 30.0
+        bar.render(_surface_mock)
+
+    def test_render_mixed_cooldowns_no_crash(self):
+        """Render with some buttons on cooldown and some not."""
+        bar = ActionBar()
+        bar.set_panel_area(864, 45, 160, 723)
+        bar.update_cooldowns(
+            feed_remaining=15.0, feed_max=30.0,
+            clean_remaining=3.0, clean_max=5.0,
+        )
+        bar.render(_surface_mock)

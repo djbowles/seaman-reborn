@@ -66,8 +66,11 @@ from seaman_brain.gui.hud import (  # noqa: E402
     _COLOR_GREEN,
     _COLOR_RED,
     _COLOR_YELLOW,
+    _MIC_ACTIVE_COLOR,
+    _MIC_INACTIVE_COLOR,
     _MOOD_COLORS,
     _STAGE_NAMES,
+    _TTS_ACTIVE_COLOR,
     HUD,
     HUDMetric,
     _status_color,
@@ -533,3 +536,81 @@ class TestSettingsButton:
         # Check that "[Settings]" was rendered
         rendered_texts = [call.args[0] for call in _font_mock.render.call_args_list]
         assert any("[Settings]" in str(t) for t in rendered_texts)
+
+
+# ── Audio Indicator Tests ────────────────────────────────────────────
+
+
+class TestAudioIndicators:
+    """Tests for mic and TTS indicator buttons in the HUD."""
+
+    def test_mic_rect_none_before_render(self, hud: HUD):
+        """mic_rect is None before first render."""
+        assert hud.mic_rect is None
+
+    def test_mic_rect_set_after_render(
+        self, hud: HUD, default_creature: CreatureState, default_tank: TankEnvironment
+    ):
+        """mic_rect is set after rendering the top bar."""
+        hud.render(_surface_mock, default_creature, default_tank)
+        assert hud.mic_rect is not None
+
+    def test_mic_default_inactive(self, hud: HUD):
+        """Mic starts inactive."""
+        assert hud.mic_active is False
+
+    def test_tts_default_inactive(self, hud: HUD):
+        """TTS starts inactive."""
+        assert hud.tts_active is False
+
+    def test_mic_pulse_timer_advances_when_active(self, hud: HUD):
+        """Pulse timer advances when mic is active."""
+        hud.mic_active = True
+        hud.update(0.5)
+        assert hud._mic_pulse_timer > 0.0
+
+    def test_mic_pulse_timer_resets_when_inactive(self, hud: HUD):
+        """Pulse timer resets to 0 when mic is deactivated."""
+        hud.mic_active = True
+        hud.update(1.0)
+        assert hud._mic_pulse_timer > 0.0
+        hud.mic_active = False
+        hud.update(0.1)
+        assert hud._mic_pulse_timer == 0.0
+
+    def test_render_with_mic_active_no_crash(
+        self, hud: HUD, default_creature: CreatureState, default_tank: TankEnvironment
+    ):
+        """Render with mic active doesn't crash."""
+        hud.mic_active = True
+        hud._mic_pulse_timer = 1.5
+        hud.render(_surface_mock, default_creature, default_tank)
+
+    def test_render_with_tts_active_no_crash(
+        self, hud: HUD, default_creature: CreatureState, default_tank: TankEnvironment
+    ):
+        """Render with TTS active doesn't crash."""
+        hud.tts_active = True
+        hud.render(_surface_mock, default_creature, default_tank)
+
+    def test_renders_mic_label(
+        self, hud: HUD, default_creature: CreatureState, default_tank: TankEnvironment
+    ):
+        """Top bar renders [Mic] text."""
+        hud.render(_surface_mock, default_creature, default_tank)
+        rendered_texts = [call.args[0] for call in _font_mock.render.call_args_list]
+        assert any("[Mic]" in str(t) for t in rendered_texts)
+
+    def test_renders_tts_label(
+        self, hud: HUD, default_creature: CreatureState, default_tank: TankEnvironment
+    ):
+        """Top bar renders [TTS] text."""
+        hud.render(_surface_mock, default_creature, default_tank)
+        rendered_texts = [call.args[0] for call in _font_mock.render.call_args_list]
+        assert any("[TTS]" in str(t) for t in rendered_texts)
+
+    def test_audio_indicator_colors_defined(self):
+        """Audio indicator color constants are defined."""
+        assert _MIC_ACTIVE_COLOR == (60, 220, 180)
+        assert _MIC_INACTIVE_COLOR == (100, 120, 140)
+        assert _TTS_ACTIVE_COLOR == (220, 180, 60)

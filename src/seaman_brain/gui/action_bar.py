@@ -2,13 +2,13 @@
 
 Provides a vertical panel of interaction buttons (Feed, Temp+, Temp-,
 Clean, Drain, Tap) as an alternative to the tiny in-tank buttons.
-Each button has an icon, label, hover state, and click callback.
+Each button has an icon, label, hover state, cooldown indicator, and click callback.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import pygame
 
@@ -22,6 +22,11 @@ _BUTTON_BORDER = (70, 100, 140)
 _BUTTON_ICON_COLOR = (180, 220, 255)
 _BUTTON_LABEL_COLOR = (180, 200, 220)
 
+# Cooldown state colors
+_BUTTON_BG_COOLDOWN = (15, 20, 35)
+_COOLDOWN_BAR_COLOR = (60, 140, 220)
+_COOLDOWN_TEXT_COLOR = (140, 160, 180)
+
 # ── Constants ────────────────────────────────────────────────────────────
 
 _BUTTON_HEIGHT = 40
@@ -30,6 +35,7 @@ _BUTTON_PADDING_X = 10
 _HEADER_HEIGHT = 28
 _FONT_SIZE = 14
 _ICON_FONT_SIZE = 16
+_COOLDOWN_BAR_HEIGHT = 3
 
 
 @dataclass
@@ -44,6 +50,8 @@ class ActionButton:
     width: int = 0
     height: int = _BUTTON_HEIGHT
     hover: bool = False
+    cooldown: float = field(default=0.0)
+    cooldown_max: float = field(default=0.0)
 
     def contains(self, mx: int, my: int) -> bool:
         """Check if a point is inside this button."""
@@ -135,6 +143,35 @@ class ActionBar:
             ))
             btn_y += _BUTTON_HEIGHT + _BUTTON_MARGIN
 
+    def update_cooldowns(
+        self,
+        feed_remaining: float = 0.0,
+        feed_max: float = 0.0,
+        clean_remaining: float = 0.0,
+        clean_max: float = 0.0,
+        aerate_remaining: float = 0.0,
+        aerate_max: float = 0.0,
+    ) -> None:
+        """Update cooldown state for buttons that have cooldowns.
+
+        Args:
+            feed_remaining: Seconds remaining on feed cooldown.
+            feed_max: Maximum feed cooldown duration.
+            clean_remaining: Seconds remaining on clean cooldown.
+            clean_max: Maximum clean cooldown duration.
+            aerate_remaining: Seconds remaining on aerate cooldown.
+            aerate_max: Maximum aerate cooldown duration.
+        """
+        mapping = {
+            "feed": (feed_remaining, feed_max),
+            "clean": (clean_remaining, clean_max),
+            "aerate": (aerate_remaining, aerate_max),
+        }
+        for btn in self.buttons:
+            remaining, maximum = mapping.get(btn.key, (0.0, 0.0))
+            btn.cooldown = remaining
+            btn.cooldown_max = maximum
+
     def handle_click(self, mx: int, my: int) -> bool:
         """Handle a mouse click. Returns True if a button was clicked.
 
@@ -147,6 +184,8 @@ class ActionBar:
         """
         for btn in self.buttons:
             if btn.contains(mx, my):
+                if btn.cooldown > 0:
+                    return True  # Consumed click but don't fire action
                 if self._on_action is not None:
                     self._on_action(btn.key)
                 return True
@@ -185,19 +224,51 @@ class ActionBar:
 
         # Buttons
         for btn in self.buttons:
-            bg = _BUTTON_BG_HOVER if btn.hover else _BUTTON_BG
+            on_cooldown = btn.cooldown > 0
             rect = pygame.Rect(btn.x, btn.y, btn.width, btn.height)
-            pygame.draw.rect(surface, bg, rect)
-            pygame.draw.rect(surface, _BUTTON_BORDER, rect, 1)
 
-            # Icon
-            icon_surf = self._icon_font.render(btn.icon, True, _BUTTON_ICON_COLOR)
-            ix = btn.x + _BUTTON_PADDING_X
-            iy = btn.y + (btn.height - icon_surf.get_height()) // 2
-            surface.blit(icon_surf, (ix, iy))
+            if on_cooldown:
+                # Darkened background during cooldown
+                pygame.draw.rect(surface, _BUTTON_BG_COOLDOWN, rect)
+                pygame.draw.rect(surface, _BUTTON_BORDER, rect, 1)
 
-            # Label
-            label_surf = self._font.render(btn.label, True, _BUTTON_LABEL_COLOR)
-            lx = btn.x + _BUTTON_PADDING_X + icon_surf.get_width() + 8
-            ly = btn.y + (btn.height - label_surf.get_height()) // 2
-            surface.blit(label_surf, (lx, ly))
+                # Dimmed icon
+                icon_surf = self._icon_font.render(btn.icon, True, _COOLDOWN_TEXT_COLOR)
+                ix = btn.x + _BUTTON_PADDING_X
+                iy = btn.y + (btn.height - icon_surf.get_height()) // 2
+                surface.blit(icon_surf, (ix, iy))
+
+                # Countdown text replacing label
+                cd_text = f"{btn.cooldown:.0f}s"
+                cd_surf = self._font.render(cd_text, True, _COOLDOWN_TEXT_COLOR)
+                lx = btn.x + _BUTTON_PADDING_X + icon_surf.get_width() + 8
+                ly = btn.y + (btn.height - cd_surf.get_height()) // 2
+                surface.blit(cd_surf, (lx, ly))
+
+                # Progress bar at button bottom (fills left to right as cooldown expires)
+                if btn.cooldown_max > 0:
+                    progress = 1.0 - (btn.cooldown / btn.cooldown_max)
+                    bar_w = max(0, int(btn.width * progress))
+                    bar_y = btn.y + btn.height - _COOLDOWN_BAR_HEIGHT
+                    if bar_w > 0:
+                        pygame.draw.rect(
+                            surface, _COOLDOWN_BAR_COLOR,
+                            pygame.Rect(btn.x, bar_y, bar_w, _COOLDOWN_BAR_HEIGHT),
+                        )
+            else:
+                # Normal rendering
+                bg = _BUTTON_BG_HOVER if btn.hover else _BUTTON_BG
+                pygame.draw.rect(surface, bg, rect)
+                pygame.draw.rect(surface, _BUTTON_BORDER, rect, 1)
+
+                # Icon
+                icon_surf = self._icon_font.render(btn.icon, True, _BUTTON_ICON_COLOR)
+                ix = btn.x + _BUTTON_PADDING_X
+                iy = btn.y + (btn.height - icon_surf.get_height()) // 2
+                surface.blit(icon_surf, (ix, iy))
+
+                # Label
+                label_surf = self._font.render(btn.label, True, _BUTTON_LABEL_COLOR)
+                lx = btn.x + _BUTTON_PADDING_X + icon_surf.get_width() + 8
+                ly = btn.y + (btn.height - label_surf.get_height()) // 2
+                surface.blit(label_surf, (lx, ly))
