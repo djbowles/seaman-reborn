@@ -306,19 +306,20 @@ class TestVoicePlayback:
         b.play_voice("Hello")  # Should not crash
 
     @pytest.mark.asyncio
-    async def test_play_voice_async_synthesizes(
+    async def test_play_voice_async_speaks(
         self, mock_audio_manager: MagicMock
     ):
-        """_play_voice_async calls synthesize on the audio manager."""
+        """_play_voice_async calls speak on the audio manager."""
         b = PygameAudioBridge(audio_manager=mock_audio_manager)
         await b._play_voice_async("Hello creature")
-        mock_audio_manager.synthesize.assert_called_once_with("Hello creature")
+        mock_audio_manager.speak.assert_called_once_with("Hello creature")
 
     @pytest.mark.asyncio
-    async def test_play_voice_async_empty_wav_noop(
+    async def test_play_voice_async_fallback_empty_wav_noop(
         self, mock_audio_manager: MagicMock
     ):
-        """Empty WAV bytes from synthesize doesn't play anything."""
+        """Fallback to synthesize with empty bytes doesn't play anything."""
+        mock_audio_manager.speak.side_effect = RuntimeError("speak broken")
         mock_audio_manager.synthesize.return_value = b""
         b = PygameAudioBridge(audio_manager=mock_audio_manager)
         await b._play_voice_async("Hello")
@@ -329,7 +330,8 @@ class TestVoicePlayback:
     async def test_play_voice_async_exception_handled(
         self, mock_audio_manager: MagicMock
     ):
-        """Synthesis failure is caught and logged."""
+        """Both speak and synthesize failures are caught and logged."""
+        mock_audio_manager.speak.side_effect = RuntimeError("speak error")
         mock_audio_manager.synthesize.side_effect = RuntimeError("TTS error")
         b = PygameAudioBridge(audio_manager=mock_audio_manager)
         await b._play_voice_async("Hello")  # Should not raise
@@ -417,28 +419,56 @@ class TestMicrophoneToggle:
         assert handled is False
 
     @pytest.mark.asyncio
-    async def test_listen_async_returns_text(self, mock_audio_manager: MagicMock):
-        """_listen_async returns transcribed text from AudioManager."""
-        b = PygameAudioBridge(audio_manager=mock_audio_manager)
-        result = await b._listen_async()
-        assert result == "hello seaman"
+    async def test_listen_async_calls_callback(self, mock_audio_manager: MagicMock):
+        """_listen_async forwards transcribed text to on_stt_result callback."""
+        results = []
+        # listen() returns text once, then we deactivate mic to stop the loop
+        call_count = 0
+
+        async def _listen_once():
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return "hello seaman"
+            b.mic_active = False
+            return ""
+
+        mock_audio_manager.listen = _listen_once
+        b = PygameAudioBridge(
+            audio_manager=mock_audio_manager, on_stt_result=results.append
+        )
+        b.mic_active = True
+        await b._listen_async()
+        assert results == ["hello seaman"]
 
     @pytest.mark.asyncio
     async def test_listen_async_no_manager(self):
-        """_listen_async returns empty string without manager."""
+        """_listen_async returns immediately without manager."""
         b = PygameAudioBridge()
-        result = await b._listen_async()
-        assert result == ""
+        b.mic_active = True
+        await b._listen_async()
+        # Should return without error
 
     @pytest.mark.asyncio
     async def test_listen_async_exception_handled(
         self, mock_audio_manager: MagicMock
     ):
-        """STT failure is caught and returns empty string."""
-        mock_audio_manager.listen.side_effect = RuntimeError("Mic error")
+        """STT failure is caught and loop continues."""
+        call_count = 0
+
+        async def _listen_fail():
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise RuntimeError("Mic error")
+            b.mic_active = False
+            return ""
+
+        mock_audio_manager.listen = _listen_fail
         b = PygameAudioBridge(audio_manager=mock_audio_manager)
-        result = await b._listen_async()
-        assert result == ""
+        b.mic_active = True
+        await b._listen_async()  # Should not raise
+        assert call_count == 2  # Failed once, then stopped
 
 
 # ── Update and Lifecycle Tests ───────────────────────────────────────

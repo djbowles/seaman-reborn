@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from concurrent.futures import Future
 from datetime import UTC, datetime
 from unittest.mock import MagicMock, patch
@@ -9,7 +10,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from seaman_brain.config import VisionConfig
-from seaman_brain.vision.bridge import VisionBridge
+from seaman_brain.vision.bridge import _OBSERVATION_TIMEOUT, VisionBridge
 
 
 @pytest.fixture
@@ -64,6 +65,35 @@ class TestBridgeConstruction:
         assert b._pending is None
 
 
+# ── Webcam Index Tests ────────────────────────────────────────────────
+
+
+class TestSetWebcamIndex:
+    """Tests for VisionBridge.set_webcam_index()."""
+
+    def test_set_webcam_index_recreates_capture(self, bridge):
+        """set_webcam_index replaces the internal WebcamCapture."""
+        old_webcam = bridge._webcam
+        with patch("seaman_brain.vision.bridge.WebcamCapture") as mock_cls:
+            mock_cls.return_value = MagicMock(available=True)
+            bridge.set_webcam_index(2)
+        mock_cls.assert_called_once_with(device_index=2)
+        assert bridge._webcam is not old_webcam
+
+    def test_set_webcam_index_negative_uses_zero(self, bridge):
+        """Negative index (system default) maps to device 0."""
+        with patch("seaman_brain.vision.bridge.WebcamCapture") as mock_cls:
+            mock_cls.return_value = MagicMock(available=True)
+            bridge.set_webcam_index(-1)
+        mock_cls.assert_called_once_with(device_index=0)
+
+    def test_set_webcam_index_updates_config(self, bridge):
+        """set_webcam_index updates the config value."""
+        with patch("seaman_brain.vision.bridge.WebcamCapture"):
+            bridge.set_webcam_index(3)
+        assert bridge._config.webcam_index == 3
+
+
 # ── Timer and Periodic Capture Tests ──────────────────────────────────
 
 
@@ -104,6 +134,7 @@ class TestPeriodicCapture:
         """No new capture while a previous observation is pending."""
         bridge._pending = MagicMock()  # Simulate pending
         bridge._pending.done.return_value = False
+        bridge._pending_start_time = time.monotonic()  # Not timed out
         bridge.update(6.0)  # Timer exceeds interval
         # Should not trigger a new capture because pending is set
         bridge._webcam.capture.assert_not_called()
@@ -285,3 +316,72 @@ class TestGracefulDegradation:
         bridge._async_loop = MagicMock()
         bridge.trigger_observation()
         bridge._webcam.capture.assert_not_called()
+
+
+# ── Failure Tracking Tests ────────────────────────────────────────────
+
+
+class TestFailureTracking:
+    """Tests for _last_capture_failed flag and timeout."""
+
+    def test_capture_failed_when_webcam_unavailable(self, bridge):
+        """_last_capture_failed set True when webcam not available."""
+        bridge._webcam.available = False
+        bridge._async_loop = MagicMock()
+        bridge.trigger_observation()
+        assert bridge._last_capture_failed is True
+
+    def test_capture_failed_when_no_frame(self, bridge):
+        """_last_capture_failed set True when capture returns None."""
+        bridge._webcam.capture.return_value = None
+        bridge._async_loop = MagicMock()
+        bridge.trigger_observation()
+        assert bridge._last_capture_failed is True
+
+    def test_capture_failed_when_no_async_loop(self, bridge):
+        """_last_capture_failed set True when no async loop available."""
+        bridge._async_loop = None
+        bridge.trigger_observation()
+        assert bridge._last_capture_failed is True
+
+    def test_capture_failed_cleared_on_successful_dispatch(self, bridge):
+        """_last_capture_failed cleared when capture dispatches successfully."""
+        bridge._last_capture_failed = True
+        bridge._async_loop = MagicMock()
+
+        future = Future()
+        future.set_result("Observation")
+
+        with patch(
+            "seaman_brain.vision.bridge.asyncio.run_coroutine_threadsafe",
+            return_value=future,
+        ):
+            bridge.trigger_observation()
+
+        assert bridge._last_capture_failed is False
+
+    def test_pending_cancelled_after_timeout(self, bridge):
+        """Pending future is cancelled when observation times out."""
+        mock_future = MagicMock()
+        mock_future.done.return_value = False
+        bridge._pending = mock_future
+        # Set start time far enough in the past
+        bridge._pending_start_time = time.monotonic() - _OBSERVATION_TIMEOUT - 1.0
+
+        bridge._check_pending()
+
+        mock_future.cancel.assert_called_once()
+        assert bridge._pending is None
+        assert bridge._last_capture_failed is True
+
+    def test_pending_not_cancelled_before_timeout(self, bridge):
+        """Pending future is NOT cancelled before timeout elapses."""
+        mock_future = MagicMock()
+        mock_future.done.return_value = False
+        bridge._pending = mock_future
+        bridge._pending_start_time = time.monotonic()
+
+        bridge._check_pending()
+
+        mock_future.cancel.assert_not_called()
+        assert bridge._pending is mock_future

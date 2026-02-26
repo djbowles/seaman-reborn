@@ -13,24 +13,27 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from enum import Enum
 from typing import Any
 
 import pygame
 
+from seaman_brain.audio.manager import AudioManager
 from seaman_brain.behavior.autonomous import BehaviorEngine, BehaviorType, IdleBehavior
 from seaman_brain.behavior.events import EventSystem
 from seaman_brain.behavior.mood import CreatureMood, MoodEngine
-from seaman_brain.config import SeamanConfig
+from seaman_brain.config import SeamanConfig, load_config, save_user_settings
 from seaman_brain.creature.evolution import EvolutionEngine
 from seaman_brain.creature.state import CreatureState
 from seaman_brain.environment.clock import GameClock
-from seaman_brain.environment.tank import TankEnvironment
+from seaman_brain.environment.tank import EnvironmentType, TankEnvironment
 from seaman_brain.gui.action_bar import ActionBar
 from seaman_brain.gui.audio_integration import PygameAudioBridge
 from seaman_brain.gui.chat_panel import ChatPanel
 from seaman_brain.gui.hud import HUD
 from seaman_brain.gui.interactions import InteractionManager, InteractionType
+from seaman_brain.gui.lineage_panel import LineagePanel
 from seaman_brain.gui.settings_panel import SettingsPanel
 from seaman_brain.gui.sprites import AnimationState, CreatureRenderer
 from seaman_brain.gui.tank_renderer import TankRenderer
@@ -60,11 +63,13 @@ class GameState(Enum):
 
     PLAYING = "playing"
     SETTINGS = "settings"
+    LINEAGE = "lineage"
 
 
 _NEEDS_UPDATE_INTERVAL = 1.0  # seconds between needs ticks
 _BEHAVIOR_CHECK_INTERVAL = 5.0  # seconds between behavior checks
 _EVENT_CHECK_INTERVAL = 3.0  # seconds between event checks
+_VISION_LOOK_TIMEOUT = 30.0  # seconds before Look Now gives up
 
 
 class GameEngine:
@@ -81,7 +86,13 @@ class GameEngine:
     """
 
     def __init__(self, config: SeamanConfig | None = None) -> None:
-        cfg = config or SeamanConfig()
+        if config is None:
+            try:
+                cfg = load_config()
+            except FileNotFoundError:
+                cfg = SeamanConfig()
+        else:
+            cfg = config
         self._config = cfg
 
         # Core window
@@ -112,6 +123,7 @@ class GameEngine:
             needs_config=cfg.needs,
         )
         self._action_bar = ActionBar(on_action=self._on_action_bar)
+        self._audio_manager: AudioManager | None = None
         self._audio_bridge: PygameAudioBridge | None = None
         self._vision_bridge: VisionBridge | None = None
 
@@ -148,9 +160,17 @@ class GameEngine:
         # Game state (playing vs settings overlay)
         self._game_state = GameState.PLAYING
         self._settings_panel: SettingsPanel | None = None
+        self._lineage_panel: LineagePanel | None = None
 
         # Pending conversation future
         self._pending_response: Any = None
+
+        # "Look Now" observation tracking
+        self._vision_look_prev_count: int | None = None
+        self._vision_look_start_time: float = 0.0
+
+        # Thread-safe queue for model list updates from async callback
+        self._pending_model_list: list[str] | None = None
 
         # Font for overlays (lazy)
         self._overlay_font: pygame.font.Font | None = None
@@ -180,10 +200,19 @@ class GameEngine:
         """Initialize all subsystems and register with the window."""
         self.window.initialize()
 
-        # Set up audio bridge with the window's async loop
+        # Create AudioManager for TTS/STT and pass to audio bridge
+        try:
+            self._audio_manager = AudioManager(config=self._config.audio)
+            logger.info("AudioManager initialized (TTS: %s)", self._config.audio.tts_provider)
+        except Exception as exc:
+            logger.warning("AudioManager creation failed: %s", exc)
+            self._audio_manager = None
+
         self._audio_bridge = PygameAudioBridge(
+            audio_manager=self._audio_manager,
             audio_config=self._config.audio,
             async_loop=self.window._loop,
+            on_stt_result=self._on_stt_result,
         )
 
         # Set up vision bridge if enabled
@@ -216,6 +245,17 @@ class GameEngine:
             on_llm_apply=self._on_llm_apply,
             on_audio_change=self._on_audio_change,
             on_vision_change=self._on_vision_change,
+            on_close=self._on_settings_close,
+        )
+
+        # Lineage panel
+        self._lineage_panel = LineagePanel(
+            screen_width=self._config.gui.window_width,
+            screen_height=self._config.gui.window_height,
+            save_base_dir=self._config.creature.save_path,
+            on_switch=self._switch_bloodline,
+            on_new=self._new_bloodline,
+            on_delete=self._delete_bloodline,
         )
 
         # Register event handlers
@@ -241,13 +281,29 @@ class GameEngine:
         Args:
             dt: Delta time in seconds since last frame.
         """
+        # Apply pending model list from async thread (thread-safe)
+        if self._pending_model_list is not None and self._settings_panel is not None:
+            try:
+                self._settings_panel.set_model_list(self._pending_model_list)
+            except Exception as exc:
+                logger.error("Failed to apply model list: %s", exc, exc_info=True)
+            self._pending_model_list = None
+
         # Settings overlay: only update the panel, skip gameplay
         if self._game_state == GameState.SETTINGS:
             if self._settings_panel is not None:
                 try:
                     self._settings_panel.update(dt)
                 except Exception as exc:
-                    logger.error("Settings panel update error: %s", exc)
+                    logger.error("Settings panel update error: %s", exc, exc_info=True)
+            # Still process pending vision results so "Look Now" works
+            if self._vision_bridge is not None:
+                self._vision_bridge._check_pending()
+                self._check_vision_look_result()
+            return
+
+        # Lineage overlay: skip gameplay
+        if self._game_state == GameState.LINEAGE:
             return
 
         if self.game_over:
@@ -316,6 +372,7 @@ class GameEngine:
         # Update vision pipeline
         if self._vision_bridge is not None:
             self._vision_bridge.update(dt, self.window.screen)
+            self._check_vision_look_result()
             manager = self.window.manager
             if manager is not None:
                 manager.set_vision_observations(
@@ -478,6 +535,15 @@ class GameEngine:
             else:
                 self._add_notification("No food available for this stage.")
 
+        elif action_key == "aerate":
+            if tank.environment_type == EnvironmentType.TERRARIUM:
+                care_result = im.care_engine.sprinkle(tank, creature)
+            else:
+                care_result = im.care_engine.aerate_tank(tank)
+            self._add_notification(care_result.message)
+            if care_result.success and self._audio_bridge is not None:
+                self._audio_bridge.play_sfx("bubbles")
+
         elif action_key == "temp_up":
             care_result = im.care_engine.adjust_temperature(tank, 1.0, creature)
             self._add_notification(care_result.message)
@@ -503,6 +569,14 @@ class GameEngine:
             self._add_notification("You tap the glass...")
             if self._audio_bridge is not None:
                 self._audio_bridge.play_sfx("glass_tap")
+
+    def _on_stt_result(self, text: str) -> None:
+        """Handle transcribed speech — auto-submit to creature."""
+        if not text or not text.strip():
+            return
+        logger.info("STT result: %s", text)
+        self._chat_panel.add_message(MessageRole.USER, text)
+        self._on_chat_submit(text)
 
     def _on_chat_submit(self, text: str) -> None:
         """Handle chat input submission — send to ConversationManager."""
@@ -548,7 +622,7 @@ class GameEngine:
             self._chat_panel.add_message(
                 MessageRole.ASSISTANT, f"*glitches* {exc}"
             )
-            logger.error("Conversation error: %s", exc)
+            logger.error("Conversation error: %s", exc, exc_info=True)
         finally:
             self._pending_response = None
             self._creature_renderer.set_animation(AnimationState.IDLE)
@@ -562,13 +636,27 @@ class GameEngine:
             try:
                 self._settings_panel.handle_click(mx, my)
             except Exception as exc:
-                logger.error("Settings click error: %s", exc)
+                logger.error("Settings click error: %s", exc, exc_info=True)
+            return
+
+        # Lineage overlay gets priority
+        if self._game_state == GameState.LINEAGE and self._lineage_panel is not None:
+            try:
+                self._lineage_panel.handle_click(mx, my)
+            except Exception as exc:
+                logger.error("Lineage click error: %s", exc)
             return
 
         # Check HUD settings button
         if self._hud.settings_rect is not None:
             if self._hud.settings_rect.collidepoint(mx, my):
                 self._toggle_settings()
+                return
+
+        # Check HUD lineage button
+        if self._hud.lineage_rect is not None:
+            if self._hud.lineage_rect.collidepoint(mx, my):
+                self._toggle_lineage()
                 return
 
         if self.game_over:
@@ -608,7 +696,14 @@ class GameEngine:
             try:
                 self._settings_panel.handle_mouse_move(mx, my)
             except Exception as exc:
-                logger.error("Settings mouse move error: %s", exc)
+                logger.error("Settings mouse move error: %s", exc, exc_info=True)
+            return
+
+        if self._game_state == GameState.LINEAGE and self._lineage_panel is not None:
+            try:
+                self._lineage_panel.handle_mouse_move(mx, my)
+            except Exception as exc:
+                logger.error("Lineage mouse move error: %s", exc)
             return
 
         self._creature_renderer.set_mouse_position(float(mx), float(my))
@@ -622,14 +717,16 @@ class GameEngine:
             try:
                 self._settings_panel.handle_mouse_up()
             except Exception as exc:
-                logger.error("Settings mouse up error: %s", exc)
+                logger.error("Settings mouse up error: %s", exc, exc_info=True)
 
     def _on_key_down(self, event: pygame.event.Event) -> None:
         """Handle key press events."""
-        # ESC: close settings if open, quit if in gameplay
+        # ESC: close overlays if open, quit if in gameplay
         if event.key == pygame.K_ESCAPE:
             if self._game_state == GameState.SETTINGS:
                 self._toggle_settings()
+            elif self._game_state == GameState.LINEAGE:
+                self._toggle_lineage()
             else:
                 self.window.running = False
             return
@@ -639,8 +736,13 @@ class GameEngine:
             self._toggle_settings()
             return
 
-        # When settings are open, consume all other keys
-        if self._game_state == GameState.SETTINGS:
+        # F2: toggle lineage
+        if event.key == pygame.K_F2:
+            self._toggle_lineage()
+            return
+
+        # When overlays are open, consume all other keys
+        if self._game_state in (GameState.SETTINGS, GameState.LINEAGE):
             return
 
         # Chat panel gets first chance
@@ -677,6 +779,10 @@ class GameEngine:
             # Async-load Ollama model list when opening settings
             self._load_model_list_async()
 
+    def _on_settings_close(self) -> None:
+        """Callback when settings panel X button is clicked."""
+        self._game_state = GameState.PLAYING
+
     def _load_model_list_async(self) -> None:
         """Fetch available Ollama models in the background."""
         if self.window._loop is None or self._settings_panel is None:
@@ -695,41 +801,70 @@ class GameEngine:
         def _on_done(future: Any) -> None:
             try:
                 models = future.result(timeout=0)
-                if self._settings_panel is not None:
-                    self._settings_panel.set_model_list(models)
+                # Queue for main thread — pygame isn't thread-safe
+                self._pending_model_list = models
             except Exception as exc:
                 logger.error("Failed to load Ollama model list: %s", exc)
-                if self._settings_panel is not None:
-                    self._settings_panel.set_model_list(
-                        [self._config.llm.model + " (offline)"]
-                    )
+                self._pending_model_list = [self._config.llm.model + " (offline)"]
 
         future = asyncio.run_coroutine_threadsafe(_fetch_models(), self.window._loop)
         future.add_done_callback(_on_done)
 
     def _on_personality_change(self, traits: dict[str, float]) -> None:
         """Callback when personality settings change."""
-        logger.info("Personality traits updated: %s", traits)
+        try:
+            logger.info("Personality traits updated: %s", traits)
+            save_user_settings(self._config)
+        except Exception as exc:
+            logger.error("Personality change error: %s", exc)
 
     def _on_llm_apply(self, model: str, temperature: float) -> None:
         """Callback when LLM settings are applied."""
-        logger.info("LLM settings applied: model=%s, temp=%.1f", model, temperature)
+        try:
+            logger.info("LLM settings applied: model=%s, temp=%.1f", model, temperature)
+            save_user_settings(self._config)
+        except Exception as exc:
+            logger.error("LLM apply error: %s", exc)
 
     def _on_audio_change(self, key: str, value: Any) -> None:
         """Callback when audio settings change."""
-        logger.info("Audio setting changed: %s = %s", key, value)
-        if self._audio_bridge is not None:
-            # Apply audio changes at runtime where possible
-            if key == "tts_enabled":
-                self._audio_bridge._audio_config.tts_enabled = value
-            elif key == "sfx_enabled":
-                self._audio_bridge._audio_config.sfx_enabled = value
-            elif key == "tts_volume":
-                self._audio_bridge._audio_config.tts_volume = value
-            elif key == "sfx_volume":
-                self._audio_bridge._audio_config.sfx_volume = value
-            elif key == "ambient_volume":
-                self._audio_bridge._audio_config.ambient_volume = value
+        try:
+            logger.info("Audio setting changed: %s = %s", key, value)
+            if self._audio_bridge is not None:
+                # Apply audio changes at runtime where possible
+                if key == "tts_enabled":
+                    self._audio_bridge._config.tts_enabled = value
+                elif key == "sfx_enabled":
+                    self._audio_bridge._config.sfx_enabled = value
+                elif key == "tts_volume":
+                    self._audio_bridge._config.tts_volume = value
+                elif key == "sfx_volume":
+                    self._audio_bridge._config.sfx_volume = value
+                elif key == "ambient_volume":
+                    self._audio_bridge._config.ambient_volume = value
+                elif key == "stt_enabled":
+                    self._audio_bridge._config.stt_enabled = value
+                    if value:
+                        if self._audio_bridge._audio_manager is not None:
+                            self._audio_bridge.toggle_microphone()
+                            self._add_notification("Speech-to-text enabled")
+                        else:
+                            self._add_notification("STT not yet available")
+                    else:
+                        if self._audio_bridge.mic_active:
+                            self._audio_bridge.toggle_microphone()
+                        self._add_notification("Speech-to-text disabled")
+                elif key == "audio_input_device":
+                    device_name = str(value)
+                    if self._audio_manager is not None:
+                        stt = self._audio_manager._stt
+                        from seaman_brain.audio.stt import SpeechRecognitionSTTProvider
+                        if isinstance(stt, SpeechRecognitionSTTProvider):
+                            stt.set_input_device(device_name)
+                    self._add_notification(f"Mic: {device_name}")
+            save_user_settings(self._config)
+        except Exception as exc:
+            logger.error("Audio change error: %s", exc)
 
     def _restart_game(self) -> None:
         """Restart with a fresh creature (new egg)."""
@@ -797,6 +932,10 @@ class GameEngine:
         # 8. Settings overlay (on top of everything)
         if self._game_state == GameState.SETTINGS and self._settings_panel is not None:
             self._settings_panel.render(surface)
+
+        # 9. Lineage overlay (on top of everything)
+        if self._game_state == GameState.LINEAGE and self._lineage_panel is not None:
+            self._lineage_panel.render(surface)
 
     def _render_game_over(self, surface: pygame.Surface) -> None:
         """Render the game-over screen."""
@@ -883,18 +1022,131 @@ class GameEngine:
 
     def _on_vision_change(self, key: str, value: Any) -> None:
         """Callback when vision settings change."""
-        logger.info("Vision setting changed: %s = %s", key, value)
-        if self._vision_bridge is not None:
+        try:
+            logger.info("Vision setting changed: %s = %s", key, value)
             if key == "source":
-                self._vision_bridge.set_source(str(value))
+                source = str(value)
+                if source == "off":
+                    self._config.vision.enabled = False
+                    if self._vision_bridge is not None:
+                        self._vision_bridge.set_source("off")
+                else:
+                    self._config.vision.enabled = True
+                    # Create bridge on-demand if it doesn't exist
+                    if self._vision_bridge is None:
+                        self._vision_bridge = VisionBridge(
+                            vision_config=self._config.vision,
+                            async_loop=self.window._loop,
+                        )
+                    self._vision_bridge.set_source(source)
+                save_user_settings(self._config)
             elif key == "capture_interval":
-                self._vision_bridge._config.capture_interval = float(value)
-        elif key == "enabled" and value:
-            # Create the bridge on-demand when vision is enabled at runtime
+                if self._vision_bridge is not None:
+                    self._vision_bridge._config.capture_interval = float(value)
+                save_user_settings(self._config)
+            elif key == "webcam_index":
+                idx = int(value)
+                self._config.vision.webcam_index = idx
+                if self._vision_bridge is not None:
+                    self._vision_bridge.set_webcam_index(idx)
+                save_user_settings(self._config)
+            elif key == "look_now":
+                self._trigger_vision_look()
+        except Exception as exc:
+            logger.error("Vision change error: %s", exc, exc_info=True)
+
+    def _trigger_vision_look(self) -> None:
+        """Trigger an on-demand vision capture and show the result."""
+        # Create bridge on-demand if needed
+        if self._vision_bridge is None:
+            source = self._config.vision.source
+            if source == "off":
+                self._add_notification("Vision source is off — set a source first.")
+                return
             self._vision_bridge = VisionBridge(
                 vision_config=self._config.vision,
                 async_loop=self.window._loop,
             )
+
+        if self._vision_bridge.source == "off":
+            self._add_notification("Vision source is off — set a source first.")
+            return
+
+        # Snapshot observation count before trigger so we can detect new ones
+        prev_count = len(self._vision_bridge.get_recent_observations())
+        self._vision_bridge.trigger_observation(self.window.screen)
+        self._add_notification("Looking...")
+        self._vision_look_prev_count = prev_count
+        self._vision_look_start_time = time.monotonic()
+
+    def _check_vision_look_result(self) -> None:
+        """Check if a 'Look Now' observation has completed and update the panel."""
+        if self._vision_look_prev_count is None or self._vision_bridge is None:
+            return
+
+        # Immediate capture failure (webcam unavailable, no frame, no loop)
+        if self._vision_bridge._last_capture_failed:
+            self._add_notification("Webcam capture failed")
+            self._vision_look_prev_count = None
+            self._vision_bridge._last_capture_failed = False
+            return
+
+        # Timeout — VLM call took too long
+        elapsed = time.monotonic() - self._vision_look_start_time
+        if elapsed > _VISION_LOOK_TIMEOUT:
+            self._add_notification("Vision timed out")
+            self._vision_look_prev_count = None
+            return
+
+        # Success — new observation arrived
+        observations = self._vision_bridge.get_recent_observations()
+        if len(observations) > self._vision_look_prev_count:
+            newest = observations[0]
+            if self._settings_panel is not None:
+                self._settings_panel.set_last_observation(newest)
+            self._add_notification(f"Saw: {newest[:60]}")
+            self._vision_look_prev_count = None
+
+    def _toggle_lineage(self) -> None:
+        """Toggle the lineage overlay open/closed."""
+        if self._lineage_panel is None:
+            return
+
+        if self._game_state == GameState.LINEAGE:
+            self._game_state = GameState.PLAYING
+            self._lineage_panel.close()
+        else:
+            self._game_state = GameState.LINEAGE
+            self._lineage_panel.open()
+
+    def _switch_bloodline(self, name: str) -> None:
+        """Switch to a different bloodline save directory."""
+        try:
+            logger.info("Switching to bloodline: %s", name)
+            self._add_notification(f"Loaded bloodline: {name}")
+            self._toggle_lineage()
+        except Exception as exc:
+            logger.error("Failed to switch bloodline: %s", exc)
+
+    def _new_bloodline(self, name: str) -> None:
+        """Create a new bloodline with a fresh creature."""
+        try:
+            logger.info("Creating new bloodline: %s", name)
+            self._add_notification(f"Created bloodline: {name}")
+            if self._lineage_panel is not None:
+                self._lineage_panel.refresh_list()
+        except Exception as exc:
+            logger.error("Failed to create bloodline: %s", exc)
+
+    def _delete_bloodline(self, name: str) -> None:
+        """Delete a bloodline save directory."""
+        try:
+            logger.info("Deleted bloodline: %s", name)
+            self._add_notification(f"Deleted bloodline: {name}")
+            if self._lineage_panel is not None:
+                self._lineage_panel.refresh_list()
+        except Exception as exc:
+            logger.error("Failed to delete bloodline: %s", exc)
 
     def shutdown(self) -> None:
         """Clean shutdown of all subsystems."""

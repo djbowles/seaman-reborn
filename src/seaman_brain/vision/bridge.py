@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections import deque
 from datetime import UTC, datetime
 from typing import Any
@@ -18,6 +19,8 @@ from seaman_brain.vision.capture import SurfaceCapture, WebcamCapture
 from seaman_brain.vision.observer import VisionObserver
 
 logger = logging.getLogger(__name__)
+
+_OBSERVATION_TIMEOUT = 30.0
 
 
 class VisionBridge:
@@ -49,6 +52,8 @@ class VisionBridge:
         )
         self._timer: float = 0.0
         self._pending: Any | None = None  # Future from run_coroutine_threadsafe
+        self._last_capture_failed: bool = False
+        self._pending_start_time: float = 0.0
 
         self.source: str = vision_config.source
 
@@ -88,6 +93,20 @@ class VisionBridge:
         """
         return [text for text, _ts in reversed(self._observations)]
 
+    def set_webcam_index(self, index: int) -> None:
+        """Change the webcam device index at runtime.
+
+        Recreates the internal ``WebcamCapture`` with the new index so
+        subsequent captures use the correct camera.
+
+        Args:
+            index: OpenCV device index. ``-1`` means use device 0.
+        """
+        effective = 0 if index < 0 else index
+        self._webcam = WebcamCapture(device_index=effective)
+        self._config.webcam_index = index
+        logger.info("Webcam index changed to: %d (effective %d)", index, effective)
+
     def set_source(self, source: str) -> None:
         """Switch the capture source at runtime.
 
@@ -118,7 +137,8 @@ class VisionBridge:
             if self._webcam.available:
                 frame_bytes = self._webcam.capture()
             else:
-                logger.debug("Webcam not available, skipping capture")
+                logger.warning("Webcam not available, skipping capture")
+                self._last_capture_failed = True
                 return
         elif self.source == "tank":
             frame_bytes = self._surface.capture(surface)
@@ -126,11 +146,13 @@ class VisionBridge:
             return
 
         if frame_bytes is None:
-            logger.debug("No frame captured from %s", self.source)
+            logger.warning("No frame captured from %s", self.source)
+            self._last_capture_failed = True
             return
 
         if self._async_loop is None:
-            logger.debug("No async loop available for vision observation")
+            logger.warning("No async loop available for vision observation")
+            self._last_capture_failed = True
             return
 
         source = self.source
@@ -142,15 +164,28 @@ class VisionBridge:
             self._pending = asyncio.run_coroutine_threadsafe(
                 _observe(), self._async_loop
             )
+            self._pending_start_time = time.monotonic()
+            self._last_capture_failed = False
         except Exception as exc:
             logger.warning("Failed to dispatch vision observation: %s", exc)
+            self._last_capture_failed = True
 
     def _check_pending(self) -> None:
         """Check if the pending observation future is done."""
         if self._pending is None:
             return
 
+        # Timeout check — cancel if running too long
         if not self._pending.done():
+            elapsed = time.monotonic() - self._pending_start_time
+            if elapsed > _OBSERVATION_TIMEOUT:
+                logger.warning("Vision observation timed out after %.0fs", elapsed)
+                try:
+                    self._pending.cancel()
+                except Exception:
+                    pass
+                self._pending = None
+                self._last_capture_failed = True
             return
 
         try:
@@ -158,6 +193,8 @@ class VisionBridge:
             if result:
                 self._observations.append((result, datetime.now(UTC)))
                 logger.debug("Vision observation stored: %s", result[:60])
+            else:
+                logger.warning("Vision observation returned empty result")
         except Exception as exc:
             logger.warning("Vision observation failed: %s", exc)
         finally:

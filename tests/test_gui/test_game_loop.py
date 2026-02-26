@@ -24,6 +24,7 @@ _pygame_mock.MOUSEMOTION = 1024
 _pygame_mock.K_ESCAPE = 27
 _pygame_mock.K_RETURN = 13
 _pygame_mock.K_TAB = 9
+_pygame_mock.K_F2 = 283
 _pygame_mock.K_h = 104
 _pygame_mock.K_m = 109
 _pygame_mock.K_v = 118
@@ -124,6 +125,7 @@ def _reset_mocks():
     _pygame_mock.K_ESCAPE = 27
     _pygame_mock.K_RETURN = 13
     _pygame_mock.K_TAB = 9
+    _pygame_mock.K_F2 = 283
     _pygame_mock.K_h = 104
     _pygame_mock.K_m = 109
     _pygame_mock.K_v = 118
@@ -466,6 +468,17 @@ class TestInteractionHandling:
         assert engine._game_state == GameState.PLAYING
         assert engine.window.running is True
 
+    def test_settings_x_button_returns_to_playing(self, engine: GameEngine):
+        """Clicking settings X button returns game state to PLAYING."""
+        engine._game_state = GameState.SETTINGS
+        if engine._settings_panel is not None:
+            engine._settings_panel.visible = True
+
+        # Simulate the X button close callback
+        engine._on_settings_close()
+
+        assert engine._game_state == GameState.PLAYING
+
     def test_f1_opens_settings(self, engine: GameEngine):
         """F1 toggles settings overlay open."""
         assert engine._game_state == GameState.PLAYING
@@ -605,9 +618,9 @@ class TestVisionBridgeIntegration:
         engine._vision_bridge.set_source.assert_called_once_with("tank")
 
     def test_on_vision_change_creates_bridge(self, engine: GameEngine):
-        """_on_vision_change with enabled=True creates bridge on demand."""
+        """_on_vision_change with source=webcam creates bridge on demand."""
         assert engine._vision_bridge is None
-        engine._on_vision_change("enabled", True)
+        engine._on_vision_change("source", "webcam")
         assert engine._vision_bridge is not None
 
 
@@ -622,8 +635,8 @@ class TestActionBarIntegration:
         assert engine._action_bar is not None
 
     def test_action_bar_has_buttons(self, engine: GameEngine):
-        """ActionBar has 6 buttons after initialization."""
-        assert len(engine._action_bar.buttons) == 6
+        """ActionBar has 7 buttons after initialization."""
+        assert len(engine._action_bar.buttons) == 7
 
     def test_interaction_buttons_disabled(self, engine: GameEngine):
         """Old tiny interaction buttons are disabled."""
@@ -673,6 +686,172 @@ class TestActionBarIntegration:
         # Should have added a notification
         assert len(engine._notifications) > 0
 
+    def test_action_bar_aerate_aquarium(self, engine: GameEngine):
+        """Aerate action boosts oxygen in aquarium mode."""
+        engine._tank.oxygen_level = 0.5
+        engine._on_action_bar("aerate")
+        assert engine._tank.oxygen_level > 0.5
+        assert len(engine._notifications) > 0
+
+    def test_action_bar_aerate_terrarium_uses_sprinkle(self, engine: GameEngine):
+        """Aerate action uses sprinkle in terrarium mode."""
+        from seaman_brain.environment.tank import EnvironmentType
+        engine._tank.environment_type = EnvironmentType.TERRARIUM
+        engine._tank.water_level = 0.0
+        engine._tank.oxygen_level = 0.5
+        engine._on_action_bar("aerate")
+        assert engine._tank.oxygen_level > 0.5
+        assert len(engine._notifications) > 0
+
     def test_action_bar_render(self, engine: GameEngine):
         """ActionBar renders without crash."""
         engine._render(_surface_mock)
+
+
+# ── Look Now Timeout / Failure Tests ─────────────────────────────────
+
+
+class TestLookNowFailures:
+    """Tests for Look Now timeout, capture failure, and success notifications."""
+
+    def test_look_now_timeout_resets_and_notifies(self, engine: GameEngine):
+        """Look Now timeout resets tracking state and shows notification."""
+        import time as _time
+
+        bridge = MagicMock()
+        bridge._last_capture_failed = False
+        bridge.get_recent_observations.return_value = ["old"]
+        bridge.source = "webcam"
+        engine._vision_bridge = bridge
+        engine._vision_look_prev_count = 1
+        engine._vision_look_start_time = _time.monotonic() - 31.0
+
+        engine._check_vision_look_result()
+
+        assert engine._vision_look_prev_count is None
+        assert any("timed out" in n[0] for n in engine._notifications)
+
+    def test_look_now_capture_failure_notifies(self, engine: GameEngine):
+        """Look Now capture failure shows notification."""
+        bridge = MagicMock()
+        bridge._last_capture_failed = True
+        bridge.source = "webcam"
+        engine._vision_bridge = bridge
+        engine._vision_look_prev_count = 0
+
+        engine._check_vision_look_result()
+
+        assert engine._vision_look_prev_count is None
+        assert any("capture failed" in n[0] for n in engine._notifications)
+        # Flag should be reset
+        assert bridge._last_capture_failed is False
+
+    def test_look_now_success_shows_observation(self, engine: GameEngine):
+        """Look Now success shows 'Saw: ...' notification."""
+        import time as _time
+
+        bridge = MagicMock()
+        bridge._last_capture_failed = False
+        bridge.get_recent_observations.return_value = ["Human is waving", "old"]
+        bridge.source = "webcam"
+        engine._vision_bridge = bridge
+        engine._vision_look_prev_count = 1
+        engine._vision_look_start_time = _time.monotonic()
+
+        engine._check_vision_look_result()
+
+        assert engine._vision_look_prev_count is None
+        assert any("Saw:" in n[0] for n in engine._notifications)
+
+
+# ── STT Toggle Tests ─────────────────────────────────────────────────
+
+
+class TestSTTToggle:
+    """Tests for STT enable/disable wiring through _on_audio_change."""
+
+    def test_stt_enable_without_audio_manager(self, engine: GameEngine):
+        """Enabling STT without AudioManager shows 'not yet available'."""
+        bridge = MagicMock()
+        bridge._config = MagicMock()
+        bridge._audio_manager = None
+        engine._audio_bridge = bridge
+
+        engine._on_audio_change("stt_enabled", True)
+
+        assert any("not yet available" in n[0] for n in engine._notifications)
+
+    def test_stt_disable_shows_notification(self, engine: GameEngine):
+        """Disabling STT shows 'disabled' notification."""
+        bridge = MagicMock()
+        bridge._config = MagicMock()
+        bridge.mic_active = False
+        engine._audio_bridge = bridge
+
+        engine._on_audio_change("stt_enabled", False)
+
+        assert any("disabled" in n[0] for n in engine._notifications)
+
+
+# ── Audio Config Attribute Regression Test ───────────────────────────
+
+
+class TestAudioConfigAttribute:
+    """Regression test: audio setting changes use correct attribute."""
+
+    def test_audio_config_attribute_no_raise(self, engine: GameEngine):
+        """Setting audio values via _on_audio_change doesn't raise AttributeError."""
+        bridge = MagicMock()
+        bridge._config = MagicMock()
+        engine._audio_bridge = bridge
+
+        # All these should access _config, not _audio_config
+        engine._on_audio_change("tts_enabled", True)
+        engine._on_audio_change("sfx_enabled", False)
+        engine._on_audio_change("tts_volume", 0.8)
+        engine._on_audio_change("sfx_volume", 0.5)
+        engine._on_audio_change("ambient_volume", 0.3)
+
+        assert bridge._config.tts_enabled is True
+        assert bridge._config.sfx_enabled is False
+        assert bridge._config.tts_volume == 0.8
+        assert bridge._config.sfx_volume == 0.5
+        assert bridge._config.ambient_volume == 0.3
+
+
+# ── STT Callback Wiring Tests ───────────────────────────────────────
+
+
+class TestSTTCallback:
+    """Tests for STT result callback wiring in GameEngine."""
+
+    def test_stt_result_submits_to_chat(self, engine: GameEngine):
+        """STT result is forwarded as chat input."""
+        initial_count = engine._chat_panel.message_count
+        engine._on_stt_result("hello creature")
+        assert engine._chat_panel.message_count > initial_count
+
+    def test_stt_result_empty_ignored(self, engine: GameEngine):
+        """Empty STT result is ignored."""
+        initial_count = engine._chat_panel.message_count
+        engine._on_stt_result("")
+        assert engine._chat_panel.message_count == initial_count
+
+    def test_audio_bridge_receives_callback(self, engine: GameEngine):
+        """Audio bridge is initialized with the STT callback."""
+        assert engine._audio_bridge._on_stt_result is not None
+        assert engine._audio_bridge._on_stt_result == engine._on_stt_result
+
+
+# ── Webcam Index Propagation Tests ───────────────────────────────────
+
+
+class TestWebcamIndexPropagation:
+    """Tests for webcam index propagation to live VisionBridge."""
+
+    def test_webcam_index_change_updates_bridge(self, engine: GameEngine):
+        """Changing webcam_index propagates to existing VisionBridge."""
+        bridge = MagicMock()
+        engine._vision_bridge = bridge
+        engine._on_vision_change("webcam_index", 2)
+        bridge.set_webcam_index.assert_called_once_with(2)

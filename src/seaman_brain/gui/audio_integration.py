@@ -12,6 +12,7 @@ Connects the AudioManager to Pygame's mixer system for in-game audio:
 from __future__ import annotations
 
 import asyncio
+import io
 import logging
 import threading
 from enum import Enum
@@ -50,6 +51,7 @@ class PygameAudioBridge:
         audio_manager: Any | None = None,
         audio_config: AudioConfig | None = None,
         async_loop: asyncio.AbstractEventLoop | None = None,
+        on_stt_result: Any | None = None,
     ) -> None:
         """Initialize the Pygame audio bridge.
 
@@ -57,10 +59,14 @@ class PygameAudioBridge:
             audio_manager: An AudioManager instance for TTS/STT.
             audio_config: Audio configuration for volume levels.
             async_loop: Background asyncio loop for async TTS calls.
+            on_stt_result: Callback ``(text: str) -> None`` invoked with
+                each transcribed STT result. If None, results are logged
+                but not forwarded.
         """
         self._audio_manager = audio_manager
         self._config = audio_config or AudioConfig()
         self._async_loop = async_loop
+        self._on_stt_result = on_stt_result
 
         # Channel volumes (0.0 to 1.0)
         self._volumes: dict[AudioChannel, float] = {
@@ -212,17 +218,16 @@ class PygameAudioBridge:
         return self._ambient_playing
 
     def play_voice(self, text: str) -> None:
-        """Play creature voice via TTS through Pygame mixer.
+        """Play creature voice via TTS.
 
-        Synthesizes text to WAV bytes via AudioManager, then plays through
-        the voice channel. Non-blocking — synthesis runs in the async loop.
+        Prefers AudioManager.speak() which uses pyttsx3's native audio output
+        (works with system default device). Falls back to synthesize → mixer
+        path if speak() is unavailable.
 
         Args:
             text: The text for the creature to speak.
         """
         if not text or not text.strip():
-            return
-        if not self._mixer_initialized or self._voice_channel is None:
             return
         if self._audio_manager is None:
             return
@@ -235,7 +240,7 @@ class PygameAudioBridge:
             logger.debug("No async loop available for voice playback")
 
     async def _play_voice_async(self, text: str) -> None:
-        """Async voice playback — synthesize and route to mixer.
+        """Async voice playback — use native speak() or synthesize fallback.
 
         Args:
             text: Text to synthesize and play.
@@ -244,12 +249,16 @@ class PygameAudioBridge:
             return
 
         try:
-            wav_bytes = await self._audio_manager.synthesize(text)
-            if not wav_bytes:
-                return
-            self._play_wav_bytes(wav_bytes, self._voice_channel)
+            # Prefer native speak() — uses pyttsx3's built-in audio output
+            await self._audio_manager.speak(text)
         except Exception as exc:
-            logger.warning("Voice playback failed: %s", exc)
+            logger.warning("Native speak failed, trying synthesize fallback: %s", exc)
+            try:
+                wav_bytes = await self._audio_manager.synthesize(text)
+                if wav_bytes and self._voice_channel is not None:
+                    self._play_wav_bytes(wav_bytes, self._voice_channel)
+            except Exception as exc2:
+                logger.warning("Voice playback failed: %s", exc2)
 
     def _play_wav_bytes(self, wav_bytes: bytes, channel: Any) -> None:
         """Play WAV bytes through a Pygame mixer channel.
@@ -264,7 +273,7 @@ class PygameAudioBridge:
         try:
             import pygame.mixer
 
-            sound = pygame.mixer.Sound(buffer=wav_bytes)
+            sound = pygame.mixer.Sound(file=io.BytesIO(wav_bytes))
             channel.play(sound)
         except Exception as exc:
             logger.warning("Failed to play WAV bytes: %s", exc)
@@ -335,20 +344,24 @@ class PygameAudioBridge:
             self._listen_async(), self._async_loop
         )
 
-    async def _listen_async(self) -> str:
-        """Async STT listening.
+    async def _listen_async(self) -> None:
+        """Continuous async STT listening loop.
 
-        Returns:
-            Transcribed text, or empty string.
+        Listens repeatedly while ``mic_active`` is True. Each successful
+        transcription is forwarded to the ``on_stt_result`` callback.
         """
         if self._audio_manager is None:
-            return ""
+            return
 
-        try:
-            return await self._audio_manager.listen()
-        except Exception as exc:
-            logger.warning("STT listen failed: %s", exc)
-            return ""
+        while self.mic_active:
+            try:
+                text = await self._audio_manager.listen()
+                if text and text.strip() and self._on_stt_result is not None:
+                    self._on_stt_result(text.strip())
+            except Exception as exc:
+                logger.warning("STT listen failed: %s", exc)
+                # Brief pause before retrying to avoid tight error loops
+                await asyncio.sleep(1.0)
 
     def handle_key_event(self, key: int) -> bool:
         """Handle keyboard input for audio controls.

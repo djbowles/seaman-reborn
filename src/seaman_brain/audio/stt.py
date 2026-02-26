@@ -60,6 +60,7 @@ class SpeechRecognitionSTTProvider:
         self._config = config or AudioConfig()
         self._available = False
         self._init_error: str = ""
+        self._mic_index: int | None = None
         self._initialize()
 
     def _initialize(self) -> None:
@@ -97,6 +98,45 @@ class SpeechRecognitionSTTProvider:
         """Whether the STT engine is operational."""
         return self._available
 
+    def _resolve_mic_index(self, device_name: str) -> int | None:
+        """Map an audio input device name to a PyAudio device index.
+
+        Args:
+            device_name: The device name from settings (e.g. "Portacapture X6").
+
+        Returns:
+            PyAudio device index, or None for system default.
+        """
+        if not device_name or device_name == "System Default":
+            return None
+        try:
+            import pyaudio
+            pa = pyaudio.PyAudio()
+            for i in range(pa.get_device_count()):
+                info = pa.get_device_info_by_index(i)
+                if (
+                    info.get("maxInputChannels", 0) > 0
+                    and device_name in info.get("name", "")
+                ):
+                    pa.terminate()
+                    return i
+            pa.terminate()
+        except Exception as exc:
+            logger.debug("Could not resolve mic device %r: %s", device_name, exc)
+        return None
+
+    def set_input_device(self, device_name: str) -> None:
+        """Change the microphone device at runtime.
+
+        Args:
+            device_name: Device name from settings. "System Default" or empty
+                resets to the default device.
+        """
+        self._mic_index = self._resolve_mic_index(device_name)
+        logger.info(
+            "STT input device set to: %s (index=%s)", device_name, self._mic_index
+        )
+
     def _listen_sync(self) -> str:
         """Synchronous listen — runs in thread pool.
 
@@ -109,7 +149,7 @@ class SpeechRecognitionSTTProvider:
 
         sr = self._sr
         try:
-            with sr.Microphone() as source:
+            with sr.Microphone(device_index=self._mic_index) as source:
                 self._recognizer.adjust_for_ambient_noise(source, duration=0.5)
                 audio = self._recognizer.listen(source, timeout=5, phrase_time_limit=15)
         except sr.WaitTimeoutError:
