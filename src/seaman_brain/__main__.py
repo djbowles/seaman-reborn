@@ -73,10 +73,10 @@ def main() -> None:
     _setup_logging(debug=args.debug)
 
     if args.gui:
-        from seaman_brain.gui.window import GameWindow
+        from seaman_brain.gui.game_loop import GameEngine
 
-        window = GameWindow()
-        window.run()
+        engine = GameEngine()
+        engine.run()
     elif args.api:
         from seaman_brain.api.server import BrainServer
 
