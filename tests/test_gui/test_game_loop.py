@@ -329,6 +329,36 @@ class TestAsyncConversationBridge:
         engine._on_chat_submit("Hello")
         assert engine._chat_panel.message_count == initial_count
 
+    def test_new_submit_cancels_old_pending(self, engine: GameEngine):
+        """Submitting new chat cancels the previous in-flight response."""
+        old_future = Future()
+        engine._pending_response = old_future
+
+        mock_manager = MagicMock()
+        engine.window._manager = mock_manager
+        engine.window._loop = MagicMock()
+
+        new_future = Future()
+        with patch("seaman_brain.gui.game_loop.asyncio.run_coroutine_threadsafe",
+                    return_value=new_future):
+            engine._on_chat_submit("New message")
+
+        assert old_future.cancelled()
+        assert engine._pending_response is new_future
+
+    def test_cancelled_response_no_glitch_message(self, engine: GameEngine):
+        """A cancelled pending response doesn't show *glitches* in chat."""
+        future = Future()
+        future.cancel()
+        engine._pending_response = future
+
+        initial_count = engine._chat_panel.message_count
+        engine._check_pending_response()
+
+        assert engine._pending_response is None
+        # Should NOT have added a *glitches* message
+        assert engine._chat_panel.message_count == initial_count
+
 
 class TestEvolutionSequence:
     """Test evolution transitions with visual celebration."""

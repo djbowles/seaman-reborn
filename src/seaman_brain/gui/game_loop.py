@@ -549,6 +549,13 @@ class GameEngine:
         if not self._pending_autonomous.done():
             return
 
+        # Cancelled by user chat — silently discard
+        if self._pending_autonomous.cancelled():
+            logger.debug("Autonomous remark cancelled (user chat took priority)")
+            self._pending_autonomous = None
+            self._pending_autonomous_behavior = None
+            return
+
         behavior = self._pending_autonomous_behavior
         try:
             result = self._pending_autonomous.result(timeout=0)
@@ -751,6 +758,12 @@ class GameEngine:
             self._pending_autonomous = None
             self._pending_autonomous_behavior = None
 
+        # Cancel previous user chat if still in flight (prevents orphan buildup)
+        if self._pending_response is not None:
+            self._pending_response.cancel()
+            self._chat_panel.finish_streaming()
+            logger.debug("Cancelled previous pending chat for new input")
+
         self._creature_renderer.set_animation(AnimationState.TALKING)
         self._interaction_count_delta += 1
 
@@ -777,6 +790,12 @@ class GameEngine:
             return
 
         if not self._pending_response.done():
+            return
+
+        # Cancelled by a newer chat submission — silently discard
+        if self._pending_response.cancelled():
+            self._pending_response = None
+            self._creature_renderer.set_animation(AnimationState.IDLE)
             return
 
         try:
