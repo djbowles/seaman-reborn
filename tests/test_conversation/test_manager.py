@@ -574,3 +574,133 @@ class TestVisionObservations:
         cfg = _make_config(save_path=str(tmp_path / "saves"))
         mgr = ConversationManager(config=cfg, llm=MockLLM(), creature_state=CreatureState())
         assert mgr._vision_observations == []
+
+
+# ---------------------------------------------------------------------------
+# Autonomous remark tests
+# ---------------------------------------------------------------------------
+
+class TestGenerateAutonomousRemark:
+    """Tests for generate_autonomous_remark() — unprompted LLM speech."""
+
+    async def test_returns_remark(self, tmp_path):
+        """Generates a remark from a situation description."""
+        cfg = _make_config(save_path=str(tmp_path / "saves"))
+        llm = MockLLM("Ugh, feed me already.")
+        mgr = ConversationManager(config=cfg, llm=llm, creature_state=CreatureState())
+        await mgr.initialize()
+
+        result = await mgr.generate_autonomous_remark("You are very hungry.")
+        assert result is not None
+        assert len(result) > 0
+        llm.chat.assert_awaited_once()
+
+    async def test_no_user_message_in_episodic(self, tmp_path):
+        """Autonomous remark does NOT add a USER message to episodic memory."""
+        cfg = _make_config(save_path=str(tmp_path / "saves"))
+        llm = MockLLM("Fine, whatever.")
+        mgr = ConversationManager(config=cfg, llm=llm, creature_state=CreatureState())
+        await mgr.initialize()
+
+        await mgr.generate_autonomous_remark("You are bored.")
+        messages = mgr._episodic.get_all()
+        # Should only have the ASSISTANT message, no USER
+        assert len(messages) == 1
+        assert messages[0].role == MessageRole.ASSISTANT
+
+    async def test_assistant_stored_in_episodic(self, tmp_path):
+        """Autonomous remark stores the ASSISTANT response in episodic memory."""
+        cfg = _make_config(save_path=str(tmp_path / "saves"))
+        llm = MockLLM("Interesting perspective.")
+        mgr = ConversationManager(config=cfg, llm=llm, creature_state=CreatureState())
+        await mgr.initialize()
+
+        result = await mgr.generate_autonomous_remark("You notice something.")
+        messages = mgr._episodic.get_all()
+        assert len(messages) == 1
+        assert messages[0].content == result
+
+    async def test_no_interaction_count_bump(self, tmp_path):
+        """Autonomous remark does NOT increment interaction_count."""
+        cfg = _make_config(save_path=str(tmp_path / "saves"))
+        state = CreatureState(interaction_count=5)
+        mgr = ConversationManager(config=cfg, llm=MockLLM("Hmm."), creature_state=state)
+        await mgr.initialize()
+
+        await mgr.generate_autonomous_remark("You are observing.")
+        assert mgr.creature_state.interaction_count == 5
+
+    async def test_no_trust_bump(self, tmp_path):
+        """Autonomous remark does NOT change trust level."""
+        cfg = _make_config(save_path=str(tmp_path / "saves"))
+        state = CreatureState(trust_level=0.3)
+        mgr = ConversationManager(config=cfg, llm=MockLLM("Hmm."), creature_state=state)
+        await mgr.initialize()
+
+        await mgr.generate_autonomous_remark("You are reflecting.")
+        assert mgr.creature_state.trust_level == pytest.approx(0.3)
+
+    async def test_constraints_applied(self, tmp_path):
+        """Personality constraints are applied to autonomous remarks."""
+        cfg = _make_config(save_path=str(tmp_path / "saves"))
+        llm = MockLLM("As an AI, I would be happy to help!")
+        mgr = ConversationManager(config=cfg, llm=llm, creature_state=CreatureState())
+        await mgr.initialize()
+
+        result = await mgr.generate_autonomous_remark("You are observing.")
+        assert result is not None
+        assert "as an ai" not in result.lower()
+
+    async def test_returns_none_when_not_initialized(self, tmp_path):
+        """Returns None if manager is not initialized."""
+        cfg = _make_config(save_path=str(tmp_path / "saves"))
+        mgr = ConversationManager(config=cfg, llm=MockLLM(), creature_state=CreatureState())
+        # NOT calling initialize()
+        result = await mgr.generate_autonomous_remark("Hello")
+        assert result is None
+
+    async def test_returns_none_when_no_llm(self, tmp_path):
+        """Returns None if no LLM provider is available."""
+        cfg = _make_config(save_path=str(tmp_path / "saves"))
+        with patch(
+            "seaman_brain.conversation.manager.create_provider",
+            side_effect=ImportError("nope"),
+        ):
+            mgr = ConversationManager(config=cfg, creature_state=CreatureState())
+            await mgr.initialize()
+            result = await mgr.generate_autonomous_remark("Hello")
+            assert result is None
+
+    async def test_returns_none_on_llm_failure(self, tmp_path):
+        """Returns None when the LLM call raises an exception."""
+        cfg = _make_config(save_path=str(tmp_path / "saves"))
+        llm = MockLLM()
+        llm.chat = AsyncMock(side_effect=ConnectionError("LLM down"))
+        mgr = ConversationManager(config=cfg, llm=llm, creature_state=CreatureState())
+        await mgr.initialize()
+
+        result = await mgr.generate_autonomous_remark("You are hungry.")
+        assert result is None
+
+    async def test_returns_none_on_empty_response(self, tmp_path):
+        """Returns None when the LLM returns an empty string."""
+        cfg = _make_config(save_path=str(tmp_path / "saves"))
+        llm = MockLLM("")
+        mgr = ConversationManager(config=cfg, llm=llm, creature_state=CreatureState())
+        await mgr.initialize()
+
+        result = await mgr.generate_autonomous_remark("You are bored.")
+        assert result is None
+
+    async def test_situation_in_llm_context(self, tmp_path):
+        """The situation text appears in the system prompt sent to LLM."""
+        cfg = _make_config(save_path=str(tmp_path / "saves"))
+        llm = MockLLM("Noted.")
+        mgr = ConversationManager(config=cfg, llm=llm, creature_state=CreatureState())
+        await mgr.initialize()
+
+        await mgr.generate_autonomous_remark("You are extremely bored.")
+        call_args = llm.chat.call_args[0][0]
+        system_content = call_args[0].content
+        assert "CURRENT SITUATION:" in system_content
+        assert "extremely bored" in system_content

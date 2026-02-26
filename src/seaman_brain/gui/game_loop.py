@@ -20,7 +20,12 @@ from typing import Any
 import pygame
 
 from seaman_brain.audio.manager import AudioManager
-from seaman_brain.behavior.autonomous import BehaviorEngine, BehaviorType, IdleBehavior
+from seaman_brain.behavior.autonomous import (
+    BehaviorEngine,
+    BehaviorType,
+    IdleBehavior,
+    get_behavior_situation,
+)
 from seaman_brain.behavior.events import EventSystem
 from seaman_brain.behavior.mood import CreatureMood, MoodEngine
 from seaman_brain.config import SeamanConfig, load_config, save_user_settings
@@ -71,6 +76,17 @@ _NEEDS_UPDATE_INTERVAL = 1.0  # seconds between needs ticks
 _BEHAVIOR_CHECK_INTERVAL = 5.0  # seconds between behavior checks
 _EVENT_CHECK_INTERVAL = 3.0  # seconds between event checks
 _VISION_LOOK_TIMEOUT = 30.0  # seconds before Look Now gives up
+
+# Situation prompts for interaction reactions via LLM
+_INTERACTION_SITUATIONS: dict[str, str] = {
+    "feed": "Your owner just fed you. React to receiving food.",
+    "tap_glass": "Your owner just tapped the glass of your tank. React to the disturbance.",
+    "clean": "Your owner just cleaned your tank. React to the improved cleanliness.",
+    "aerate": "Your owner just aerated your tank water. React to the fresh bubbles.",
+    "temp_up": "Your owner just raised your tank temperature. React to the warmth change.",
+    "temp_down": "Your owner just lowered your tank temperature. React to the temperature drop.",
+    "drain": "Your owner just changed the water level in your tank. React to the change.",
+}
 
 
 class GameEngine:
@@ -165,6 +181,10 @@ class GameEngine:
 
         # Pending conversation future
         self._pending_response: Any = None
+
+        # Pending autonomous LLM remark (lower priority than user chat)
+        self._pending_autonomous: Any = None
+        self._pending_autonomous_behavior: IdleBehavior | None = None
 
         # "Look Now" observation tracking
         self._vision_look_prev_count: int | None = None
@@ -408,6 +428,9 @@ class GameEngine:
         # Check for pending conversation response
         self._check_pending_response()
 
+        # Check for pending autonomous LLM remark
+        self._check_pending_autonomous()
+
         # Sync creature stage to renderer
         if self._creature_renderer.stage != self._creature_state.stage:
             self._creature_renderer.set_stage(self._creature_state.stage)
@@ -445,7 +468,10 @@ class GameEngine:
             time_context=time_context,
         )
         if behavior is not None:
-            self._apply_behavior(behavior)
+            if behavior.needs_llm:
+                self._request_autonomous_remark(behavior)
+            else:
+                self._apply_behavior(behavior)
 
     def _apply_behavior(self, behavior: IdleBehavior) -> None:
         """Apply an autonomous behavior — set animation and optionally speak."""
@@ -465,6 +491,94 @@ class GameEngine:
             self._chat_panel.add_message(MessageRole.ASSISTANT, behavior.message)
             if self._audio_bridge is not None:
                 self._audio_bridge.play_voice(behavior.message)
+
+    def _request_autonomous_remark(self, behavior: IdleBehavior) -> None:
+        """Submit an autonomous LLM remark for a verbal behavior.
+
+        Gates on both ``_pending_response`` and ``_pending_autonomous`` being
+        empty.  If the LLM is busy, falls back to the canned message.
+        """
+        # LLM busy — fall back to canned message
+        if self._pending_response is not None or self._pending_autonomous is not None:
+            self._apply_behavior(behavior)
+            return
+
+        manager = self.window.manager
+        loop = self.window._loop
+        if manager is None or loop is None or not manager.is_initialized:
+            self._apply_behavior(behavior)
+            return
+
+        situation = get_behavior_situation(
+            behavior.action_type,
+            self._mood_engine.current_mood,
+            self._needs,
+        )
+        if situation is None:
+            self._apply_behavior(behavior)
+            return
+
+        self._pending_autonomous_behavior = behavior
+
+        async def _generate() -> str | None:
+            return await manager.generate_autonomous_remark(situation)
+
+        self._pending_autonomous = asyncio.run_coroutine_threadsafe(
+            _generate(), loop
+        )
+
+    def _check_pending_autonomous(self) -> None:
+        """Check if a pending autonomous LLM remark is ready."""
+        if self._pending_autonomous is None:
+            return
+
+        if not self._pending_autonomous.done():
+            return
+
+        behavior = self._pending_autonomous_behavior
+        try:
+            result = self._pending_autonomous.result(timeout=0)
+            if result:
+                self._chat_panel.add_message(MessageRole.ASSISTANT, result)
+                if self._audio_bridge is not None:
+                    self._audio_bridge.play_voice(result)
+            elif behavior is not None:
+                # LLM returned None — fall back to canned message
+                self._apply_behavior(behavior)
+        except Exception as exc:
+            logger.warning("Autonomous remark failed: %s", exc)
+            if behavior is not None:
+                self._apply_behavior(behavior)
+        finally:
+            self._pending_autonomous = None
+            self._pending_autonomous_behavior = None
+
+    def _request_interaction_reaction(self, action_key: str) -> None:
+        """Submit an LLM reaction to a player interaction.
+
+        Same gating as ``_request_autonomous_remark``, but no fallback —
+        if the LLM is busy the reaction is simply skipped (the notification
+        text is sufficient).
+        """
+        if self._pending_response is not None or self._pending_autonomous is not None:
+            return
+
+        manager = self.window.manager
+        loop = self.window._loop
+        if manager is None or loop is None or not manager.is_initialized:
+            return
+
+        situation = _INTERACTION_SITUATIONS.get(action_key)
+        if situation is None:
+            return
+
+        async def _generate() -> str | None:
+            return await manager.generate_autonomous_remark(situation)
+
+        self._pending_autonomous = asyncio.run_coroutine_threadsafe(
+            _generate(), loop
+        )
+        self._pending_autonomous_behavior = None  # No fallback for interactions
 
     def _check_events(self, time_context: dict) -> None:
         """Check for game events and apply them."""
@@ -537,6 +651,7 @@ class GameEngine:
         im = self._interaction_manager
         creature = self._creature_state
         tank = self._tank
+        action_succeeded = False
 
         if action_key == "feed":
             available = im.feeding_engine.get_available_foods(creature.stage)
@@ -548,6 +663,7 @@ class GameEngine:
                     self._creature_renderer.set_animation(AnimationState.EATING)
                     if self._audio_bridge is not None:
                         self._audio_bridge.play_sfx("feeding_splash")
+                    action_succeeded = True
                 else:
                     self._add_notification(result.message)
             else:
@@ -559,20 +675,25 @@ class GameEngine:
             else:
                 care_result = im.care_engine.aerate_tank(tank)
             self._add_notification(care_result.message)
-            if care_result.success and self._audio_bridge is not None:
-                self._audio_bridge.play_sfx("bubbles")
+            if care_result.success:
+                action_succeeded = True
+                if self._audio_bridge is not None:
+                    self._audio_bridge.play_sfx("bubbles")
 
         elif action_key == "temp_up":
             care_result = im.care_engine.adjust_temperature(tank, 1.0, creature)
             self._add_notification(care_result.message)
+            action_succeeded = True
 
         elif action_key == "temp_down":
             care_result = im.care_engine.adjust_temperature(tank, -1.0, creature)
             self._add_notification(care_result.message)
+            action_succeeded = True
 
         elif action_key == "clean":
             care_result = im.care_engine.clean_tank(tank)
             self._add_notification(care_result.message)
+            action_succeeded = True
 
         elif action_key == "drain":
             if tank.water_level > 0.0:
@@ -580,6 +701,7 @@ class GameEngine:
             else:
                 care_result = im.care_engine.fill_tank(tank, creature)
             self._add_notification(care_result.message)
+            action_succeeded = True
 
         elif action_key == "tap_glass":
             creature.interaction_count += 1
@@ -587,6 +709,11 @@ class GameEngine:
             self._add_notification("You tap the glass...")
             if self._audio_bridge is not None:
                 self._audio_bridge.play_sfx("glass_tap")
+            action_succeeded = True
+
+        # Request LLM reaction to the interaction
+        if action_succeeded:
+            self._request_interaction_reaction(action_key)
 
     def _on_stt_result(self, text: str) -> None:
         """Handle transcribed speech — auto-submit to creature."""
@@ -600,6 +727,12 @@ class GameEngine:
         """Handle chat input submission — send to ConversationManager."""
         if self.game_over or not text.strip():
             return
+
+        # User chat always wins — cancel any in-flight autonomous remark
+        if self._pending_autonomous is not None:
+            self._pending_autonomous.cancel()
+            self._pending_autonomous = None
+            self._pending_autonomous_behavior = None
 
         self._creature_renderer.set_animation(AnimationState.TALKING)
         self._interaction_count_delta += 1
@@ -913,6 +1046,11 @@ class GameEngine:
             MessageRole.SYSTEM, "A new egg has appeared in the tank..."
         )
         self._notifications.clear()
+        # Cancel any pending autonomous remark
+        if self._pending_autonomous is not None:
+            self._pending_autonomous.cancel()
+            self._pending_autonomous = None
+            self._pending_autonomous_behavior = None
         logger.info("Game restarted with new creature")
 
     def _add_notification(self, text: str) -> None:
@@ -1188,10 +1326,18 @@ class GameEngine:
             logger.error("Failed to delete bloodline: %s", exc)
 
     def shutdown(self) -> None:
-        """Clean shutdown of all subsystems."""
-        if self._vision_bridge is not None:
-            self._vision_bridge.shutdown()
+        """Clean shutdown of all subsystems.
+
+        Order matters: subsystem bridges are shut down first (they set
+        shutdown guards to prevent new async submissions), then the
+        window shuts down the async loop and Pygame.
+        """
+        # 1. Signal bridges to stop accepting new work
         if self._audio_bridge is not None:
             self._audio_bridge.shutdown()
+        if self._vision_bridge is not None:
+            self._vision_bridge.shutdown()
+
+        # 2. Now safe to cancel pending tasks and stop the async loop
         self.window.shutdown()
         logger.info("GameEngine shutdown complete")

@@ -99,6 +99,7 @@ sys.modules["pygame"] = _pygame_mock
 sys.modules["pygame.mixer"] = _mixer_mock
 sys.modules["pygame.font"] = _pygame_mock.font
 
+from seaman_brain.behavior.autonomous import BehaviorType, IdleBehavior  # noqa: E402
 from seaman_brain.config import SeamanConfig  # noqa: E402
 from seaman_brain.gui.game_loop import GameEngine, GameState  # noqa: E402
 from seaman_brain.needs.death import DeathCause  # noqa: E402
@@ -855,3 +856,256 @@ class TestWebcamIndexPropagation:
         engine._vision_bridge = bridge
         engine._on_vision_change("webcam_index", 2)
         bridge.set_webcam_index.assert_called_once_with(2)
+
+
+# ── Autonomous LLM Remark Tests ──────────────────────────────────────
+
+
+class TestAutonomousLLMRemarks:
+    """Tests for autonomous LLM-powered creature remarks."""
+
+    def test_pending_autonomous_initially_none(self, engine: GameEngine):
+        """_pending_autonomous starts as None."""
+        assert engine._pending_autonomous is None
+        assert engine._pending_autonomous_behavior is None
+
+    def test_verbal_behavior_routes_to_llm(self, engine: GameEngine):
+        """Verbal behavior with needs_llm=True attempts LLM remark."""
+
+        # Set up manager and loop
+        mock_manager = MagicMock()
+        mock_manager.is_initialized = True
+        mock_manager.generate_autonomous_remark = MagicMock()
+        engine.window._manager = mock_manager
+        engine.window._loop = MagicMock()
+
+        behavior = IdleBehavior(
+            action_type=BehaviorType.COMPLAIN,
+            message="Feed me!",
+            animation_hint="talking",
+            needs_llm=True,
+        )
+
+        with patch("seaman_brain.gui.game_loop.asyncio.run_coroutine_threadsafe",
+                    return_value=Future()):
+            with patch("seaman_brain.gui.game_loop.get_behavior_situation",
+                        return_value="You are hungry."):
+                engine._request_autonomous_remark(behavior)
+
+        assert engine._pending_autonomous is not None
+        assert engine._pending_autonomous_behavior is behavior
+
+    def test_non_verbal_behavior_skips_llm(self, engine: GameEngine):
+        """Non-verbal behavior uses canned message directly."""
+        engine._check_behaviors({"time_of_day": "afternoon"})
+        # Non-verbal behaviors should not set pending autonomous
+        assert engine._pending_autonomous is None
+
+    def test_autonomous_falls_back_when_user_chatting(self, engine: GameEngine):
+        """If user chat is in flight, verbal behavior falls back to canned."""
+
+        engine._pending_response = Future()  # User chat in flight
+
+        behavior = IdleBehavior(
+            action_type=BehaviorType.COMPLAIN,
+            message="Feed me!",
+            animation_hint="talking",
+            needs_llm=True,
+        )
+
+        initial_count = engine._chat_panel.message_count
+        engine._request_autonomous_remark(behavior)
+
+        # Should have used canned message, not submitted LLM
+        assert engine._pending_autonomous is None
+        assert engine._chat_panel.message_count > initial_count
+
+    def test_autonomous_falls_back_when_another_autonomous(self, engine: GameEngine):
+        """If another autonomous is in flight, falls back to canned."""
+
+        engine._pending_autonomous = Future()  # Another autonomous in flight
+
+        behavior = IdleBehavior(
+            action_type=BehaviorType.OBSERVE,
+            message="How interesting.",
+            animation_hint="idle",
+            needs_llm=True,
+        )
+
+        initial_count = engine._chat_panel.message_count
+        engine._request_autonomous_remark(behavior)
+
+        # Should have used canned message
+        assert engine._chat_panel.message_count > initial_count
+
+    def test_autonomous_falls_back_when_no_manager(self, engine: GameEngine):
+        """If no ConversationManager, falls back to canned."""
+
+        engine.window._manager = None
+
+        behavior = IdleBehavior(
+            action_type=BehaviorType.COMPLAIN,
+            message="Ugh.",
+            animation_hint="talking",
+            needs_llm=True,
+        )
+
+        initial_count = engine._chat_panel.message_count
+        engine._request_autonomous_remark(behavior)
+        assert engine._chat_panel.message_count > initial_count
+
+    def test_check_pending_autonomous_delivers_result(self, engine: GameEngine):
+        """Completed autonomous remark is added to chat."""
+
+        future = Future()
+        future.set_result("I'm famished.")
+        engine._pending_autonomous = future
+        engine._pending_autonomous_behavior = IdleBehavior(
+            action_type=BehaviorType.COMPLAIN,
+            message="canned",
+            needs_llm=True,
+        )
+
+        engine._check_pending_autonomous()
+
+        assert engine._pending_autonomous is None
+        assert engine._pending_autonomous_behavior is None
+        assert engine._chat_panel.message_count >= 1
+
+    def test_check_pending_autonomous_falls_back_on_none(self, engine: GameEngine):
+        """If LLM returns None, falls back to canned behavior message."""
+
+        future = Future()
+        future.set_result(None)  # LLM returned None
+        engine._pending_autonomous = future
+        behavior = IdleBehavior(
+            action_type=BehaviorType.COMPLAIN,
+            message="canned fallback",
+            needs_llm=True,
+        )
+        engine._pending_autonomous_behavior = behavior
+
+        initial_count = engine._chat_panel.message_count
+        engine._check_pending_autonomous()
+
+        assert engine._pending_autonomous is None
+        # Should have applied canned behavior
+        assert engine._chat_panel.message_count > initial_count
+
+    def test_check_pending_autonomous_falls_back_on_error(self, engine: GameEngine):
+        """If autonomous future raises, falls back to canned behavior message."""
+
+        future = Future()
+        future.set_exception(RuntimeError("LLM exploded"))
+        engine._pending_autonomous = future
+        behavior = IdleBehavior(
+            action_type=BehaviorType.COMPLAIN,
+            message="canned error fallback",
+            needs_llm=True,
+        )
+        engine._pending_autonomous_behavior = behavior
+
+        initial_count = engine._chat_panel.message_count
+        engine._check_pending_autonomous()
+
+        assert engine._pending_autonomous is None
+        assert engine._chat_panel.message_count > initial_count
+
+    def test_user_chat_cancels_autonomous(self, engine: GameEngine):
+        """User chat submission cancels any pending autonomous remark."""
+        future = Future()
+        engine._pending_autonomous = future
+        engine._pending_autonomous_behavior = MagicMock()
+
+        engine.window._manager = None  # Will use fallback path
+        engine._on_chat_submit("Hello creature")
+
+        assert engine._pending_autonomous is None
+        assert engine._pending_autonomous_behavior is None
+
+
+# ── Interaction Reaction Tests ────────────────────────────────────────
+
+
+class TestInteractionReactions:
+    """Tests for LLM reactions to player interactions."""
+
+    def test_clean_triggers_reaction(self, engine: GameEngine):
+        """Cleaning triggers an interaction reaction request."""
+        mock_manager = MagicMock()
+        mock_manager.is_initialized = True
+        engine.window._manager = mock_manager
+        engine.window._loop = MagicMock()
+
+        with patch("seaman_brain.gui.game_loop.asyncio.run_coroutine_threadsafe",
+                    return_value=Future()):
+            engine._on_action_bar("clean")
+
+        assert engine._pending_autonomous is not None
+
+    def test_tap_glass_triggers_reaction(self, engine: GameEngine):
+        """Tapping glass triggers an interaction reaction request."""
+        mock_manager = MagicMock()
+        mock_manager.is_initialized = True
+        engine.window._manager = mock_manager
+        engine.window._loop = MagicMock()
+
+        with patch("seaman_brain.gui.game_loop.asyncio.run_coroutine_threadsafe",
+                    return_value=Future()):
+            engine._on_action_bar("tap_glass")
+
+        assert engine._pending_autonomous is not None
+
+    def test_interaction_skipped_when_user_chatting(self, engine: GameEngine):
+        """Interaction reaction skipped when user chat is in flight."""
+        engine._pending_response = Future()  # User chat in flight
+
+        mock_manager = MagicMock()
+        mock_manager.is_initialized = True
+        engine.window._manager = mock_manager
+        engine.window._loop = MagicMock()
+
+        engine._request_interaction_reaction("feed")
+        # Should NOT have set _pending_autonomous
+        assert engine._pending_autonomous is None
+
+    def test_interaction_skipped_when_autonomous_busy(self, engine: GameEngine):
+        """Interaction reaction skipped when another autonomous is in flight."""
+        engine._pending_autonomous = Future()  # Another autonomous in flight
+
+        mock_manager = MagicMock()
+        mock_manager.is_initialized = True
+        engine.window._manager = mock_manager
+
+        engine._request_interaction_reaction("clean")
+        # _pending_autonomous should remain as the existing future
+        assert engine._pending_autonomous is not None
+
+    def test_interaction_no_fallback_behavior(self, engine: GameEngine):
+        """Interaction reactions set no fallback behavior."""
+        mock_manager = MagicMock()
+        mock_manager.is_initialized = True
+        engine.window._manager = mock_manager
+        engine.window._loop = MagicMock()
+
+        with patch("seaman_brain.gui.game_loop.asyncio.run_coroutine_threadsafe",
+                    return_value=Future()):
+            engine._request_interaction_reaction("feed")
+
+        assert engine._pending_autonomous_behavior is None
+
+    def test_interaction_skipped_without_manager(self, engine: GameEngine):
+        """Interaction reaction skipped when no ConversationManager."""
+        engine.window._manager = None
+        engine._request_interaction_reaction("feed")
+        assert engine._pending_autonomous is None
+
+    def test_unknown_action_key_skipped(self, engine: GameEngine):
+        """Unknown action key doesn't submit autonomous request."""
+        mock_manager = MagicMock()
+        mock_manager.is_initialized = True
+        engine.window._manager = mock_manager
+        engine.window._loop = MagicMock()
+
+        engine._request_interaction_reaction("unknown_action")
+        assert engine._pending_autonomous is None

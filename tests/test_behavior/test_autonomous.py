@@ -8,10 +8,12 @@ from unittest.mock import AsyncMock
 import pytest
 
 from seaman_brain.behavior.autonomous import (
+    VERBAL_BEHAVIORS,
     BehaviorEngine,
     BehaviorType,
     IdleBehavior,
     _mood_category,
+    get_behavior_situation,
 )
 from seaman_brain.behavior.mood import CreatureMood
 from seaman_brain.needs.system import CreatureNeeds
@@ -589,3 +591,163 @@ class TestEdgeCases:
         for mood in CreatureMood:
             cat = _mood_category(mood)
             assert cat in {"negative", "neutral", "positive"}
+
+
+# ---------------------------------------------------------------------------
+# VERBAL_BEHAVIORS and needs_llm tests
+# ---------------------------------------------------------------------------
+
+class TestVerbalBehaviors:
+    """Tests for VERBAL_BEHAVIORS constant and needs_llm flag."""
+
+    def test_verbal_behaviors_contains_complain_and_observe(self) -> None:
+        assert BehaviorType.COMPLAIN in VERBAL_BEHAVIORS
+        assert BehaviorType.OBSERVE in VERBAL_BEHAVIORS
+
+    def test_verbal_behaviors_excludes_non_verbal(self) -> None:
+        assert BehaviorType.IDLE_SWIM not in VERBAL_BEHAVIORS
+        assert BehaviorType.TAP_GLASS not in VERBAL_BEHAVIORS
+        assert BehaviorType.SLEEP not in VERBAL_BEHAVIORS
+        assert BehaviorType.EAT not in VERBAL_BEHAVIORS
+
+    def test_verbal_behaviors_is_frozenset(self) -> None:
+        assert isinstance(VERBAL_BEHAVIORS, frozenset)
+
+    def test_needs_llm_set_for_complain(
+        self, hungry_needs, base_time_context, creature_state
+    ) -> None:
+        """COMPLAIN behavior gets needs_llm=True."""
+        engine = _make_engine()
+        result = engine.get_idle_behavior(
+            creature_state, hungry_needs, CreatureMood.HOSTILE, base_time_context
+        )
+        assert result is not None
+        if result.action_type == BehaviorType.COMPLAIN:
+            assert result.needs_llm is True
+
+    def test_needs_llm_set_for_observe(
+        self, healthy_needs, base_time_context, curious_traits, creature_state
+    ) -> None:
+        """OBSERVE behavior gets needs_llm=True."""
+        engine = _make_engine()
+        result = engine.get_idle_behavior(
+            creature_state,
+            healthy_needs,
+            CreatureMood.CURIOUS,
+            base_time_context,
+            traits=curious_traits,
+        )
+        assert result is not None
+        if result.action_type == BehaviorType.OBSERVE:
+            assert result.needs_llm is True
+
+    def test_needs_llm_false_for_idle_swim(
+        self, base_needs, base_time_context, creature_state
+    ) -> None:
+        """IDLE_SWIM behavior gets needs_llm=False."""
+        engine = _make_engine()
+        result = engine.get_idle_behavior(
+            creature_state, base_needs, CreatureMood.NEUTRAL, base_time_context
+        )
+        assert result is not None
+        if result.action_type == BehaviorType.IDLE_SWIM:
+            assert result.needs_llm is False
+
+    def test_needs_llm_false_for_sleep(
+        self, healthy_needs, night_time_context, creature_state
+    ) -> None:
+        """SLEEP behavior gets needs_llm=False."""
+        engine = _make_engine()
+        result = engine.get_idle_behavior(
+            creature_state, healthy_needs, CreatureMood.CONTENT, night_time_context
+        )
+        assert result is not None
+        if result.action_type == BehaviorType.SLEEP:
+            assert result.needs_llm is False
+
+    def test_idle_behavior_needs_llm_default_false(self) -> None:
+        """IdleBehavior.needs_llm defaults to False."""
+        b = IdleBehavior(action_type=BehaviorType.IDLE_SWIM, message="*swims*")
+        assert b.needs_llm is False
+
+
+# ---------------------------------------------------------------------------
+# get_behavior_situation tests
+# ---------------------------------------------------------------------------
+
+class TestGetBehaviorSituation:
+    """Tests for get_behavior_situation() helper."""
+
+    def test_complain_negative_mood(self, hungry_needs) -> None:
+        result = get_behavior_situation(
+            BehaviorType.COMPLAIN, CreatureMood.HOSTILE, hungry_needs
+        )
+        assert result is not None
+        assert "unhappy" in result.lower() or "displeasure" in result.lower()
+
+    def test_observe_positive_mood(self, healthy_needs) -> None:
+        result = get_behavior_situation(
+            BehaviorType.OBSERVE, CreatureMood.CURIOUS, healthy_needs
+        )
+        assert result is not None
+        assert "reflective" in result.lower() or "interesting" in result.lower()
+
+    def test_observe_neutral_mood(self, base_needs) -> None:
+        result = get_behavior_situation(
+            BehaviorType.OBSERVE, CreatureMood.NEUTRAL, base_needs
+        )
+        assert result is not None
+        assert "sardonic" in result.lower() or "observing" in result.lower()
+
+    def test_non_verbal_returns_none(self, base_needs) -> None:
+        """Non-verbal behavior types return None."""
+        result = get_behavior_situation(
+            BehaviorType.IDLE_SWIM, CreatureMood.NEUTRAL, base_needs
+        )
+        assert result is None
+
+    def test_hunger_context_appended(self) -> None:
+        """High hunger is mentioned in the situation string."""
+        needs = CreatureNeeds(hunger=0.8, comfort=0.7, health=0.9, stimulation=0.5)
+        result = get_behavior_situation(
+            BehaviorType.COMPLAIN, CreatureMood.IRRITATED, needs
+        )
+        assert result is not None
+        assert "hungry" in result.lower()
+
+    def test_low_comfort_context_appended(self) -> None:
+        """Low comfort is mentioned in the situation string."""
+        needs = CreatureNeeds(hunger=0.2, comfort=0.2, health=0.9, stimulation=0.5)
+        result = get_behavior_situation(
+            BehaviorType.COMPLAIN, CreatureMood.NEUTRAL, needs
+        )
+        assert result is not None
+        assert "comfort" in result.lower()
+
+    def test_low_stimulation_context_appended(self) -> None:
+        """Low stimulation is mentioned in the situation string."""
+        needs = CreatureNeeds(hunger=0.2, comfort=0.7, health=0.9, stimulation=0.1)
+        result = get_behavior_situation(
+            BehaviorType.OBSERVE, CreatureMood.NEUTRAL, needs
+        )
+        assert result is not None
+        assert "bored" in result.lower()
+
+    def test_low_health_context_appended(self) -> None:
+        """Low health is mentioned in the situation string."""
+        needs = CreatureNeeds(hunger=0.2, comfort=0.7, health=0.3, stimulation=0.5)
+        result = get_behavior_situation(
+            BehaviorType.COMPLAIN, CreatureMood.NEUTRAL, needs
+        )
+        assert result is not None
+        assert "unwell" in result.lower()
+
+    def test_no_extra_context_when_needs_fine(self, healthy_needs) -> None:
+        """When all needs are fine, no extra context is appended."""
+        result = get_behavior_situation(
+            BehaviorType.OBSERVE, CreatureMood.CONTENT, healthy_needs
+        )
+        assert result is not None
+        assert "hungry" not in result.lower()
+        assert "bored" not in result.lower()
+        assert "unwell" not in result.lower()

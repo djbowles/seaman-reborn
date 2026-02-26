@@ -29,6 +29,13 @@ class BehaviorType(Enum):
     EAT = "eat"
 
 
+# Verbal behaviors that benefit from LLM-generated speech
+VERBAL_BEHAVIORS: frozenset[BehaviorType] = frozenset({
+    BehaviorType.COMPLAIN,
+    BehaviorType.OBSERVE,
+})
+
+
 @dataclass
 class IdleBehavior:
     """An autonomous behavior the creature can perform unprompted.
@@ -38,12 +45,14 @@ class IdleBehavior:
         message: Text the creature says/thinks during this behavior.
         animation_hint: Suggested animation for the GUI layer.
         priority: Higher priority behaviors are more likely to be selected (0.0-1.0).
+        needs_llm: Whether this behavior should be routed through the LLM for speech.
     """
 
     action_type: BehaviorType
     message: str
     animation_hint: str = ""
     priority: float = 0.5
+    needs_llm: bool = False
 
 
 def _clamp(value: float, min_val: float = 0.0, max_val: float = 1.0) -> float:
@@ -274,6 +283,7 @@ class BehaviorEngine:
             message=message,
             animation_hint=animation,
             priority=_clamp(best_priority),
+            needs_llm=best_type in VERBAL_BEHAVIORS,
         )
 
     async def generate_idle_comment(
@@ -461,3 +471,63 @@ class BehaviorEngine:
         msg = messages[idx % len(messages)]
         self._message_index[btype] = idx + 1
         return msg
+
+
+# ── Situation prompts for LLM-powered verbal behaviors ───────────────
+
+# Mood-keyed situation templates for verbal behavior types.
+# Each template describes the creature's current emotional context.
+_BEHAVIOR_SITUATIONS: dict[BehaviorType, dict[str, str]] = {
+    BehaviorType.COMPLAIN: {
+        "negative": "You are deeply unhappy and want to voice your displeasure.",
+        "neutral": "You feel neglected and want to remind your owner you exist.",
+        "positive": "You're in a decent mood but still have something to grumble about.",
+    },
+    BehaviorType.OBSERVE: {
+        "negative": "You are brooding and notice something about your bleak situation.",
+        "neutral": "You are observing your surroundings with sardonic detachment.",
+        "positive": "You are in a reflective mood, noticing something interesting.",
+    },
+}
+
+
+def get_behavior_situation(
+    behavior_type: BehaviorType,
+    mood: CreatureMood,
+    needs: CreatureNeeds,
+) -> str | None:
+    """Build an enriched situation string for a verbal behavior.
+
+    Combines a mood-keyed situation template with concrete needs context
+    so the LLM can produce a remark that reflects the creature's actual state.
+
+    Args:
+        behavior_type: The type of verbal behavior (COMPLAIN or OBSERVE).
+        mood: The creature's current mood.
+        needs: The creature's current needs.
+
+    Returns:
+        A situation string for the LLM, or None if the behavior type
+        has no situation templates.
+    """
+    templates = _BEHAVIOR_SITUATIONS.get(behavior_type)
+    if templates is None:
+        return None
+
+    category = _mood_category(mood)
+    situation = templates.get(category, templates.get("neutral", ""))
+
+    # Append concrete needs context
+    parts: list[str] = [situation]
+    if needs.hunger > 0.6:
+        parts.append(f"You are very hungry (hunger: {needs.hunger:.0%}).")
+    elif needs.hunger > 0.3:
+        parts.append(f"You are somewhat hungry (hunger: {needs.hunger:.0%}).")
+    if needs.comfort < 0.4:
+        parts.append(f"Your comfort is low ({needs.comfort:.0%}).")
+    if needs.stimulation < 0.3:
+        parts.append(f"You are bored (stimulation: {needs.stimulation:.0%}).")
+    if needs.health < 0.5:
+        parts.append(f"You are unwell (health: {needs.health:.0%}).")
+
+    return " ".join(parts)

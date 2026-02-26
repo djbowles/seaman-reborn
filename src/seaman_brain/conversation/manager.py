@@ -283,6 +283,105 @@ class ConversationManager:
 
         return response
 
+    async def generate_autonomous_remark(self, situation: str) -> str | None:
+        """Generate an unprompted in-character remark using the full personality pipeline.
+
+        Unlike :meth:`process_input`, this does NOT:
+        - Add a fake user message to episodic memory
+        - Increment interaction count or bump trust
+        - Check for evolution
+        - Trigger memory extraction
+
+        It DOES:
+        - Build the full system prompt (stage, traits, state, observations)
+        - Retrieve relevant memories for continuity
+        - Call the LLM with the situation as context
+        - Apply personality constraints
+        - Store the ASSISTANT response in episodic memory
+
+        Args:
+            situation: A description of what the creature is reacting to.
+
+        Returns:
+            The generated remark, or None if unavailable.
+        """
+        if not self._initialized or self._llm is None:
+            return None
+
+        assert self._creature_state is not None
+        assert self._prompt_builder is not None
+        assert self._context_assembler is not None
+        assert self._traits is not None
+        assert self._episodic is not None
+
+        from seaman_brain.types import ChatMessage, MessageRole
+
+        # 1. Build system prompt with personality
+        system_prompt = self._prompt_builder.build(
+            stage=self._creature_state.stage,
+            traits=self._traits,
+            memories=None,
+            creature_state=self._creature_state.to_dict(),
+            observations=self._vision_observations if self._vision_observations else None,
+        )
+
+        # 2. Retrieve relevant memories using situation as query
+        memory_texts: list[str] = []
+        if self._retriever is not None:
+            try:
+                records = await self._retriever.retrieve(
+                    situation, top_k=self._config.memory.top_k
+                )
+                memory_texts = [r.text for r in records]
+            except Exception as exc:
+                logger.warning("Autonomous memory retrieval failed: %s", exc)
+
+        # Inject memories into system prompt if available
+        if memory_texts:
+            system_prompt = self._prompt_builder.build(
+                stage=self._creature_state.stage,
+                traits=self._traits,
+                memories=memory_texts,
+                creature_state=self._creature_state.to_dict(),
+                observations=(
+                    self._vision_observations if self._vision_observations else None
+                ),
+            )
+
+        # 3. Append situation directive
+        situation_directive = (
+            f"\nCURRENT SITUATION: {situation}\n"
+            "Generate a single brief in-character remark (1-2 sentences max)."
+        )
+        system_prompt += situation_directive
+
+        # 4. Assemble context (episodic history for continuity, no fake user message)
+        episodic_messages = self._episodic.get_all()
+        context = self._context_assembler.assemble(
+            system_prompt=system_prompt,
+            episodic_messages=episodic_messages,
+            retrieved_memories=None,
+        )
+
+        # 5. LLM call
+        try:
+            raw_response = await self._llm.chat(context)
+        except Exception as exc:
+            logger.error("Autonomous LLM call failed: %s", exc)
+            return None
+
+        if not raw_response or not raw_response.strip():
+            return None
+
+        # 6. Apply personality constraints
+        response = apply_constraints(raw_response, self._traits)
+
+        # 7. Store ONLY the assistant response in episodic memory (no user message)
+        assistant_msg = ChatMessage(role=MessageRole.ASSISTANT, content=response)
+        self._episodic.add(assistant_msg)
+
+        return response
+
     async def shutdown(self) -> None:
         """Cleanly shut down: save state and release resources."""
         if self._creature_state is not None:
