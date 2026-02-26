@@ -5,6 +5,7 @@ Submodules:
     tank_renderer: TankRenderer (habitat rendering)
     sprites: CreatureRenderer, AnimationState, CreaturePosition (creature art)
     game_loop: GameEngine, GameState (full game engine orchestrating all subsystems)
+    action_bar: ActionBar, ActionButton (right-side interaction button panel)
     widgets: Button, Toggle, Slider, Dropdown (reusable widget library)
     settings_panel: SettingsPanel, SettingsTab (settings screen overlay)
 """

@@ -26,6 +26,7 @@ from seaman_brain.creature.evolution import EvolutionEngine
 from seaman_brain.creature.state import CreatureState
 from seaman_brain.environment.clock import GameClock
 from seaman_brain.environment.tank import TankEnvironment
+from seaman_brain.gui.action_bar import ActionBar
 from seaman_brain.gui.audio_integration import PygameAudioBridge
 from seaman_brain.gui.chat_panel import ChatPanel
 from seaman_brain.gui.hud import HUD
@@ -110,6 +111,7 @@ class GameEngine:
             env_config=cfg.environment,
             needs_config=cfg.needs,
         )
+        self._action_bar = ActionBar(on_action=self._on_action_bar)
         self._audio_bridge: PygameAudioBridge | None = None
         self._vision_bridge: VisionBridge | None = None
 
@@ -191,10 +193,19 @@ class GameEngine:
                 async_loop=self.window._loop,
             )
 
-        # Sync tank area to renderers
+        # Compute layout: action bar on right, tank shrunk
+        action_bar_w = 160
+        window_w = self._config.gui.window_width
+        window_h = self._config.gui.window_height
+        tank_w = window_w - action_bar_w
+        top_margin = 45
+
+        self._tank_renderer.set_render_area(0, top_margin, tank_w, window_h - top_margin)
         render_area = self._tank_renderer.render_area
         self._creature_renderer.set_bounds(*render_area)
         self._interaction_manager.set_tank_area(*render_area)
+        self._interaction_manager.disable_buttons()
+        self._action_bar.set_panel_area(tank_w, top_margin, action_bar_w, window_h - top_margin)
 
         # Settings panel
         self._settings_panel = SettingsPanel(
@@ -439,6 +450,60 @@ class GameEngine:
 
         logger.info("Creature died: %s — %s", cause.value, record.message)
 
+    def _on_action_bar(self, action_key: str) -> None:
+        """Handle action bar button clicks.
+
+        Args:
+            action_key: The action key string (feed, temp_up, temp_down, etc.).
+        """
+        if self.game_over:
+            return
+
+        im = self._interaction_manager
+        creature = self._creature_state
+        tank = self._tank
+
+        if action_key == "feed":
+            available = im.feeding_engine.get_available_foods(creature.stage)
+            if available:
+                result = im.feeding_engine.feed(creature, available[0])
+                self._interaction_count_delta += 1
+                if result.success:
+                    self._add_notification(result.message)
+                    self._creature_renderer.set_animation(AnimationState.EATING)
+                    if self._audio_bridge is not None:
+                        self._audio_bridge.play_sfx("feeding_splash")
+                else:
+                    self._add_notification(result.message)
+            else:
+                self._add_notification("No food available for this stage.")
+
+        elif action_key == "temp_up":
+            care_result = im.care_engine.adjust_temperature(tank, 1.0, creature)
+            self._add_notification(care_result.message)
+
+        elif action_key == "temp_down":
+            care_result = im.care_engine.adjust_temperature(tank, -1.0, creature)
+            self._add_notification(care_result.message)
+
+        elif action_key == "clean":
+            care_result = im.care_engine.clean_tank(tank)
+            self._add_notification(care_result.message)
+
+        elif action_key == "drain":
+            if tank.water_level > 0.0:
+                care_result = im.care_engine.drain_tank(tank, creature)
+            else:
+                care_result = im.care_engine.fill_tank(tank, creature)
+            self._add_notification(care_result.message)
+
+        elif action_key == "tap_glass":
+            creature.interaction_count += 1
+            self._interaction_count_delta += 1
+            self._add_notification("You tap the glass...")
+            if self._audio_bridge is not None:
+                self._audio_bridge.play_sfx("glass_tap")
+
     def _on_chat_submit(self, text: str) -> None:
         """Handle chat input submission — send to ConversationManager."""
         if self.game_over or not text.strip():
@@ -510,6 +575,15 @@ class GameEngine:
             # Any click during game over restarts
             self._restart_game()
             return
+
+        # Action bar clicks
+        if self._action_bar.handle_click(mx, my):
+            return
+
+        # Chat panel Send button clicks
+        if self._chat_panel.visible and self._chat_panel.handle_click(mx, my):
+            return
+
         result = self._interaction_manager.handle_click(
             mx, my, self._creature_state, self._tank
         )
@@ -539,6 +613,8 @@ class GameEngine:
 
         self._creature_renderer.set_mouse_position(float(mx), float(my))
         self._interaction_manager.handle_mouse_move(mx, my)
+        self._action_bar.handle_mouse_move(mx, my)
+        self._chat_panel.handle_mouse_move(mx, my)
 
     def _on_mouse_up(self, event: pygame.event.Event) -> None:
         """Handle mouse button release (slider drag stop)."""
@@ -558,8 +634,8 @@ class GameEngine:
                 self.window.running = False
             return
 
-        # F10: toggle settings
-        if event.key == pygame.K_F10:
+        # F1: toggle settings
+        if event.key == pygame.K_F1:
             self._toggle_settings()
             return
 
@@ -699,8 +775,11 @@ class GameEngine:
         # 2. Creature
         self._creature_renderer.render(surface)
 
-        # 3. Interaction effects (ripples, food drops, buttons)
+        # 3. Interaction effects (ripples, food drops)
         self._interaction_manager.render(surface)
+
+        # 3b. Action bar
+        self._action_bar.render(surface)
 
         # 4. HUD
         self._hud.render(surface, self._creature_state, self._tank)

@@ -635,3 +635,33 @@ class TestEdgeCases:
         win = GameWindow()
         handler = MagicMock()
         win.unregister_event_handler(999, handler)  # Should not raise
+
+
+# ── Conditional Status Overlay Tests ─────────────────────────────────
+
+
+class TestConditionalOverlay:
+    """Tests for conditional status overlay rendering."""
+
+    def test_overlay_shown_without_renderers(self):
+        """Status overlay renders when no render callbacks are registered."""
+        from seaman_brain.gui.window import GameWindow
+
+        win = GameWindow()
+        win.initialize()
+        spy = MagicMock()
+        win._render_status_overlay = spy
+        win.render()
+        spy.assert_called_once()
+
+    def test_overlay_hidden_with_renderers(self):
+        """Status overlay is skipped when render callbacks are registered."""
+        from seaman_brain.gui.window import GameWindow
+
+        win = GameWindow()
+        win.initialize()
+        win.register_renderer(MagicMock())
+        spy = MagicMock()
+        win._render_status_overlay = spy
+        win.render()
+        spy.assert_not_called()

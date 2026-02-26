@@ -271,8 +271,9 @@ class GameWindow:
             except Exception as exc:
                 logger.error("Render callback error: %s", exc)
 
-        # Default status overlay (until subsystem renderers replace it)
-        self._render_status_overlay()
+        # Default status overlay (only when no subsystem renderers registered)
+        if not self._render_callbacks:
+            self._render_status_overlay()
 
         # Flip
         pygame.display.flip()

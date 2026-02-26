@@ -225,12 +225,23 @@ class InteractionManager:
         self._tank_w = self._gui_config.window_width
         self._tank_h = self._gui_config.window_height - 45
 
+        # Button enable/disable flag (ActionBar replaces old tiny buttons)
+        self._buttons_enabled = True
+
         # Tap tracking for reaction variety
         self._recent_tap_count = 0
         self._tap_cooldown = 0.0
 
         # Font (lazy-initialized)
         self._font: pygame.font.Font | None = None
+
+    def disable_buttons(self) -> None:
+        """Disable the built-in tiny interaction buttons.
+
+        Called when ActionBar takes over button interactions. Spatial
+        tank clicks (tap glass near walls, food menu in center) still work.
+        """
+        self._buttons_enabled = False
 
     @property
     def feeding_engine(self) -> FeedingEngine:
@@ -373,10 +384,11 @@ class InteractionManager:
             self.food_menu_open = False
             return None
 
-        # Check buttons
-        for btn in self._buttons:
-            if btn.contains(mx, my):
-                return self._handle_button(btn, creature, tank)
+        # Check buttons (only when enabled — ActionBar may replace them)
+        if self._buttons_enabled:
+            for btn in self._buttons:
+                if btn.contains(mx, my):
+                    return self._handle_button(btn, creature, tank)
 
         # Check tank area — tap glass or open food menu
         if self._is_in_tank(mx, my):
@@ -619,8 +631,8 @@ class InteractionManager:
             self._render_food_menu(surface)
 
     def _render_buttons(self, surface: pygame.Surface) -> None:
-        """Draw interactive buttons."""
-        if self._font is None:
+        """Draw interactive buttons (skipped when disabled)."""
+        if self._font is None or not self._buttons_enabled:
             return
 
         for btn in self._buttons:

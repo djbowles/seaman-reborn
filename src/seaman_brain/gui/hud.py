@@ -156,7 +156,7 @@ class HUD:
             gui_config: GUI configuration for sizing. Uses defaults if None.
         """
         self._config = gui_config or GUIConfig()
-        self.compact = False
+        self.compact = True
 
         # Font (lazy-initialized)
         self._font: pygame.font.Font | None = None
@@ -347,30 +347,25 @@ class HUD:
         trust_metric = self._build_trust_metric(creature)
         tank_metrics = self._build_tank_metrics(tank)
 
-        # Position: left column for needs + trust, right column for tank
+        # Position: all bars stacked in left column
         y_start = _TOP_BAR_HEIGHT + _SECTION_PADDING
         spacing = _BAR_SPACING_COMPACT if self.compact else _BAR_SPACING
 
-        # Left column: needs + trust
         x_left = _SECTION_PADDING
         y = y_start
+
+        # Need bars
         for metric in need_metrics:
             self._render_metric_bar(surface, x_left, y, metric)
             y += spacing
 
         # Trust bar
         self._render_metric_bar(surface, x_left, y, trust_metric)
+        y += spacing
 
-        # Right column: tank indicators
-        bar_w = _BAR_WIDTH_COMPACT if self.compact else _BAR_WIDTH
-        label_w = 0 if self.compact else _LABEL_WIDTH
-        value_w = 0 if self.compact else _VALUE_WIDTH
-        icon_w = 16
-        right_block_w = icon_w + label_w + bar_w + value_w + 12
-        x_right = surface.get_width() - right_block_w - _SECTION_PADDING
-        y = y_start
+        # Tank indicators (below trust)
         for metric in tank_metrics:
-            self._render_metric_bar(surface, x_right, y, metric)
+            self._render_metric_bar(surface, x_left, y, metric)
             y += spacing
 
     def _render_top_bar(
@@ -403,16 +398,19 @@ class HUD:
         mood_y = (_TOP_BAR_HEIGHT - mood_surf.get_height()) // 2
         surface.blit(mood_surf, (mood_x, mood_y))
 
-        # Settings button [F10] (right of mood, left of timer)
-        settings_text = "[F10]"
-        settings_surf = self._font.render(settings_text, True, _TEXT_DIM)
-        settings_x = w - 160
+        # Settings button (right of mood, left of timer)
+        settings_text = "[Settings]"
+        settings_surf = self._font.render(settings_text, True, _TEXT_COLOR)
+        settings_x = w - 180
         settings_y = (_TOP_BAR_HEIGHT - settings_surf.get_height()) // 2
-        surface.blit(settings_surf, (settings_x, settings_y))
-        self.settings_rect = pygame.Rect(
-            settings_x - 2, settings_y - 2,
-            settings_surf.get_width() + 4, settings_surf.get_height() + 4,
+        btn_rect = pygame.Rect(
+            settings_x - 6, settings_y - 3,
+            settings_surf.get_width() + 12, settings_surf.get_height() + 6,
         )
+        pygame.draw.rect(surface, (30, 50, 80), btn_rect)
+        pygame.draw.rect(surface, (80, 120, 180), btn_rect, 1)
+        surface.blit(settings_surf, (settings_x, settings_y))
+        self.settings_rect = btn_rect
 
         # Session timer (right)
         timer_text = self._format_session_time()

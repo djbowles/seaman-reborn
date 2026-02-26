@@ -466,22 +466,20 @@ class TestInteractionHandling:
         assert engine._game_state == GameState.PLAYING
         assert engine.window.running is True
 
-    def test_f10_opens_settings(self, engine: GameEngine):
-        """F10 toggles settings overlay open."""
+    def test_f1_opens_settings(self, engine: GameEngine):
+        """F1 toggles settings overlay open."""
         assert engine._game_state == GameState.PLAYING
-        event = MagicMock()
-        event.key = _pygame_mock.K_F10 if hasattr(_pygame_mock, "K_F10") else 291
-        # Ensure K_F10 is set
-        _pygame_mock.K_F10 = 291
+        _pygame_mock.K_F1 = 282
         import seaman_brain.gui.game_loop as gl_mod
         gl_mod.pygame = _pygame_mock
-        event.key = 291
+        event = MagicMock()
+        event.key = 282
         engine._on_key_down(event)
         assert engine._game_state == GameState.SETTINGS
 
-    def test_f10_closes_settings(self, engine: GameEngine):
-        """F10 toggles settings overlay closed."""
-        _pygame_mock.K_F10 = 291
+    def test_f1_closes_settings(self, engine: GameEngine):
+        """F1 toggles settings overlay closed."""
+        _pygame_mock.K_F1 = 282
         import seaman_brain.gui.game_loop as gl_mod
         gl_mod.pygame = _pygame_mock
         engine._game_state = GameState.SETTINGS
@@ -489,7 +487,7 @@ class TestInteractionHandling:
             engine._settings_panel.visible = True
 
         event = MagicMock()
-        event.key = 291
+        event.key = 282
         engine._on_key_down(event)
         assert engine._game_state == GameState.PLAYING
 
@@ -533,7 +531,7 @@ class TestInteractionHandling:
         assert engine._creature_renderer._mouse_x == initial_x
 
     def test_keys_consumed_during_settings(self, engine: GameEngine):
-        """Non-ESC/F10 keys are consumed when settings are open."""
+        """Non-ESC/F1 keys are consumed when settings are open."""
         engine._game_state = GameState.SETTINGS
         event = MagicMock()
         event.key = 104  # K_h
@@ -611,3 +609,70 @@ class TestVisionBridgeIntegration:
         assert engine._vision_bridge is None
         engine._on_vision_change("enabled", True)
         assert engine._vision_bridge is not None
+
+
+# ── ActionBar Integration Tests ──────────────────────────────────────
+
+
+class TestActionBarIntegration:
+    """Tests for ActionBar wiring in GameEngine."""
+
+    def test_action_bar_created(self, engine: GameEngine):
+        """ActionBar is created during init."""
+        assert engine._action_bar is not None
+
+    def test_action_bar_has_buttons(self, engine: GameEngine):
+        """ActionBar has 6 buttons after initialization."""
+        assert len(engine._action_bar.buttons) == 6
+
+    def test_interaction_buttons_disabled(self, engine: GameEngine):
+        """Old tiny interaction buttons are disabled."""
+        assert engine._interaction_manager._buttons_enabled is False
+
+    def test_action_bar_feed(self, engine: GameEngine):
+        """Feed action from action bar feeds the creature."""
+        engine._on_action_bar("feed")
+        # Should add a notification
+        assert len(engine._notifications) > 0
+
+    def test_action_bar_temp_up(self, engine: GameEngine):
+        """Temp+ action increases tank temperature."""
+        initial_temp = engine.tank.temperature
+        engine._on_action_bar("temp_up")
+        assert engine.tank.temperature > initial_temp
+
+    def test_action_bar_temp_down(self, engine: GameEngine):
+        """Temp- action decreases tank temperature."""
+        initial_temp = engine.tank.temperature
+        engine._on_action_bar("temp_down")
+        assert engine.tank.temperature < initial_temp
+
+    def test_action_bar_clean(self, engine: GameEngine):
+        """Clean action from action bar triggers clean."""
+        engine._on_action_bar("clean")
+        assert len(engine._notifications) > 0
+
+    def test_action_bar_tap_glass(self, engine: GameEngine):
+        """Tap action from action bar adds notification."""
+        engine._on_action_bar("tap_glass")
+        assert any("tap" in n[0].lower() for n in engine._notifications)
+
+    def test_action_bar_ignored_during_game_over(self, engine: GameEngine):
+        """Action bar actions are ignored during game over."""
+        engine.game_over = True
+        initial_notifs = len(engine._notifications)
+        engine._on_action_bar("feed")
+        assert len(engine._notifications) == initial_notifs
+
+    def test_action_bar_click_routed(self, engine: GameEngine):
+        """Mouse click on action bar button triggers action."""
+        btn = engine._action_bar.buttons[0]  # Feed
+        event = MagicMock()
+        event.pos = (btn.x + 5, btn.y + 5)
+        engine._on_mouse_click(event)
+        # Should have added a notification
+        assert len(engine._notifications) > 0
+
+    def test_action_bar_render(self, engine: GameEngine):
+        """ActionBar renders without crash."""
+        engine._render(_surface_mock)

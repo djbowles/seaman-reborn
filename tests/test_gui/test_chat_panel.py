@@ -766,3 +766,86 @@ class TestEdgeCases:
         panel.add_message(MessageRole.SYSTEM, "System: creature evolved")
         assert panel.message_count == 1
         assert list(panel._messages)[0].role == MessageRole.SYSTEM
+
+
+# ── Header Tests ─────────────────────────────────────────────────────
+
+
+class TestChatHeader:
+    """Tests for the Chat header bar."""
+
+    def test_render_draws_header(self):
+        """Render draws 'Chat' header text."""
+        panel = ChatPanel()
+        panel.render(_surface_mock)
+        rendered_texts = [str(call.args[0]) for call in _font_mock.render.call_args_list]
+        assert any("Chat" in t for t in rendered_texts)
+
+    def test_header_blitted(self):
+        """Render blits the header surface."""
+        panel = ChatPanel()
+        panel.render(_surface_mock)
+        # Multiple blits: panel bg, header, input bg, placeholder, send button
+        assert _surface_mock.blit.call_count >= 3
+
+
+# ── Send Button Tests ────────────────────────────────────────────────
+
+
+class TestSendButton:
+    """Tests for the Send button."""
+
+    def test_render_draws_send_button(self):
+        """Render draws 'Send' button text."""
+        panel = ChatPanel()
+        panel.render(_surface_mock)
+        rendered_texts = [str(call.args[0]) for call in _font_mock.render.call_args_list]
+        assert any("Send" in t for t in rendered_texts)
+
+    def test_send_button_click_submits(self):
+        """Clicking Send button submits input text."""
+        cb = MagicMock()
+        panel = ChatPanel(on_submit=cb)
+        panel._input_text = "Hello creature"
+        panel._cursor_pos = 14
+        # Render first to compute layout
+        panel.render(_surface_mock)
+        # Click on the send button rect
+        sx, sy, sw, sh = panel._send_rect
+        result = panel.handle_click(sx + 5, sy + 5)
+        assert result is True
+        cb.assert_called_once_with("Hello creature")
+        assert panel.input_text == ""
+
+    def test_send_button_click_empty_does_nothing(self):
+        """Clicking Send with empty input does nothing."""
+        cb = MagicMock()
+        panel = ChatPanel(on_submit=cb)
+        panel.render(_surface_mock)
+        sx, sy, sw, sh = panel._send_rect
+        result = panel.handle_click(sx + 5, sy + 5)
+        assert result is True  # Click consumed, but nothing submitted
+        cb.assert_not_called()
+
+    def test_click_outside_send_returns_false(self):
+        """Clicking outside Send button returns False."""
+        panel = ChatPanel()
+        panel.render(_surface_mock)
+        result = panel.handle_click(5, 5)
+        assert result is False
+
+    def test_mouse_move_hover_send(self):
+        """Moving mouse over Send button sets hover state."""
+        panel = ChatPanel()
+        panel.render(_surface_mock)
+        sx, sy, sw, sh = panel._send_rect
+        panel.handle_mouse_move(sx + 5, sy + 5)
+        assert panel._send_hover is True
+
+    def test_mouse_move_outside_send(self):
+        """Moving mouse away from Send button clears hover."""
+        panel = ChatPanel()
+        panel.render(_surface_mock)
+        panel._send_hover = True
+        panel.handle_mouse_move(5, 5)
+        assert panel._send_hover is False

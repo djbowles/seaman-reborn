@@ -522,6 +522,21 @@ class TankRenderer:
         overlay.fill((r, g, b, alpha))
         surface.blit(overlay, (self._render_x, self._render_y))
 
+    def set_render_area(self, x: int, y: int, w: int, h: int) -> None:
+        """Set the rendering area for the tank.
+
+        Args:
+            x: Left edge of the render area.
+            y: Top edge of the render area.
+            w: Width of the render area.
+            h: Height of the render area.
+        """
+        self._render_x = x
+        self._render_y = y
+        self._render_w = w
+        self._render_h = h
+        self._initialized = False  # Re-init decorations for new area
+
     @property
     def transition_progress(self) -> float:
         """Current aquarium->terrarium transition (0.0=aquarium, 1.0=terrarium)."""

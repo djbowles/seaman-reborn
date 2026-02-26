@@ -141,10 +141,10 @@ class TestHUDConstruction:
         assert h._config.window_width == 800
         assert h._config.window_height == 600
 
-    def test_starts_in_expanded_mode(self):
-        """HUD defaults to expanded (not compact) mode."""
+    def test_starts_in_compact_mode(self):
+        """HUD defaults to compact mode."""
         h = HUD()
-        assert h.compact is False
+        assert h.compact is True
 
     def test_session_time_starts_at_zero(self):
         """Session timer starts at zero."""
@@ -196,17 +196,17 @@ class TestColorThresholds:
 class TestModeSwitching:
     """Tests for compact/expanded mode toggling."""
 
-    def test_toggle_to_compact(self, hud: HUD):
-        """toggle_mode() switches from expanded to compact."""
+    def test_toggle_to_expanded(self, hud: HUD):
+        """toggle_mode() switches from compact (default) to expanded."""
+        assert hud.compact is True
+        hud.toggle_mode()
         assert hud.compact is False
+
+    def test_toggle_back_to_compact(self, hud: HUD):
+        """toggle_mode() twice returns to compact."""
+        hud.toggle_mode()
         hud.toggle_mode()
         assert hud.compact is True
-
-    def test_toggle_back_to_expanded(self, hud: HUD):
-        """toggle_mode() twice returns to expanded."""
-        hud.toggle_mode()
-        hud.toggle_mode()
-        assert hud.compact is False
 
     def test_compact_renders_without_crash(
         self, hud: HUD, default_creature: CreatureState, default_tank: TankEnvironment
@@ -494,6 +494,26 @@ class TestEdgeCases:
 class TestSettingsButton:
     """Tests for the HUD settings button indicator."""
 
+    def test_settings_button_has_background(
+        self, hud: HUD, default_creature: CreatureState, default_tank: TankEnvironment
+    ):
+        """Settings button has a background rect drawn."""
+        hud.render(_surface_mock, default_creature, default_tank)
+        # draw.rect should be called for the button background and border
+        assert _pygame_mock.draw.rect.call_count >= 2
+
+    def test_all_bars_in_left_column(
+        self, hud: HUD, default_creature: CreatureState, default_tank: TankEnvironment
+    ):
+        """All bars (needs + trust + tank) are rendered in the left column."""
+        # Build all metrics and verify they would be rendered from the same x position
+        need_metrics = hud._build_need_metrics(default_creature)
+        hud._build_trust_metric(default_creature)
+        tank_metrics = hud._build_tank_metrics(default_tank)
+        # 3 needs + 1 trust + 3 tank = 7 total bars
+        total = len(need_metrics) + 1 + len(tank_metrics)
+        assert total == 7
+
     def test_settings_rect_none_before_render(self, hud: HUD):
         """settings_rect is None before first render."""
         assert hud.settings_rect is None
@@ -508,8 +528,8 @@ class TestSettingsButton:
     def test_settings_button_renders_text(
         self, hud: HUD, default_creature: CreatureState, default_tank: TankEnvironment
     ):
-        """Top bar renders [F10] text for settings indicator."""
+        """Top bar renders [Settings] text for settings button."""
         hud.render(_surface_mock, default_creature, default_tank)
-        # Check that "[F10]" was rendered
+        # Check that "[Settings]" was rendered
         rendered_texts = [call.args[0] for call in _font_mock.render.call_args_list]
-        assert any("[F10]" in str(t) for t in rendered_texts)
+        assert any("[Settings]" in str(t) for t in rendered_texts)

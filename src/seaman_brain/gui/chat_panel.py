@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 # ── Colors ───────────────────────────────────────────────────────────────
 
-_PANEL_BG = (10, 15, 30, 180)  # Semi-transparent dark blue
+_PANEL_BG = (10, 15, 30, 220)  # Semi-transparent dark blue
 _INPUT_BG = (20, 30, 50, 220)  # Darker input area
 _INPUT_BORDER = (60, 100, 160)
 _INPUT_BORDER_FOCUS = (80, 160, 240)
@@ -45,6 +45,14 @@ _SCROLLBAR_WIDTH = 8
 _MAX_HISTORY = 200
 _FONT_SIZE = 15
 _CURSOR_BLINK_RATE = 0.53  # seconds
+_HEADER_HEIGHT = 24
+_HEADER_BG = (15, 25, 45, 240)
+_HEADER_TEXT_COLOR = (180, 200, 220)
+_SEND_BUTTON_WIDTH = 60
+_SEND_BUTTON_BG = (30, 60, 100)
+_SEND_BUTTON_BG_HOVER = (50, 85, 140)
+_SEND_BUTTON_BORDER = (80, 130, 200)
+_SEND_BUTTON_TEXT = (200, 220, 255)
 
 
 @dataclass
@@ -106,6 +114,10 @@ class ChatPanel:
         self._font: pygame.font.Font | None = None
         self._font_height = 0
 
+        # Send button state
+        self._send_hover = False
+        self._send_rect: tuple[int, int, int, int] = (0, 0, 0, 0)
+
         # Panel dimensions (calculated on render)
         self._panel_rect: tuple[int, int, int, int] = (0, 0, 0, 0)
         self._input_rect: tuple[int, int, int, int] = (0, 0, 0, 0)
@@ -142,15 +154,22 @@ class ChatPanel:
         panel_y = surface_height - panel_h
         self._panel_rect = (0, panel_y, surface_width, panel_h)
 
-        # Input area at bottom of panel
+        # Input area at bottom of panel (shrunk to make room for Send button)
         input_y = panel_y + panel_h - _INPUT_HEIGHT - _INPUT_PADDING
         input_x = _INPUT_PADDING
-        input_w = surface_width - 2 * _INPUT_PADDING
+        input_w = surface_width - 2 * _INPUT_PADDING - _SEND_BUTTON_WIDTH - _INPUT_PADDING
         self._input_rect = (input_x, input_y, input_w, _INPUT_HEIGHT)
 
-        # Message area above input
-        msg_y = panel_y + _MSG_PADDING
-        msg_h = panel_h - _INPUT_HEIGHT - _INPUT_PADDING * 2 - _MSG_PADDING
+        # Send button (right of input)
+        send_x = input_x + input_w + _INPUT_PADDING
+        self._send_rect = (send_x, input_y, _SEND_BUTTON_WIDTH, _INPUT_HEIGHT)
+
+        # Message area above input, below header
+        msg_y = panel_y + _HEADER_HEIGHT + _MSG_PADDING
+        msg_h = (
+            panel_h - _HEADER_HEIGHT - _INPUT_HEIGHT
+            - _INPUT_PADDING * 2 - _MSG_PADDING
+        )
         self._msg_area_rect = (_MSG_PADDING, msg_y, surface_width - 2 * _MSG_PADDING, msg_h)
 
     def _wrap_text(self, text: str, max_width: int) -> list[str]:
@@ -344,6 +363,32 @@ class ChatPanel:
             self._cursor_timer -= _CURSOR_BLINK_RATE
             self._cursor_visible = not self._cursor_visible
 
+    def handle_click(self, mx: int, my: int) -> bool:
+        """Handle a mouse click on the chat panel.
+
+        Args:
+            mx: Mouse x position.
+            my: Mouse y position.
+
+        Returns:
+            True if the click was on the Send button and consumed.
+        """
+        sx, sy, sw, sh = self._send_rect
+        if sx <= mx <= sx + sw and sy <= my <= sy + sh:
+            self._submit_input()
+            return True
+        return False
+
+    def handle_mouse_move(self, mx: int, my: int) -> None:
+        """Update hover state for Send button.
+
+        Args:
+            mx: Mouse x position.
+            my: Mouse y position.
+        """
+        sx, sy, sw, sh = self._send_rect
+        self._send_hover = sx <= mx <= sx + sw and sy <= my <= sy + sh
+
     def render(self, surface: pygame.Surface) -> None:
         """Render the chat panel onto the given surface.
 
@@ -364,11 +409,17 @@ class ChatPanel:
         # Draw panel background
         self._render_panel_bg(surface)
 
+        # Draw header
+        self._render_header(surface)
+
         # Draw messages
         self._render_messages(surface)
 
         # Draw input area
         self._render_input(surface)
+
+        # Draw Send button
+        self._render_send_button(surface)
 
     def _render_panel_bg(self, surface: pygame.Surface) -> None:
         """Draw the semi-transparent panel background."""
@@ -376,6 +427,33 @@ class ChatPanel:
         bg_surface = pygame.Surface((pw, ph), pygame.SRCALPHA)
         bg_surface.fill(_PANEL_BG)
         surface.blit(bg_surface, (px, py))
+
+    def _render_header(self, surface: pygame.Surface) -> None:
+        """Draw the 'Chat' header bar at top of panel."""
+        if self._font is None:
+            return
+        px, py, pw, _ = self._panel_rect
+        header_surf = pygame.Surface((pw, _HEADER_HEIGHT), pygame.SRCALPHA)
+        header_surf.fill(_HEADER_BG)
+        surface.blit(header_surf, (px, py))
+        text_surf = self._font.render("Chat", True, _HEADER_TEXT_COLOR)
+        tx = px + _INPUT_PADDING
+        ty = py + (_HEADER_HEIGHT - text_surf.get_height()) // 2
+        surface.blit(text_surf, (tx, ty))
+
+    def _render_send_button(self, surface: pygame.Surface) -> None:
+        """Draw the Send button next to the input field."""
+        if self._font is None:
+            return
+        sx, sy, sw, sh = self._send_rect
+        bg = _SEND_BUTTON_BG_HOVER if self._send_hover else _SEND_BUTTON_BG
+        btn_rect = pygame.Rect(sx, sy, sw, sh)
+        pygame.draw.rect(surface, bg, btn_rect)
+        pygame.draw.rect(surface, _SEND_BUTTON_BORDER, btn_rect, 1)
+        text_surf = self._font.render("Send", True, _SEND_BUTTON_TEXT)
+        tx = sx + (sw - text_surf.get_width()) // 2
+        ty = sy + (sh - text_surf.get_height()) // 2
+        surface.blit(text_surf, (tx, ty))
 
     def _render_messages(self, surface: pygame.Surface) -> None:
         """Render the scrollable message history."""
