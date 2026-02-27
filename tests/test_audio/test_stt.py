@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from seaman_brain.audio.stt import (
+    FasterWhisperSTTProvider,
     NoopSTTProvider,
     SpeechRecognitionSTTProvider,
     STTProvider,
@@ -339,5 +340,199 @@ class TestCreateSTTProvider:
     def test_enabled_import_error_falls_back(self):
         config = AudioConfig(stt_enabled=True)
         with patch.dict(sys.modules, {"speech_recognition": None}):
+            provider = create_stt_provider(config)
+            assert isinstance(provider, NoopSTTProvider)
+
+
+# ─── FasterWhisperSTTProvider ─────────────────────────────────────
+
+
+def _mock_faster_whisper():
+    """Create a mock faster_whisper module and return (mock_module, mock_model)."""
+    mock_module = MagicMock()
+    mock_model = MagicMock()
+    mock_module.WhisperModel.return_value = mock_model
+    return mock_module, mock_model
+
+
+class TestFasterWhisperSTTProviderInit:
+    """Test initialization of FasterWhisperSTTProvider."""
+
+    def test_init_lazy_no_import(self):
+        """Constructor does NOT import faster_whisper — lazy init."""
+        provider = FasterWhisperSTTProvider()
+        assert provider._model is None
+        assert provider.available is False
+
+    def test_initialize_success(self):
+        """_initialize() loads WhisperModel."""
+        mock_fw, _ = _mock_faster_whisper()
+        with patch.dict(sys.modules, {"faster_whisper": mock_fw}):
+            provider = FasterWhisperSTTProvider()
+            provider._initialize()
+            assert provider.available is True
+            assert provider._model is not None
+
+    def test_initialize_import_error(self):
+        """_initialize() handles missing faster-whisper gracefully."""
+        with patch.dict(sys.modules, {"faster_whisper": None}):
+            provider = FasterWhisperSTTProvider()
+            provider._initialize()
+            assert provider.available is False
+            assert "not installed" in provider._init_error
+
+    def test_initialize_idempotent(self):
+        """Calling _initialize() twice does not recreate the model."""
+        mock_fw, _ = _mock_faster_whisper()
+        with patch.dict(sys.modules, {"faster_whisper": mock_fw}):
+            provider = FasterWhisperSTTProvider()
+            provider._initialize()
+            model_ref = provider._model
+            provider._initialize()
+            assert provider._model is model_ref
+
+    def test_implements_protocol(self):
+        """FasterWhisperSTTProvider satisfies STTProvider protocol."""
+        provider = FasterWhisperSTTProvider()
+        assert isinstance(provider, STTProvider)
+
+    def test_custom_config_applied(self):
+        """Config values are stored correctly."""
+        config = AudioConfig(
+            stt_model="base",
+            stt_silence_threshold=0.02,
+            stt_silence_duration=2.0,
+        )
+        provider = FasterWhisperSTTProvider(config)
+        assert provider._config.stt_model == "base"
+        assert provider._config.stt_silence_threshold == 0.02
+        assert provider._config.stt_silence_duration == 2.0
+
+
+class TestFasterWhisperSTTProviderListen:
+    """Test listen with mocked whisper + sounddevice."""
+
+    @pytest.mark.asyncio
+    async def test_listen_unavailable_returns_empty(self):
+        """listen() returns empty when model not available."""
+        with patch.dict(sys.modules, {"faster_whisper": None}):
+            provider = FasterWhisperSTTProvider()
+            result = await provider.listen()
+            assert result == ""
+
+    @pytest.mark.asyncio
+    async def test_listen_success(self):
+        """listen() returns transcribed text with mocked audio."""
+        import numpy as np
+
+        mock_fw, mock_model = _mock_faster_whisper()
+
+        # Mock segment result
+        mock_segment = MagicMock()
+        mock_segment.text = "hello world"
+        mock_model.transcribe.return_value = (iter([mock_segment]), MagicMock())
+
+        # Mock sounddevice
+        mock_sd = MagicMock()
+        block_count = 0
+
+        class FakeStream:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                pass
+
+            def read(self, n):
+                nonlocal block_count
+                block_count += 1
+                if block_count <= 3:
+                    # Speech — above threshold
+                    return np.full((n, 1), 0.1, dtype=np.float32), False
+                # Silence blocks — trigger stop after silence_dur
+                return np.zeros((n, 1), dtype=np.float32), False
+
+        mock_sd.InputStream.return_value = FakeStream()
+        mock_sd.query_devices.return_value = []
+
+        with patch.dict(sys.modules, {
+            "faster_whisper": mock_fw,
+            "sounddevice": mock_sd,
+            "numpy": np,
+        }):
+            config = AudioConfig(stt_silence_duration=0.5)  # 5 blocks at 0.1s
+            provider = FasterWhisperSTTProvider(config)
+            provider._initialize()
+            result = await provider.listen()
+            assert result == "hello world"
+
+    @pytest.mark.asyncio
+    async def test_listen_no_speech_returns_empty(self):
+        """listen() returns empty when only silence is captured."""
+        import numpy as np
+
+        mock_fw, mock_model = _mock_faster_whisper()
+
+        mock_sd = MagicMock()
+
+        class SilentStream:
+            def __init__(self):
+                self._count = 0
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                pass
+
+            def read(self, n):
+                self._count += 1
+                if self._count > 150:  # max_duration / 0.1
+                    raise StopIteration
+                return np.zeros((n, 1), dtype=np.float32), False
+
+        mock_sd.InputStream.return_value = SilentStream()
+        mock_sd.query_devices.return_value = []
+
+        with patch.dict(sys.modules, {
+            "faster_whisper": mock_fw,
+            "sounddevice": mock_sd,
+            "numpy": np,
+        }):
+            provider = FasterWhisperSTTProvider()
+            provider._initialize()
+            result = await provider.listen()
+            assert result == ""
+
+
+class TestFasterWhisperSTTFactory:
+    """Test factory with faster_whisper provider."""
+
+    def test_factory_creates_faster_whisper_when_available(self):
+        """Factory creates FasterWhisperSTTProvider when configured."""
+        config = AudioConfig(stt_enabled=True, stt_provider="faster_whisper")
+        mock_fw, _ = _mock_faster_whisper()
+        with patch.dict(sys.modules, {"faster_whisper": mock_fw}):
+            provider = create_stt_provider(config)
+            assert isinstance(provider, FasterWhisperSTTProvider)
+
+    def test_factory_falls_back_to_speech_recognition(self):
+        """Factory falls back to speech_recognition when faster-whisper unavailable."""
+        config = AudioConfig(stt_enabled=True, stt_provider="faster_whisper")
+        mock_sr_mod, _ = _mock_sr()
+        with patch.dict(sys.modules, {
+            "faster_whisper": None,
+            "speech_recognition": mock_sr_mod,
+        }):
+            provider = create_stt_provider(config)
+            assert isinstance(provider, SpeechRecognitionSTTProvider)
+
+    def test_factory_falls_back_to_noop(self):
+        """Factory falls back to noop when all providers unavailable."""
+        config = AudioConfig(stt_enabled=True, stt_provider="faster_whisper")
+        with patch.dict(sys.modules, {
+            "faster_whisper": None,
+            "speech_recognition": None,
+        }):
             provider = create_stt_provider(config)
             assert isinstance(provider, NoopSTTProvider)

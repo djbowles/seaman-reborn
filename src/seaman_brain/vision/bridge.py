@@ -15,6 +15,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from seaman_brain.config import VisionConfig
+from seaman_brain.llm.scheduler import ModelScheduler
 from seaman_brain.vision.capture import SurfaceCapture, WebcamCapture
 from seaman_brain.vision.observer import VisionObserver
 
@@ -39,9 +40,11 @@ class VisionBridge:
         self,
         vision_config: VisionConfig,
         async_loop: asyncio.AbstractEventLoop | None = None,
+        scheduler: ModelScheduler | None = None,
     ) -> None:
         self._config = vision_config
         self._async_loop = async_loop
+        self._scheduler = scheduler
 
         self._webcam = WebcamCapture(device_index=vision_config.webcam_index)
         self._surface = SurfaceCapture()
@@ -131,6 +134,11 @@ class VisionBridge:
 
     def _do_capture(self, surface: Any | None) -> None:
         """Capture a frame and dispatch async observation."""
+        # Gate on scheduler — skip if chat model is active
+        if self._scheduler is not None and not self._scheduler.acquire("vision"):
+            logger.debug("Vision capture skipped — chat model active")
+            return
+
         frame_bytes: bytes | None = None
 
         if self.source == "webcam":
@@ -139,20 +147,24 @@ class VisionBridge:
             else:
                 logger.warning("Webcam not available, skipping capture")
                 self._last_capture_failed = True
+                self._release_vision_slot()
                 return
         elif self.source == "tank":
             frame_bytes = self._surface.capture(surface)
         else:
+            self._release_vision_slot()
             return
 
         if frame_bytes is None:
             logger.warning("No frame captured from %s", self.source)
             self._last_capture_failed = True
+            self._release_vision_slot()
             return
 
         if self._async_loop is None:
             logger.warning("No async loop available for vision observation")
             self._last_capture_failed = True
+            self._release_vision_slot()
             return
 
         source = self.source
@@ -169,6 +181,12 @@ class VisionBridge:
         except Exception as exc:
             logger.warning("Failed to dispatch vision observation: %s", exc)
             self._last_capture_failed = True
+            self._release_vision_slot()
+
+    def _release_vision_slot(self) -> None:
+        """Release the vision scheduler slot if a scheduler is present."""
+        if self._scheduler is not None:
+            self._scheduler.release("vision")
 
     def _check_pending(self) -> None:
         """Check if the pending observation future is done."""
@@ -186,6 +204,7 @@ class VisionBridge:
                     pass
                 self._pending = None
                 self._last_capture_failed = True
+                self._release_vision_slot()
             return
 
         try:
@@ -199,3 +218,4 @@ class VisionBridge:
             logger.warning("Vision observation failed: %s", exc)
         finally:
             self._pending = None
+            self._release_vision_slot()

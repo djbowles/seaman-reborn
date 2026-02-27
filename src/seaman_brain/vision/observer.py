@@ -32,10 +32,22 @@ class VisionObserver:
 
     Produces short text observations from either webcam or tank captures.
     Observations are plain strings ready for injection into the system prompt.
+
+    Reuses a single ``AsyncClient`` instance across calls to avoid
+    creating a new connection per observation.
     """
 
     def __init__(self, config: VisionConfig) -> None:
         self._config = config
+        self._client: object | None = None
+
+    def _get_client(self):
+        """Lazily create and return a persistent AsyncClient."""
+        if self._client is None:
+            import ollama
+
+            self._client = ollama.AsyncClient()
+        return self._client
 
     async def observe(self, frame_bytes: bytes, source: str = "webcam") -> str:
         """Send an image frame to the vision model and get a text description.
@@ -53,9 +65,7 @@ class VisionObserver:
         prompt = _WEBCAM_PROMPT if source == "webcam" else _TANK_PROMPT
 
         try:
-            import ollama
-
-            client = ollama.AsyncClient()
+            client = self._get_client()
             response = await client.chat(
                 model=self._config.vision_model,
                 messages=[

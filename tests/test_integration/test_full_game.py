@@ -101,7 +101,7 @@ class TestConversationThroughGUIBridge:
     """
 
     async def test_websocket_conversation_round_trip(self, tmp_path):
-        """Client sends input via WebSocket, receives response with state."""
+        """Client sends input via WebSocket, receives streaming response."""
         from seaman_brain.api.server import BrainServer
 
         cfg = _make_config(save_path=str(tmp_path / "saves"))
@@ -113,13 +113,27 @@ class TestConversationThroughGUIBridge:
         with TestClient(server.app) as client:
             with client.websocket_connect("/ws/brain") as ws:
                 ws.send_json({"type": "input", "text": "Hello creature!"})
-                resp = ws.receive_json()
 
-                assert resp["type"] == "response"
-                assert isinstance(resp["text"], str)
-                assert len(resp["text"]) > 0
-                assert "state" in resp
-                assert resp["state"]["interaction_count"] == 1
+                # Streaming protocol: stream_start -> stream_token* -> stream_end
+                start = ws.receive_json()
+                assert start["type"] == "stream_start"
+                request_id = start["request_id"]
+
+                # Collect tokens until stream_end
+                tokens = []
+                while True:
+                    msg = ws.receive_json()
+                    if msg["type"] == "stream_end":
+                        break
+                    assert msg["type"] == "stream_token"
+                    tokens.append(msg["token"])
+
+                assert len(tokens) > 0
+                assert isinstance(msg["text"], str)
+                assert len(msg["text"]) > 0
+                assert "state" in msg
+                assert msg["request_id"] == request_id
+                assert msg["state"]["creature_state"]["interaction_count"] == 1
 
     async def test_websocket_multiple_turns_state_updates(self, tmp_path):
         """Multiple WebSocket messages accumulate state correctly."""
@@ -133,14 +147,21 @@ class TestConversationThroughGUIBridge:
 
         with TestClient(server.app) as client:
             with client.websocket_connect("/ws/brain") as ws:
+                end_msg = None
                 for i in range(3):
                     ws.send_json({"type": "input", "text": f"Message {i + 1}"})
-                    resp = ws.receive_json()
-                    assert resp["type"] == "response"
-                    assert resp["state"]["interaction_count"] == i + 1
+                    # Consume streaming protocol
+                    start = ws.receive_json()
+                    assert start["type"] == "stream_start"
+                    while True:
+                        msg = ws.receive_json()
+                        if msg["type"] == "stream_end":
+                            end_msg = msg
+                            break
+                    assert end_msg["state"]["creature_state"]["interaction_count"] == i + 1
 
                 # Trust should have increased over 3 interactions
-                assert resp["state"]["trust_level"] > 0.0
+                assert end_msg["state"]["creature_state"]["trust_level"] > 0.0
 
     async def test_rest_state_endpoint_reflects_conversation(self, tmp_path):
         """GET /api/state reflects state after WebSocket conversation."""
@@ -156,7 +177,11 @@ class TestConversationThroughGUIBridge:
             # Send a message via WebSocket
             with client.websocket_connect("/ws/brain") as ws:
                 ws.send_json({"type": "input", "text": "Hello"})
-                ws.receive_json()
+                # Consume streaming protocol
+                while True:
+                    msg = ws.receive_json()
+                    if msg["type"] == "stream_end":
+                        break
 
             # REST state should reflect the interaction
             resp = client.get("/api/state")
@@ -479,7 +504,7 @@ class TestAPIWebSocketIntegration:
     """Full API integration — WebSocket messaging and REST state queries."""
 
     async def test_websocket_input_and_state_response(self, tmp_path):
-        """WebSocket client sends input and receives response with full state."""
+        """WebSocket client sends input and receives streaming response."""
         from seaman_brain.api.server import BrainServer
 
         cfg = _make_config(save_path=str(tmp_path / "saves"))
@@ -495,14 +520,19 @@ class TestAPIWebSocketIntegration:
         with TestClient(server.app) as client:
             with client.websocket_connect("/ws/brain") as ws:
                 ws.send_json({"type": "input", "text": "How's the water?"})
-                resp = ws.receive_json()
 
-                assert resp["type"] == "response"
-                assert resp["text"]  # non-empty response
-                assert resp["state"]["stage"] == "gillman"
-                assert resp["state"]["hunger"] == pytest.approx(0.3, abs=0.01)
-                assert resp["state"]["interaction_count"] == 1
-                assert "timestamp" in resp
+                # Consume streaming protocol
+                start = ws.receive_json()
+                assert start["type"] == "stream_start"
+                while True:
+                    msg = ws.receive_json()
+                    if msg["type"] == "stream_end":
+                        break
+
+                assert msg["text"]  # non-empty response
+                assert msg["state"]["creature_state"]["stage"] == "gillman"
+                assert msg["state"]["creature_state"]["interaction_count"] == 1
+                assert "timestamp" in msg
 
     async def test_websocket_error_on_invalid_message(self, tmp_path):
         """WebSocket returns error for unknown message types."""

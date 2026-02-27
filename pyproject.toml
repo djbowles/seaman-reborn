@@ -32,6 +32,14 @@ stt = [
     "SpeechRecognition>=3.10",
     "pyaudio>=0.2.14",
 ]
+stt-local = [
+    "faster-whisper>=1.1.0",
+    "sounddevice>=0.5.0",
+]
+tts-neural = [
+    "kokoro>=0.9.0",
+    "soundfile>=0.12.0",
+]
 vision = [
     "opencv-python>=4.8",
     "Pillow>=10.0",
@@ -44,7 +52,7 @@ dev = [
     "ruff>=0.8",
     "httpx>=0.28",
 ]
-all = ["seaman-brain[cloud,stt,vision,dev]"]
+all = ["seaman-brain[cloud,stt,stt-local,tts-neural,vision,dev]"]
 
 [project.scripts]
 seaman-brain = "seaman_brain.__main__:main"

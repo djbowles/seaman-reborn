@@ -91,6 +91,9 @@ class PygameAudioBridge:
         self.mic_active = False
         self._stt_lock = threading.Lock()
 
+        # Shutdown guard — prevents new async submissions after shutdown starts
+        self._shutting_down = False
+
         # Initialize mixer
         self._init_mixer()
 
@@ -229,13 +232,17 @@ class PygameAudioBridge:
         """
         if not text or not text.strip():
             return
-        if self._audio_manager is None:
+        if self._audio_manager is None or self._shutting_down:
             return
 
         if self._async_loop is not None:
-            asyncio.run_coroutine_threadsafe(
-                self._play_voice_async(text), self._async_loop
-            )
+            try:
+                asyncio.run_coroutine_threadsafe(
+                    self._play_voice_async(text), self._async_loop
+                )
+            except RuntimeError:
+                # Loop already closed
+                pass
         else:
             logger.debug("No async loop available for voice playback")
 
@@ -245,18 +252,24 @@ class PygameAudioBridge:
         Args:
             text: Text to synthesize and play.
         """
-        if self._audio_manager is None:
+        if self._audio_manager is None or self._shutting_down:
             return
 
         try:
             # Prefer native speak() — uses pyttsx3's built-in audio output
             await self._audio_manager.speak(text)
+        except asyncio.CancelledError:
+            logger.debug("Voice playback cancelled during shutdown")
         except Exception as exc:
             logger.warning("Native speak failed, trying synthesize fallback: %s", exc)
+            if self._shutting_down:
+                return
             try:
                 wav_bytes = await self._audio_manager.synthesize(text)
                 if wav_bytes and self._voice_channel is not None:
                     self._play_wav_bytes(wav_bytes, self._voice_channel)
+            except asyncio.CancelledError:
+                logger.debug("Voice synthesis cancelled during shutdown")
             except Exception as exc2:
                 logger.warning("Voice playback failed: %s", exc2)
 
@@ -337,12 +350,15 @@ class PygameAudioBridge:
 
     def _start_listening(self) -> None:
         """Begin STT listening in the background async loop."""
-        if self._audio_manager is None or self._async_loop is None:
+        if self._audio_manager is None or self._async_loop is None or self._shutting_down:
             return
 
-        asyncio.run_coroutine_threadsafe(
-            self._listen_async(), self._async_loop
-        )
+        try:
+            asyncio.run_coroutine_threadsafe(
+                self._listen_async(), self._async_loop
+            )
+        except RuntimeError:
+            pass
 
     async def _listen_async(self) -> None:
         """Continuous async STT listening loop.
@@ -353,11 +369,13 @@ class PygameAudioBridge:
         if self._audio_manager is None:
             return
 
-        while self.mic_active:
+        while self.mic_active and not self._shutting_down:
             try:
                 text = await self._audio_manager.listen()
                 if text and text.strip() and self._on_stt_result is not None:
                     self._on_stt_result(text.strip())
+            except asyncio.CancelledError:
+                break
             except Exception as exc:
                 logger.warning("STT listen failed: %s", exc)
                 # Brief pause before retrying to avoid tight error loops
@@ -399,7 +417,8 @@ class PygameAudioBridge:
                 pass
 
     def shutdown(self) -> None:
-        """Clean shutdown — stop all audio channels."""
+        """Clean shutdown — stop all audio channels and block new submissions."""
+        self._shutting_down = True
         self.stop_ambient()
         self.mic_active = False
 

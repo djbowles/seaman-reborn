@@ -9,6 +9,7 @@ and context assembly.
 from __future__ import annotations
 
 import logging
+from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from typing import Any
 
@@ -166,7 +167,7 @@ class ConversationManager:
         self._prompt_builder = PromptBuilder(config_dir=cfg.personality.stages_path)
 
         # Context assembler
-        self._context_assembler = ContextAssembler(max_tokens=cfg.llm.max_tokens)
+        self._context_assembler = ContextAssembler(max_tokens=cfg.llm.context_window)
 
         self._initialized = True
         logger.info("ConversationManager initialized (stage=%s)", stage.value)
@@ -283,6 +284,129 @@ class ConversationManager:
 
         return response
 
+    async def process_input_stream(self, user_input: str) -> AsyncIterator[str]:
+        """Process user input and stream the creature's response token-by-token.
+
+        Steps 1-6 (memory, state, evolution, retrieval, prompt, context) run
+        before streaming begins.  LLM tokens are yielded as they arrive.
+        Steps 8-11 (constraints, memory store, extraction, save) run after the
+        stream is fully consumed.
+
+        Args:
+            user_input: The user's text input.
+
+        Yields:
+            Individual response tokens/chunks.
+
+        Raises:
+            RuntimeError: If initialize() has not been called.
+            RuntimeError: If no LLM provider is available.
+        """
+        if not self._initialized:
+            raise RuntimeError(
+                "ConversationManager not initialized. Call initialize() first."
+            )
+        if self._llm is None:
+            raise RuntimeError("No LLM provider available. Cannot process input.")
+
+        assert self._creature_state is not None
+        assert self._episodic is not None
+        assert self._prompt_builder is not None
+        assert self._context_assembler is not None
+        assert self._traits is not None
+
+        from seaman_brain.types import ChatMessage, MessageRole
+
+        # 1. Add user message to episodic memory
+        user_msg = ChatMessage(role=MessageRole.USER, content=user_input)
+        self._episodic.add(user_msg)
+
+        # 2. Update creature state
+        self._creature_state.interaction_count += 1
+        self._creature_state.last_interaction = datetime.now(UTC)
+        trust_bump = min(0.01, (1.0 - self._creature_state.trust_level) * 0.02)
+        self._creature_state.trust_level = min(
+            1.0, self._creature_state.trust_level + trust_bump
+        )
+
+        # 3. Check for evolution
+        evolved = False
+        if self._evolution is not None:
+            new_stage = self._evolution.check_evolution(self._creature_state)
+            if new_stage is not None:
+                try:
+                    self._traits = self._evolution.evolve(
+                        self._creature_state, new_stage
+                    )
+                    evolved = True
+                    logger.info("Creature evolved to %s!", new_stage.value)
+                except ValueError as exc:
+                    logger.warning("Evolution failed: %s", exc)
+
+        # 4. Retrieve relevant long-term memories
+        memory_texts: list[str] = []
+        if self._retriever is not None:
+            try:
+                records = await self._retriever.retrieve(
+                    user_input, top_k=self._config.memory.top_k
+                )
+                memory_texts = [r.text for r in records]
+            except Exception as exc:
+                logger.warning("Memory retrieval failed: %s", exc)
+
+        # 5. Build system prompt
+        system_prompt = self._prompt_builder.build(
+            stage=self._creature_state.stage,
+            traits=self._traits,
+            memories=memory_texts if memory_texts else None,
+            creature_state=self._creature_state.to_dict(),
+            observations=(
+                self._vision_observations if self._vision_observations else None
+            ),
+        )
+
+        # 6. Assemble context
+        episodic_messages = self._episodic.get_all()
+        context = self._context_assembler.assemble(
+            system_prompt=system_prompt,
+            episodic_messages=episodic_messages,
+            retrieved_memories=None,
+        )
+
+        # 7. Stream LLM tokens
+        accumulated: list[str] = []
+        try:
+            async for token in self._llm.stream(context):
+                accumulated.append(token)
+                yield token
+        except Exception as exc:
+            logger.error("LLM stream failed: %s", exc)
+            fallback = self._fallback_response(evolved)
+            accumulated = [fallback]
+            yield fallback
+
+        raw_response = "".join(accumulated)
+
+        # 8. Apply personality constraints
+        response = apply_constraints(raw_response, self._traits)
+
+        # 9. Store assistant response in episodic memory
+        assistant_msg = ChatMessage(role=MessageRole.ASSISTANT, content=response)
+        self._episodic.add(assistant_msg)
+
+        # 10. Background memory extraction
+        if self._extractor is not None:
+            self._extractor.increment_counter()
+            if self._extractor.should_extract():
+                try:
+                    all_messages = self._episodic.get_all()
+                    await self._extractor.extract_and_store(all_messages)
+                except Exception as exc:
+                    logger.warning("Memory extraction failed: %s", exc)
+
+        # 11. Save creature state
+        self._save_state()
+
     async def generate_autonomous_remark(self, situation: str) -> str | None:
         """Generate an unprompted in-character remark using the full personality pipeline.
 
@@ -348,20 +472,25 @@ class ConversationManager:
                 ),
             )
 
-        # 3. Append situation directive
+        # 3. Build situation directive as a USER message so the model
+        # knows it should generate a response.  Without a trailing USER
+        # message, Qwen3 (and many other models) return empty content
+        # when the episodic history ends with ASSISTANT messages.
         situation_directive = (
-            f"\nCURRENT SITUATION: {situation}\n"
+            f"CURRENT SITUATION: {situation}\n"
             "Generate a single brief in-character remark (1-2 sentences max)."
         )
-        system_prompt += situation_directive
 
-        # 4. Assemble context (episodic history for continuity, no fake user message)
+        # 4. Assemble context (episodic history for continuity)
         episodic_messages = self._episodic.get_all()
         context = self._context_assembler.assemble(
             system_prompt=system_prompt,
             episodic_messages=episodic_messages,
             retrieved_memories=None,
         )
+
+        # Append situation as a USER message at the end of the assembled context
+        context.append(ChatMessage(role=MessageRole.USER, content=situation_directive))
 
         # 5. LLM call
         try:

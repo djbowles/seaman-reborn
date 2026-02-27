@@ -25,7 +25,8 @@ class OllamaProvider:
         cfg = config or LLMConfig()
         self.model = cfg.model
         self.temperature = cfg.temperature
-        self.num_ctx = cfg.max_tokens
+        self.num_ctx = cfg.context_window
+        self.num_predict = cfg.max_response_tokens
         self.base_url = cfg.base_url
         self._client = AsyncClient(host=self.base_url)
 
@@ -54,7 +55,11 @@ class OllamaProvider:
             response = await self._client.chat(
                 model=self.model,
                 messages=self._format_messages(messages),
-                options={"temperature": self.temperature, "num_ctx": self.num_ctx},
+                options={
+                    "temperature": self.temperature,
+                    "num_ctx": self.num_ctx,
+                    "num_predict": self.num_predict,
+                },
             )
         except Exception as exc:
             raise ConnectionError(
@@ -78,7 +83,11 @@ class OllamaProvider:
             response_stream = await self._client.chat(
                 model=self.model,
                 messages=self._format_messages(messages),
-                options={"temperature": self.temperature, "num_ctx": self.num_ctx},
+                options={
+                    "temperature": self.temperature,
+                    "num_ctx": self.num_ctx,
+                    "num_predict": self.num_predict,
+                },
                 stream=True,
             )
         except Exception as exc:

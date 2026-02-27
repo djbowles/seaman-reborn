@@ -25,7 +25,9 @@ class LLMConfig(BaseModel):
     provider: str = "ollama"
     model: str = "qwen3-coder:30b"
     temperature: float = 0.8
-    max_tokens: int = 512
+    max_tokens: int = 512  # Output limit for OpenAI/Anthropic providers
+    context_window: int = 8192  # Ollama num_ctx (input context window)
+    max_response_tokens: int = 4096  # Ollama num_predict (output token limit)
     base_url: str = "http://localhost:11434"
 
 
@@ -101,10 +103,14 @@ class AudioConfig(BaseModel):
     tts_voice: str = ""
     tts_rate: int = 150
     tts_volume: float = 0.8
+    tts_speed: float = 1.0  # Kokoro speed multiplier (0.5-2.0)
     sfx_volume: float = 0.5
     ambient_volume: float = 0.3
     audio_output_device: str = ""  # empty = system default
     audio_input_device: str = ""  # empty = system default
+    stt_model: str = "large-v3-turbo"  # Faster-Whisper model size
+    stt_silence_threshold: float = 0.01  # RMS below this = silence
+    stt_silence_duration: float = 1.5  # seconds of silence before auto-submit
 
 
 class EnvironmentConfig(BaseModel):

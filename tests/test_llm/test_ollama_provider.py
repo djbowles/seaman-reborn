@@ -21,7 +21,9 @@ def llm_config() -> LLMConfig:
         provider="ollama",
         model="test-model:7b",
         temperature=0.5,
-        max_tokens=2048,
+        max_tokens=512,
+        context_window=8192,
+        max_response_tokens=4096,
         base_url="http://localhost:11434",
     )
 
@@ -66,7 +68,8 @@ class TestOllamaProviderHappyPath:
         provider = OllamaProvider(llm_config)
         assert provider.model == "test-model:7b"
         assert provider.temperature == 0.5
-        assert provider.num_ctx == 2048
+        assert provider.num_ctx == 8192
+        assert provider.num_predict == 4096
         assert provider.base_url == "http://localhost:11434"
 
     def test_default_config(self) -> None:
@@ -92,7 +95,7 @@ class TestOllamaProviderHappyPath:
                 {"role": "system", "content": "You are sardonic."},
                 {"role": "user", "content": "Hello"},
             ],
-            options={"temperature": 0.5, "num_ctx": 2048},
+            options={"temperature": 0.5, "num_ctx": 8192, "num_predict": 4096},
         )
 
     async def test_stream_yields_chunks(

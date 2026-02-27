@@ -856,17 +856,99 @@ class TestAudioConfigAttribute:
 class TestSTTCallback:
     """Tests for STT result callback wiring in GameEngine."""
 
-    def test_stt_result_submits_to_chat(self, engine: GameEngine):
-        """STT result is forwarded as chat input."""
-        initial_count = engine._chat_panel.message_count
+    def test_stt_result_queues_text(self, engine: GameEngine):
+        """STT result is queued, not immediately submitted."""
         engine._on_stt_result("hello creature")
-        assert engine._chat_panel.message_count > initial_count
+        assert engine._stt_queued_text == "hello creature"
+        # Should NOT be in chat panel yet (queued, not submitted)
+        assert engine._chat_panel.message_count == 0
 
     def test_stt_result_empty_ignored(self, engine: GameEngine):
         """Empty STT result is ignored."""
-        initial_count = engine._chat_panel.message_count
         engine._on_stt_result("")
-        assert engine._chat_panel.message_count == initial_count
+        assert engine._stt_queued_text is None
+
+    def test_stt_debounce_waits(self, engine: GameEngine):
+        """Queued STT text is not submitted until debounce period elapses."""
+        engine._on_stt_result("hello creature")
+        # Immediately after: debounce hasn't elapsed
+        engine._check_stt_queue()
+        assert engine._stt_queued_text == "hello creature"
+        assert engine._pending_response is None
+
+    def test_stt_debounce_submits_after_wait(self, engine: GameEngine):
+        """Queued STT text is submitted after debounce period."""
+        engine._on_stt_result("hello creature")
+        # Fake the timestamp to be in the past (debounce elapsed)
+        engine._stt_queued_time = 0.0
+
+        engine.window._manager = MagicMock()
+        engine.window._manager.is_initialized = True
+        engine.window._loop = MagicMock()
+
+        with patch("seaman_brain.gui.game_loop.asyncio.run_coroutine_threadsafe",
+                    return_value=Future()):
+            engine._check_stt_queue()
+
+        assert engine._stt_queued_text is None
+        assert engine._pending_response is not None
+        assert engine._chat_panel.message_count > 0
+
+    def test_stt_waits_for_llm_idle(self, engine: GameEngine):
+        """STT queue waits for pending response to complete."""
+        engine._on_stt_result("hello creature")
+        engine._stt_queued_time = 0.0  # debounce elapsed
+        engine._pending_response = Future()  # LLM busy
+
+        engine._check_stt_queue()
+        # Text stays queued (LLM is busy)
+        assert engine._stt_queued_text == "hello creature"
+
+    def test_stt_does_not_cancel_inflight(self, engine: GameEngine):
+        """Rapid STT results do NOT cancel in-flight LLM responses."""
+        old_future = Future()
+        engine._pending_response = old_future
+
+        engine._on_stt_result("new speech")
+        # In-flight response should NOT be cancelled
+        assert not old_future.cancelled()
+        assert engine._pending_response is old_future
+
+    def test_stt_latest_wins(self, engine: GameEngine):
+        """Multiple rapid STT results keep only the latest text."""
+        engine._on_stt_result("first phrase")
+        engine._on_stt_result("second phrase")
+        engine._on_stt_result("third phrase")
+        assert engine._stt_queued_text == "third phrase"
+
+    def test_typed_input_clears_stt_queue(self, engine: GameEngine):
+        """Typed chat input clears any queued STT text."""
+        engine._on_stt_result("queued speech")
+        assert engine._stt_queued_text == "queued speech"
+
+        engine.window._manager = None  # Will use fallback path
+        engine._on_chat_submit("typed input")
+        assert engine._stt_queued_text is None
+
+    def test_stt_cancels_autonomous(self, engine: GameEngine):
+        """STT submission cancels pending autonomous remarks."""
+        engine._on_stt_result("hello creature")
+        engine._stt_queued_time = 0.0  # debounce elapsed
+
+        auto_future = Future()
+        engine._pending_autonomous = auto_future
+        engine._pending_autonomous_behavior = MagicMock()
+
+        engine.window._manager = MagicMock()
+        engine.window._manager.is_initialized = True
+        engine.window._loop = MagicMock()
+
+        with patch("seaman_brain.gui.game_loop.asyncio.run_coroutine_threadsafe",
+                    return_value=Future()):
+            engine._check_stt_queue()
+
+        assert engine._pending_autonomous is None
+        assert engine._pending_autonomous_behavior is None
 
     def test_audio_bridge_receives_callback(self, engine: GameEngine):
         """Audio bridge is initialized with the STT callback."""

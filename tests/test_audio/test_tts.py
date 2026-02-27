@@ -10,6 +10,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from seaman_brain.audio.tts import (
+    KokoroTTSProvider,
     NoopTTSProvider,
     Pyttsx3TTSProvider,
     TTSProvider,
@@ -405,3 +406,193 @@ class TestTTSEdgeCases:
             provider = Pyttsx3TTSProvider()
             with pytest.raises(RuntimeError, match="Engine crash"):
                 await provider.synthesize("hello")
+
+
+# ─── KokoroTTSProvider ───────────────────────────────────────────
+
+
+def _mock_kokoro():
+    """Create a mock kokoro module and return (mock_module, mock_pipeline)."""
+    import numpy as np
+
+    mock_module = MagicMock()
+    mock_pipeline = MagicMock()
+
+    # Make pipeline callable — returns generator of (gs, ps, audio) tuples
+    sample_audio = np.zeros(2400, dtype=np.float32)  # 0.1s at 24kHz
+    mock_pipeline.__call__ = MagicMock(
+        return_value=iter([(None, None, sample_audio)])
+    )
+    mock_module.KPipeline.return_value = mock_pipeline
+    return mock_module, mock_pipeline
+
+
+def _mock_soundfile():
+    """Create a mock soundfile module."""
+    mock_sf = MagicMock()
+
+    def fake_write(buf, data, samplerate, format=None, subtype=None):
+        """Write a minimal valid WAV to the buffer."""
+        import struct
+        num_samples = len(data)
+        byte_data = struct.pack(f"<{num_samples}h", *[int(s * 32767) for s in data[:100]])
+        wav_buf = io.BytesIO()
+        with wave.open(wav_buf, "wb") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(samplerate)
+            wf.writeframes(byte_data)
+        buf.write(wav_buf.getvalue())
+        buf.seek(0)
+
+    mock_sf.write.side_effect = fake_write
+    mock_sf.read.return_value = ([0.0] * 100, 24000)
+    return mock_sf
+
+
+class TestKokoroTTSProviderInit:
+    """Test initialization of KokoroTTSProvider."""
+
+    def test_init_lazy_no_import(self):
+        """Constructor does NOT import kokoro — lazy init."""
+        provider = KokoroTTSProvider()
+        assert provider._pipeline is None
+        assert provider.available is False  # Not initialized yet
+
+    def test_initialize_success(self):
+        """_initialize() loads kokoro pipeline."""
+        mock_kokoro, _ = _mock_kokoro()
+        with patch.dict(sys.modules, {"kokoro": mock_kokoro}):
+            provider = KokoroTTSProvider()
+            provider._initialize()
+            assert provider.available is True
+            assert provider._pipeline is not None
+
+    def test_initialize_import_error(self):
+        """_initialize() handles missing kokoro gracefully."""
+        with patch.dict(sys.modules, {"kokoro": None}):
+            provider = KokoroTTSProvider()
+            provider._initialize()
+            assert provider.available is False
+            assert "not installed" in provider._init_error
+
+    def test_initialize_idempotent(self):
+        """Calling _initialize() twice does not recreate the pipeline."""
+        mock_kokoro, _ = _mock_kokoro()
+        with patch.dict(sys.modules, {"kokoro": mock_kokoro}):
+            provider = KokoroTTSProvider()
+            provider._initialize()
+            pipeline_ref = provider._pipeline
+            provider._initialize()
+            assert provider._pipeline is pipeline_ref
+
+    def test_implements_protocol(self):
+        """KokoroTTSProvider satisfies TTSProvider protocol."""
+        provider = KokoroTTSProvider()
+        assert isinstance(provider, TTSProvider)
+
+
+class TestKokoroTTSProviderSynthesize:
+    """Test synthesis with mocked kokoro."""
+
+    @pytest.mark.asyncio
+    async def test_synthesize_returns_bytes(self):
+        """synthesize() returns WAV bytes."""
+        mock_kokoro, _ = _mock_kokoro()
+        mock_sf = _mock_soundfile()
+        with patch.dict(sys.modules, {
+            "kokoro": mock_kokoro,
+            "soundfile": mock_sf,
+        }):
+            provider = KokoroTTSProvider()
+            data = await provider.synthesize("Hello world")
+            assert isinstance(data, bytes)
+            assert len(data) > 0
+
+    @pytest.mark.asyncio
+    async def test_synthesize_empty_text(self):
+        """synthesize() returns empty WAV for blank input."""
+        mock_kokoro, _ = _mock_kokoro()
+        with patch.dict(sys.modules, {"kokoro": mock_kokoro}):
+            provider = KokoroTTSProvider()
+            provider._initialize()
+            data = await provider.synthesize("")
+            assert isinstance(data, bytes)
+            # Verify it's a valid WAV
+            buf = io.BytesIO(data)
+            with wave.open(buf, "rb") as wf:
+                assert wf.getnframes() == 0
+
+    @pytest.mark.asyncio
+    async def test_synthesize_unavailable_raises(self):
+        """synthesize() raises when kokoro is unavailable."""
+        with patch.dict(sys.modules, {"kokoro": None}):
+            provider = KokoroTTSProvider()
+            with pytest.raises(RuntimeError, match="Kokoro TTS unavailable"):
+                await provider.synthesize("hello")
+
+    @pytest.mark.asyncio
+    async def test_voice_config_applied(self):
+        """Voice and speed config are passed to pipeline."""
+        config = AudioConfig(tts_voice="am_michael", tts_speed=1.5)
+        mock_kokoro, mock_pipeline = _mock_kokoro()
+        mock_sf = _mock_soundfile()
+        with patch.dict(sys.modules, {
+            "kokoro": mock_kokoro,
+            "soundfile": mock_sf,
+        }):
+            provider = KokoroTTSProvider(config)
+            await provider.synthesize("Test")
+            mock_pipeline.assert_called_once_with(
+                "Test", voice="am_michael", speed=1.5
+            )
+
+
+class TestKokoroTTSProviderSpeak:
+    """Test speak with mocked kokoro + sounddevice."""
+
+    @pytest.mark.asyncio
+    async def test_speak_unavailable_no_error(self):
+        """speak() silently skips when unavailable."""
+        with patch.dict(sys.modules, {"kokoro": None}):
+            provider = KokoroTTSProvider()
+            provider._initialize()
+            await provider.speak("hello")  # Should not raise
+
+    @pytest.mark.asyncio
+    async def test_speak_empty_skips(self):
+        """speak() does nothing for empty text."""
+        mock_kokoro, _ = _mock_kokoro()
+        with patch.dict(sys.modules, {"kokoro": mock_kokoro}):
+            provider = KokoroTTSProvider()
+            provider._initialize()
+            await provider.speak("")
+
+
+class TestKokoroTTSFactory:
+    """Test factory with kokoro provider."""
+
+    def test_factory_creates_kokoro_when_available(self):
+        """Factory creates KokoroTTSProvider when provider='kokoro' and installed."""
+        config = AudioConfig(tts_provider="kokoro")
+        mock_kokoro, _ = _mock_kokoro()
+        with patch.dict(sys.modules, {"kokoro": mock_kokoro}):
+            provider = create_tts_provider(config)
+            assert isinstance(provider, KokoroTTSProvider)
+
+    def test_factory_falls_back_to_pyttsx3(self):
+        """Factory falls back to pyttsx3 when kokoro not installed."""
+        config = AudioConfig(tts_provider="kokoro")
+        mock_pyttsx3, _ = _mock_pyttsx3()
+        with patch.dict(sys.modules, {"kokoro": None, "pyttsx3": mock_pyttsx3}):
+            provider = create_tts_provider(config)
+            assert isinstance(provider, Pyttsx3TTSProvider)
+
+    def test_factory_falls_back_to_noop(self):
+        """Factory falls back to noop when both kokoro and pyttsx3 unavailable."""
+        config = AudioConfig(tts_provider="kokoro")
+        mock_pyttsx3 = MagicMock()
+        mock_pyttsx3.init.side_effect = RuntimeError("No audio")
+        with patch.dict(sys.modules, {"kokoro": None, "pyttsx3": mock_pyttsx3}):
+            provider = create_tts_provider(config)
+            assert isinstance(provider, NoopTTSProvider)

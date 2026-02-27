@@ -2,7 +2,7 @@
 
 ## Project Status
 
-The Python "brain" backend is **feature-complete**: 2155 tests passing, ruff clean, all 52 user stories implemented across 14 subpackages (llm, personality, memory, creature, conversation, cli, audio, environment, needs, behavior, gui, api, vision).
+The Python "brain" backend is **feature-complete**: 2278 tests passing, ruff clean, all 52 user stories implemented across 14 subpackages (llm, personality, memory, creature, conversation, cli, audio, environment, needs, behavior, gui, api, vision).
 
 - **Repo**: https://github.com/djbowles/seaman-reborn (private)
 - **Branch**: `ralph/ai-brain-core` (all work), `main` (base)
@@ -21,7 +21,7 @@ The Python "brain" backend is **feature-complete**: 2155 tests passing, ruff cle
 | Autonomous behavior + mood engine | Done | `behavior/` — mood calculation, idle behaviors |
 | Environment simulation | Done | `environment/` — real-time clock, tank state |
 | Conversation orchestration | Done | `conversation/` — context assembly, full pipeline |
-| TTS/STT audio | Done | `audio/` — pyttsx3 TTS, speech recognition |
+| TTS/STT audio | Done | `audio/` — pyttsx3/Kokoro TTS, speech_recognition/Faster-Whisper STT |
 | Pygame GUI (playable) | Done | `gui/` — tank, sprites, chat, HUD, action bar |
 | **FastAPI WebSocket bridge** | **Done** | `api/` — **this is the UE5 connection point** |
 
@@ -343,6 +343,80 @@ Fixed 6 bugs preventing vision and audio from functioning at runtime:
 - **STT non-functional** — Two fixes: (1) PyAudio was missing (installed via `pip install pyaudio`); (2) When STT enabled at runtime, `NoopSTTProvider` wasn't replaced. Added `_try_upgrade_stt()` to `AudioManager` that recreates the STT provider when `stt_enabled` is set to True while using a noop provider.
 - **Creature age stuck at 0.0** — `creature_state.age` was never incremented anywhere in the game loop or needs engine. Creature died with `age=0.0` in death records. Fixed: `game_loop.py` now increments `self._creature_state.age += elapsed` in the periodic needs-update block.
 - **Empty shutdown error log** — `window.py` logged `TimeoutError` with `%s` format which produces an empty string (TimeoutError has no message). Fixed: changed to `%r` format with `exc_info=True` for full traceback.
+
+## Forge-Audit Optimizations (latest)
+
+Four-phase infrastructure upgrade addressing LLM token misconfiguration, VRAM scheduling, neural TTS, and local STT.
+
+### Phase 1: LLM Token Configuration Fix (CRITICAL)
+
+**Problem**: `LLMConfig.max_tokens = 512` was mapped to Ollama's `num_ctx` (context window), meaning the 30B model could only see ~512 tokens total — less than the system prompt alone. Additionally, `num_predict` (output token limit) was never set, so Qwen3's invisible thinking tokens (~700) consumed the default budget before generating actual responses.
+
+**Fix**: Split the single `max_tokens` field into proper Ollama-specific parameters:
+
+| File | Change |
+|------|--------|
+| `config.py` (LLMConfig) | Added `context_window: int = 8192` (Ollama `num_ctx`) and `max_response_tokens: int = 4096` (Ollama `num_predict`). Kept `max_tokens = 512` for OpenAI/Anthropic backward compat. |
+| `llm/ollama_provider.py` | `num_ctx` uses `cfg.context_window`, added `num_predict` to both `chat()` and `stream()` options |
+| `conversation/manager.py` | `ContextAssembler(max_tokens=cfg.llm.context_window)` (was `cfg.llm.max_tokens`) |
+| `config/default.toml` | Added `context_window = 8192`, `max_response_tokens = 4096` under `[llm]` |
+
+**Critical follow-up fix — empty autonomous responses**: Expanding context from 512→8192 caused episodic ASSISTANT messages to now fit in context. When `generate_autonomous_remark()` appended the situation directive to the system prompt, the assembled context was SYSTEM + ASSISTANT messages with no trailing USER message. Qwen3 returns empty content in this pattern. **Fixed** by sending the situation directive as a trailing USER ChatMessage after context assembly instead of injecting into the system prompt.
+
+### Phase 2: Kokoro Neural TTS Provider
+
+**Problem**: pyttsx3 uses Windows SAPI5 which sounds robotic. Kokoro is a neural TTS producing natural speech (~2GB VRAM).
+
+| File | Change |
+|------|--------|
+| `audio/tts.py` | New `KokoroTTSProvider` class — lazy model loading, 24kHz output, voice/speed config. Factory updated: kokoro → pyttsx3 fallback. |
+| `config.py` (AudioConfig) | Added `tts_speed: float = 1.0` (Kokoro speed multiplier 0.5-2.0) |
+| `gui/device_utils.py` | Added `list_kokoro_voices()` with known voice IDs; `list_tts_voices()` now accepts `provider` param |
+| `gui/settings_panel.py` | Passes `config.audio.tts_provider` to `list_tts_voices()` |
+| `pyproject.toml` | Added `tts-neural = ["kokoro>=0.9.0", "soundfile>=0.12.0"]` optional deps |
+
+**Activation**: Set `tts_provider = "kokoro"` in config and `pip install seaman-brain[tts-neural]`. Falls back to pyttsx3 if kokoro not installed.
+
+### Phase 3: Faster-Whisper Local STT Provider
+
+**Problem**: `speech_recognition` uses Google's cloud API (network latency, rate limits, privacy). Faster-Whisper runs locally on GPU with CTranslate2 — 5.4x realtime, better accuracy, no network dependency (~3GB VRAM).
+
+| File | Change |
+|------|--------|
+| `audio/stt.py` | New `FasterWhisperSTTProvider` — lazy CUDA model loading, RMS-based VAD (silence detection), 16kHz sounddevice capture, 15s max phrase cutoff. Factory updated: faster_whisper → speech_recognition fallback. |
+| `config.py` (AudioConfig) | Added `stt_model: str = "large-v3-turbo"`, `stt_silence_threshold: float = 0.01`, `stt_silence_duration: float = 1.5` |
+| `pyproject.toml` | Added `stt-local = ["faster-whisper>=1.1.0", "sounddevice>=0.5.0"]` optional deps |
+
+**Activation**: Set `stt_provider = "faster_whisper"` in config and `pip install seaman-brain[stt-local]`.
+
+### Phase 4: VRAM-Aware Model Scheduling
+
+**Problem**: Qwen3-Coder-30B (~18GB) and Qwen3-VL-8B (~5-8GB) can collide in 32GB VRAM. Ollama auto-swaps but the 3-6s penalty causes invisible timeouts. No VRAM monitoring existed.
+
+| File | Change |
+|------|--------|
+| `llm/scheduler.py` | **New file** — `ModelScheduler` with thread-safe slot-based mutual exclusion. Chat and vision are mutually exclusive heavy slots. `acquire(slot) -> bool`, `release(slot)`, `is_active(slot)`. |
+| `vision/observer.py` | Fixed: reuses persistent `AsyncClient` instead of creating new one per `observe()` call |
+| `vision/bridge.py` | Accepts optional `ModelScheduler`; `_do_capture()` gates on `scheduler.acquire("vision")`; all failure paths release slot |
+| `gui/game_loop.py` | Creates `ModelScheduler` in `__init__`; passes to VisionBridge; acquires/releases `"chat"` slot around all LLM calls (`_submit_chat`, `_check_pending_response`, `_request_autonomous_remark`, `_check_pending_autonomous`, `_request_interaction_reaction`) |
+
+**VRAM budget:**
+
+| Combination | VRAM | Fits 32GB? |
+|-------------|------|------------|
+| Whisper + Kokoro (always loaded) | ~5GB | Yes |
+| + Coder (during chat) | ~23GB | Yes |
+| + Vision (swaps Coder out) | ~19GB | Yes |
+| Coder + Vision simultaneously | ~26-31GB | Risky — scheduler prevents this |
+
+### New Tests (123 tests across 6 files)
+
+- `tests/test_llm/test_ollama_provider.py` — Updated for `num_ctx`/`num_predict` config fields
+- `tests/test_config.py` — Updated for new LLM/Audio config fields
+- `tests/test_llm/test_scheduler.py` — 8 new tests (mutual exclusion, thread safety, double-acquire)
+- `tests/test_audio/test_tts.py` — Kokoro provider tests (init, synthesize, speak, factory, fallback)
+- `tests/test_audio/test_stt.py` — Faster-Whisper provider tests (init, listen, factory, fallback)
+- `tests/test_conversation/test_manager.py` — Updated autonomous remark test for USER message pattern
 
 ## Minor Code Issues (non-blocking)
 

@@ -134,13 +134,68 @@ def list_webcams() -> list[tuple[int, str]]:
     return devices
 
 
-def list_tts_voices() -> list[tuple[str, str]]:
-    """Enumerate available pyttsx3 TTS voices.
+def list_kokoro_voices() -> list[tuple[str, str]]:
+    """Enumerate available Kokoro TTS voices.
+
+    Kokoro voices follow a naming convention: ``af_*`` for American female,
+    ``am_*`` for American male, ``bf_*`` for British female, etc.
+
+    Returns:
+        List of (voice_id, friendly_name) tuples with "" as first entry
+        for the default voice.
+    """
+    voices: list[tuple[str, str]] = [("", "Default (af_heart)")]
+
+    # Known Kokoro voice IDs and their friendly names
+    kokoro_voices = [
+        ("af_heart", "Heart (American Female)"),
+        ("af_alloy", "Alloy (American Female)"),
+        ("af_aoede", "Aoede (American Female)"),
+        ("af_bella", "Bella (American Female)"),
+        ("af_jessica", "Jessica (American Female)"),
+        ("af_kore", "Kore (American Female)"),
+        ("af_nicole", "Nicole (American Female)"),
+        ("af_nova", "Nova (American Female)"),
+        ("af_river", "River (American Female)"),
+        ("af_sarah", "Sarah (American Female)"),
+        ("af_sky", "Sky (American Female)"),
+        ("am_adam", "Adam (American Male)"),
+        ("am_echo", "Echo (American Male)"),
+        ("am_eric", "Eric (American Male)"),
+        ("am_liam", "Liam (American Male)"),
+        ("am_michael", "Michael (American Male)"),
+        ("am_onyx", "Onyx (American Male)"),
+        ("bf_emma", "Emma (British Female)"),
+        ("bf_isabella", "Isabella (British Female)"),
+        ("bm_daniel", "Daniel (British Male)"),
+        ("bm_fable", "Fable (British Male)"),
+        ("bm_george", "George (British Male)"),
+        ("bm_lewis", "Lewis (British Male)"),
+    ]
+
+    try:
+        import kokoro  # type: ignore[import-untyped]  # noqa: F401
+
+        voices.extend(kokoro_voices)
+    except ImportError:
+        logger.debug("kokoro not available for voice enumeration")
+    return voices
+
+
+def list_tts_voices(provider: str = "pyttsx3") -> list[tuple[str, str]]:
+    """Enumerate available TTS voices for the given provider.
+
+    Args:
+        provider: TTS provider name (``"pyttsx3"`` or ``"kokoro"``).
 
     Returns:
         List of (voice_id, friendly_name) tuples with "" as first entry
         for the system default voice.
     """
+    if provider.lower() == "kokoro":
+        return list_kokoro_voices()
+
+    # Default: pyttsx3
     voices: list[tuple[str, str]] = [("", "System Default")]
     try:
         import pyttsx3  # type: ignore[import-untyped]

@@ -333,7 +333,7 @@ class SettingsPanel:
             on_change=lambda _i, v: self._on_audio_setting("audio_input_device", v),
         )
 
-        voices = list_tts_voices()
+        voices = list_tts_voices(self._config.audio.tts_provider)
         voice_names = [name for _, name in voices]
         voice_idx = _find_saved_index(voice_names, self._config.audio.tts_voice)
         self._tts_voice_dropdown = Dropdown(

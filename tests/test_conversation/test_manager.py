@@ -693,7 +693,7 @@ class TestGenerateAutonomousRemark:
         assert result is None
 
     async def test_situation_in_llm_context(self, tmp_path):
-        """The situation text appears in the system prompt sent to LLM."""
+        """The situation text appears as a trailing USER message sent to LLM."""
         cfg = _make_config(save_path=str(tmp_path / "saves"))
         llm = MockLLM("Noted.")
         mgr = ConversationManager(config=cfg, llm=llm, creature_state=CreatureState())
@@ -701,6 +701,121 @@ class TestGenerateAutonomousRemark:
 
         await mgr.generate_autonomous_remark("You are extremely bored.")
         call_args = llm.chat.call_args[0][0]
-        system_content = call_args[0].content
-        assert "CURRENT SITUATION:" in system_content
-        assert "extremely bored" in system_content
+        # Situation directive is now a USER message at the end of context
+        last_msg = call_args[-1]
+        assert last_msg.role.value == "user"
+        assert "CURRENT SITUATION:" in last_msg.content
+        assert "extremely bored" in last_msg.content
+
+
+# ---------------------------------------------------------------------------
+# Streaming process_input tests
+# ---------------------------------------------------------------------------
+
+class TestProcessInputStream:
+    """Tests for process_input_stream() — the async generator variant."""
+
+    async def test_stream_yields_tokens(self, tmp_path):
+        """Tokens from the LLM stream are yielded to the caller."""
+        cfg = _make_config(save_path=str(tmp_path / "saves"))
+        llm = MockLLM("Streamed.")
+        mgr = ConversationManager(config=cfg, llm=llm, creature_state=CreatureState())
+        await mgr.initialize()
+
+        tokens = []
+        async for token in mgr.process_input_stream("Hello"):
+            tokens.append(token)
+
+        assert len(tokens) >= 1
+        assert "".join(tokens) == "Streamed."
+
+    async def test_stream_stores_episodic(self, tmp_path):
+        """User and assistant messages are stored in episodic memory after streaming."""
+        cfg = _make_config(save_path=str(tmp_path / "saves"))
+        llm = MockLLM("Fine.")
+        mgr = ConversationManager(config=cfg, llm=llm, creature_state=CreatureState())
+        await mgr.initialize()
+
+        tokens = []
+        async for token in mgr.process_input_stream("Test"):
+            tokens.append(token)
+
+        messages = mgr._episodic.get_all()
+        assert len(messages) == 2
+        assert messages[0].role == MessageRole.USER
+        assert messages[0].content == "Test"
+        assert messages[1].role == MessageRole.ASSISTANT
+
+    async def test_stream_increments_interaction_count(self, tmp_path):
+        """Streaming increments the creature's interaction count."""
+        cfg = _make_config(save_path=str(tmp_path / "saves"))
+        state = CreatureState(interaction_count=0)
+        mgr = ConversationManager(config=cfg, llm=MockLLM(), creature_state=state)
+        await mgr.initialize()
+
+        async for _ in mgr.process_input_stream("Hi"):
+            pass
+
+        assert mgr.creature_state.interaction_count == 1
+
+    async def test_stream_updates_trust(self, tmp_path):
+        """Streaming bumps trust level."""
+        cfg = _make_config(save_path=str(tmp_path / "saves"))
+        state = CreatureState(trust_level=0.0)
+        mgr = ConversationManager(config=cfg, llm=MockLLM(), creature_state=state)
+        await mgr.initialize()
+
+        async for _ in mgr.process_input_stream("Hi"):
+            pass
+
+        assert mgr.creature_state.trust_level > 0.0
+
+    async def test_stream_applies_constraints(self, tmp_path):
+        """Personality constraints are applied to the accumulated text."""
+        cfg = _make_config(save_path=str(tmp_path / "saves"))
+        llm = MockLLM("As an AI, I would be happy to help!")
+        mgr = ConversationManager(config=cfg, llm=llm, creature_state=CreatureState())
+        await mgr.initialize()
+
+        # Consume the generator to trigger post-stream processing
+        async for _ in mgr.process_input_stream("Help"):
+            pass
+
+        # Check the stored assistant message — constraints should have filtered
+        messages = mgr._episodic.get_all()
+        assistant_msg = messages[-1]
+        assert "as an ai" not in assistant_msg.content.lower()
+
+    async def test_stream_saves_state(self, tmp_path):
+        """State is persisted after stream completes."""
+        save_dir = tmp_path / "saves"
+        cfg = _make_config(save_path=str(save_dir))
+        mgr = ConversationManager(
+            config=cfg, llm=MockLLM(), creature_state=CreatureState()
+        )
+        await mgr.initialize()
+
+        async for _ in mgr.process_input_stream("Save test"):
+            pass
+
+        assert (save_dir / "creature.json").exists()
+
+    async def test_stream_not_initialized_raises(self, tmp_path):
+        """Raises RuntimeError if not initialized."""
+        mgr = ConversationManager(config=_make_config(), llm=MockLLM())
+        with pytest.raises(RuntimeError, match="not initialized"):
+            async for _ in mgr.process_input_stream("Hello"):
+                pass
+
+    async def test_stream_no_llm_raises(self, tmp_path):
+        """Raises RuntimeError when no LLM is available."""
+        cfg = _make_config(save_path=str(tmp_path / "saves"))
+        with patch(
+            "seaman_brain.conversation.manager.create_provider",
+            side_effect=ImportError("nope"),
+        ):
+            mgr = ConversationManager(config=cfg, creature_state=CreatureState())
+            await mgr.initialize()
+            with pytest.raises(RuntimeError, match="No LLM provider"):
+                async for _ in mgr.process_input_stream("Hello"):
+                    pass

@@ -9,6 +9,9 @@ from pydantic import ValidationError
 
 from seaman_brain.api.protocol import (
     PROTOCOL_VERSION,
+    VALID_ACTIONS,
+    ActionMessage,
+    ActionResultMessage,
     BrainStateSnapshot,
     CreatureStateSnapshot,
     ErrorMessage,
@@ -19,8 +22,14 @@ from seaman_brain.api.protocol import (
     NeedsSnapshot,
     ResponseMessage,
     StateUpdate,
+    StreamEndMessage,
+    StreamStartMessage,
+    StreamTokenMessage,
+    SubscribedMessage,
+    SubscribeMessage,
     TankSnapshot,
     TraitsSnapshot,
+    UnsubscribeMessage,
     check_protocol_version,
     parse_client_message,
     serialize_response,
@@ -531,3 +540,270 @@ class TestCrossModelIntegration:
         ]
         for msg in models:
             assert msg.protocol_version == PROTOCOL_VERSION
+
+
+# =========================================================================
+# Streaming message types
+# =========================================================================
+
+class TestStreamStartMessage:
+    """Tests for StreamStartMessage."""
+
+    def test_defaults(self) -> None:
+        msg = StreamStartMessage(request_id="42")
+        assert msg.type == MessageType.STREAM_START
+        assert msg.request_id == "42"
+        assert msg.timestamp
+
+    def test_json_roundtrip(self) -> None:
+        msg = StreamStartMessage(request_id="r1")
+        data = json.loads(msg.model_dump_json())
+        assert data["type"] == "stream_start"
+        assert data["request_id"] == "r1"
+
+
+class TestStreamTokenMessage:
+    """Tests for StreamTokenMessage."""
+
+    def test_basic(self) -> None:
+        msg = StreamTokenMessage(token="Hello", request_id="1")
+        assert msg.type == MessageType.STREAM_TOKEN
+        assert msg.token == "Hello"
+        assert msg.request_id == "1"
+
+    def test_serialization(self) -> None:
+        msg = StreamTokenMessage(token=" world", request_id="2")
+        data = json.loads(msg.model_dump_json())
+        assert data["type"] == "stream_token"
+        assert data["token"] == " world"
+
+
+class TestStreamEndMessage:
+    """Tests for StreamEndMessage."""
+
+    def test_with_state(self) -> None:
+        state = BrainStateSnapshot(mood="sardonic")
+        msg = StreamEndMessage(text="Full text.", request_id="3", state=state)
+        assert msg.type == MessageType.STREAM_END
+        assert msg.text == "Full text."
+        assert msg.state.mood == "sardonic"
+
+    def test_default_state(self) -> None:
+        msg = StreamEndMessage(text="Done.", request_id="4")
+        assert isinstance(msg.state, BrainStateSnapshot)
+
+    def test_json_roundtrip(self) -> None:
+        msg = StreamEndMessage(text="Hello world", request_id="5")
+        restored = StreamEndMessage.model_validate_json(msg.model_dump_json())
+        assert restored.text == "Hello world"
+        assert restored.request_id == "5"
+
+
+# =========================================================================
+# Subscription message types
+# =========================================================================
+
+class TestSubscribeMessage:
+    """Tests for SubscribeMessage (client -> server)."""
+
+    def test_valid(self) -> None:
+        msg = SubscribeMessage(channels=["mood", "evolution"])
+        assert msg.type == MessageType.SUBSCRIBE
+        assert "mood" in msg.channels
+
+    def test_empty_channels_raises(self) -> None:
+        with pytest.raises(ValidationError):
+            SubscribeMessage(channels=[])
+
+    def test_from_dict(self) -> None:
+        data = {"type": "subscribe", "channels": ["tank"]}
+        msg = SubscribeMessage.model_validate(data)
+        assert msg.channels == ["tank"]
+
+
+class TestUnsubscribeMessage:
+    """Tests for UnsubscribeMessage (client -> server)."""
+
+    def test_valid(self) -> None:
+        msg = UnsubscribeMessage(channels=["needs"])
+        assert msg.type == MessageType.UNSUBSCRIBE
+        assert msg.channels == ["needs"]
+
+    def test_empty_channels_raises(self) -> None:
+        with pytest.raises(ValidationError):
+            UnsubscribeMessage(channels=[])
+
+
+class TestSubscribedMessage:
+    """Tests for SubscribedMessage (server -> client)."""
+
+    def test_basic(self) -> None:
+        msg = SubscribedMessage(channels=["mood", "tank"])
+        assert msg.type == MessageType.SUBSCRIBED
+        assert msg.channels == ["mood", "tank"]
+        assert msg.timestamp
+
+    def test_serialization(self) -> None:
+        msg = SubscribedMessage(channels=["evolution"])
+        data = json.loads(msg.model_dump_json())
+        assert data["type"] == "subscribed"
+        assert data["channels"] == ["evolution"]
+
+
+# =========================================================================
+# Action message types
+# =========================================================================
+
+class TestActionMessage:
+    """Tests for ActionMessage (client -> server)."""
+
+    def test_valid_feed(self) -> None:
+        msg = ActionMessage(action="feed", params={"food_type": "worm"})
+        assert msg.type == MessageType.ACTION
+        assert msg.action == "feed"
+        assert msg.params["food_type"] == "worm"
+
+    def test_valid_all_actions(self) -> None:
+        for action in VALID_ACTIONS:
+            msg = ActionMessage(action=action)
+            assert msg.action == action
+
+    def test_invalid_action_raises(self) -> None:
+        with pytest.raises(ValidationError, match="action must be one of"):
+            ActionMessage(action="explode")
+
+    def test_default_params(self) -> None:
+        msg = ActionMessage(action="tap_glass")
+        assert msg.params == {}
+        assert msg.request_id == ""
+
+    def test_from_dict(self) -> None:
+        data = {"type": "action", "action": "clean", "request_id": "r42"}
+        msg = ActionMessage.model_validate(data)
+        assert msg.action == "clean"
+        assert msg.request_id == "r42"
+
+
+class TestActionResultMessage:
+    """Tests for ActionResultMessage (server -> client)."""
+
+    def test_success(self) -> None:
+        msg = ActionResultMessage(
+            action="feed", success=True, message="Creature ate the worm."
+        )
+        assert msg.type == MessageType.ACTION_RESULT
+        assert msg.success is True
+        assert isinstance(msg.state, BrainStateSnapshot)
+
+    def test_failure(self) -> None:
+        msg = ActionResultMessage(
+            action="feed", success=False, message="Wrong food!"
+        )
+        assert msg.success is False
+
+    def test_json_roundtrip(self) -> None:
+        msg = ActionResultMessage(
+            action="clean",
+            success=True,
+            message="Tank sparkles.",
+            request_id="r99",
+        )
+        restored = ActionResultMessage.model_validate_json(msg.model_dump_json())
+        assert restored.action == "clean"
+        assert restored.success is True
+        assert restored.request_id == "r99"
+
+
+# =========================================================================
+# Extended MessageType enum tests
+# =========================================================================
+
+class TestNewMessageTypeValues:
+    """Tests for new MessageType enum members."""
+
+    def test_streaming_values(self) -> None:
+        assert MessageType.STREAM_START == "stream_start"
+        assert MessageType.STREAM_TOKEN == "stream_token"
+        assert MessageType.STREAM_END == "stream_end"
+
+    def test_subscription_values(self) -> None:
+        assert MessageType.SUBSCRIBE == "subscribe"
+        assert MessageType.UNSUBSCRIBE == "unsubscribe"
+        assert MessageType.SUBSCRIBED == "subscribed"
+
+    def test_action_values(self) -> None:
+        assert MessageType.ACTION == "action"
+        assert MessageType.ACTION_RESULT == "action_result"
+
+
+# =========================================================================
+# Extended parse_client_message dispatch tests
+# =========================================================================
+
+class TestParseClientMessageDispatch:
+    """Tests for parse_client_message with new message types."""
+
+    def test_parse_subscribe(self) -> None:
+        msg = parse_client_message({"type": "subscribe", "channels": ["mood"]})
+        assert isinstance(msg, SubscribeMessage)
+        assert msg.channels == ["mood"]
+
+    def test_parse_unsubscribe(self) -> None:
+        msg = parse_client_message(
+            {"type": "unsubscribe", "channels": ["tank"]}
+        )
+        assert isinstance(msg, UnsubscribeMessage)
+        assert msg.channels == ["tank"]
+
+    def test_parse_action(self) -> None:
+        msg = parse_client_message(
+            {"type": "action", "action": "feed", "params": {"food_type": "worm"}}
+        )
+        assert isinstance(msg, ActionMessage)
+        assert msg.action == "feed"
+
+    def test_parse_unknown_type_raises(self) -> None:
+        with pytest.raises(ValueError, match="Unknown message type"):
+            parse_client_message({"type": "ping"})
+
+    def test_parse_input_still_works(self) -> None:
+        msg = parse_client_message({"type": "input", "text": "Hello"})
+        assert isinstance(msg, InputMessage)
+
+
+# =========================================================================
+# Serialize new server message types
+# =========================================================================
+
+class TestSerializeNewMessages:
+    """Tests for serializing new server message models."""
+
+    def test_serialize_stream_start(self) -> None:
+        msg = StreamStartMessage(request_id="s1")
+        data = json.loads(serialize_response(msg))
+        assert data["type"] == "stream_start"
+
+    def test_serialize_stream_token(self) -> None:
+        msg = StreamTokenMessage(token="Hi", request_id="s1")
+        data = json.loads(serialize_response(msg))
+        assert data["type"] == "stream_token"
+        assert data["token"] == "Hi"
+
+    def test_serialize_stream_end(self) -> None:
+        msg = StreamEndMessage(text="Hello world", request_id="s1")
+        data = json.loads(serialize_response(msg))
+        assert data["type"] == "stream_end"
+        assert data["text"] == "Hello world"
+
+    def test_serialize_subscribed(self) -> None:
+        msg = SubscribedMessage(channels=["mood", "tank"])
+        data = json.loads(serialize_response(msg))
+        assert data["type"] == "subscribed"
+
+    def test_serialize_action_result(self) -> None:
+        msg = ActionResultMessage(
+            action="clean", success=True, message="Done."
+        )
+        data = json.loads(serialize_response(msg))
+        assert data["type"] == "action_result"
+        assert data["success"] is True

@@ -211,6 +211,145 @@ class SpeechRecognitionSTTProvider:
         return await loop.run_in_executor(_stt_executor, self._listen_sync)
 
 
+class FasterWhisperSTTProvider:
+    """STT provider using Faster-Whisper for local GPU-accelerated transcription.
+
+    Uses CTranslate2 for 5.4x realtime speed on CUDA. The model is
+    lazy-loaded on first listen() to avoid startup VRAM allocation (~3GB).
+    Includes RMS-based silence detection for continuous listening.
+    """
+
+    def __init__(self, config: AudioConfig | None = None) -> None:
+        self._config = config or AudioConfig()
+        self._available = False
+        self._init_error: str = ""
+        self._model: object | None = None
+
+    def _initialize(self) -> None:
+        """Lazy-load WhisperModel on first use."""
+        if self._model is not None:
+            return
+        try:
+            from faster_whisper import WhisperModel
+
+            self._model = WhisperModel(
+                self._config.stt_model,
+                device="cuda",
+                compute_type="float16",
+            )
+            self._available = True
+        except ImportError as exc:
+            self._available = False
+            self._init_error = f"faster-whisper not installed: {exc}"
+            logger.warning("Faster-Whisper STT unavailable: %s", self._init_error)
+        except Exception as exc:
+            self._available = False
+            self._init_error = str(exc)
+            logger.warning("Faster-Whisper STT init failed: %s", exc)
+
+    @property
+    def available(self) -> bool:
+        """Whether the STT engine is operational."""
+        return self._available
+
+    def _listen_sync(self) -> str:
+        """Synchronous listen with RMS-based silence detection.
+
+        Returns:
+            Transcribed text, or empty string on timeout/silence.
+        """
+        self._initialize()
+        if not self._available or self._model is None:
+            logger.warning("Faster-Whisper STT unavailable, returning empty")
+            return ""
+
+        try:
+            import numpy as np
+            import sounddevice as sd
+
+            samplerate = 16000
+            block_size = int(samplerate * 0.1)  # 100ms blocks
+            threshold = self._config.stt_silence_threshold
+            silence_dur = self._config.stt_silence_duration
+            max_duration = 15.0  # Safety cutoff
+
+            frames: list = []
+            recording = False
+            silence_blocks = 0
+            silence_limit = int(silence_dur / 0.1)  # blocks
+            max_blocks = int(max_duration / 0.1)
+            total_blocks = 0
+
+            # Resolve input device
+            device = None
+            if self._config.audio_input_device:
+                device_name = self._config.audio_input_device
+                if device_name != "System Default":
+                    devices = sd.query_devices()
+                    for i, dev in enumerate(devices):
+                        if (
+                            device_name in dev["name"]
+                            and dev["max_input_channels"] > 0
+                        ):
+                            device = i
+                            break
+
+            with sd.InputStream(
+                samplerate=samplerate,
+                channels=1,
+                dtype="float32",
+                blocksize=block_size,
+                device=device,
+            ) as stream:
+                while total_blocks < max_blocks:
+                    data, _overflowed = stream.read(block_size)
+                    total_blocks += 1
+
+                    rms = float(np.sqrt(np.mean(data ** 2)))
+
+                    if rms > threshold:
+                        recording = True
+                        silence_blocks = 0
+                        frames.append(data.copy())
+                    elif recording:
+                        silence_blocks += 1
+                        frames.append(data.copy())
+                        if silence_blocks >= silence_limit:
+                            break
+                    # else: pre-speech silence, skip
+
+            if not frames:
+                return ""
+
+            audio = np.concatenate(frames).flatten()
+
+            segments, _info = self._model.transcribe(
+                audio,
+                language="en",
+                vad_filter=True,
+                beam_size=5,
+            )
+
+            text = " ".join(seg.text for seg in segments).strip()
+            return text
+
+        except Exception as exc:
+            logger.warning("Faster-Whisper listen failed: %s", exc)
+            return ""
+
+    async def listen(self) -> str:
+        """Listen for speech and return transcribed text asynchronously.
+
+        Blocks (in a thread pool) until speech is detected, silence timeout,
+        or max phrase cutoff.
+
+        Returns:
+            Transcribed text, or empty string on timeout/failure.
+        """
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(_stt_executor, self._listen_sync)
+
+
 def create_stt_provider(config: AudioConfig | None = None) -> STTProvider:
     """Create an STT provider based on configuration.
 
@@ -227,6 +366,19 @@ def create_stt_provider(config: AudioConfig | None = None) -> STTProvider:
     if not config.stt_enabled:
         logger.info("STT disabled by configuration")
         return NoopSTTProvider()
+
+    provider_name = config.stt_provider.lower()
+
+    if provider_name == "faster_whisper":
+        fw_provider = FasterWhisperSTTProvider(config)
+        fw_provider._initialize()
+        if fw_provider.available:
+            logger.info(
+                "STT initialized: faster-whisper (model=%s)", config.stt_model
+            )
+            return fw_provider
+        logger.warning("Faster-Whisper unavailable, falling back to speech_recognition")
+        # Fall through to speech_recognition
 
     provider = SpeechRecognitionSTTProvider(config)
     if provider.available:

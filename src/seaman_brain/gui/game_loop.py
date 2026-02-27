@@ -43,6 +43,7 @@ from seaman_brain.gui.settings_panel import SettingsPanel
 from seaman_brain.gui.sprites import AnimationState, CreatureRenderer
 from seaman_brain.gui.tank_renderer import TankRenderer
 from seaman_brain.gui.window import GameWindow
+from seaman_brain.llm.scheduler import ModelScheduler
 from seaman_brain.needs.care import AERATOR_COOLDOWN_SECONDS, CLEANING_DURATION_SECONDS
 from seaman_brain.needs.death import DeathCause, DeathEngine
 from seaman_brain.needs.system import CreatureNeeds, NeedsEngine
@@ -76,6 +77,7 @@ _NEEDS_UPDATE_INTERVAL = 1.0  # seconds between needs ticks
 _BEHAVIOR_CHECK_INTERVAL = 5.0  # seconds between behavior checks
 _EVENT_CHECK_INTERVAL = 3.0  # seconds between event checks
 _VISION_LOOK_TIMEOUT = 30.0  # seconds before Look Now gives up
+_STT_DEBOUNCE_SECONDS = 1.5  # wait for speech to settle before submitting
 
 # Situation prompts for interaction reactions via LLM
 _INTERACTION_SITUATIONS: dict[str, str] = {
@@ -143,6 +145,7 @@ class GameEngine:
         self._audio_manager: AudioManager | None = None
         self._audio_bridge: PygameAudioBridge | None = None
         self._vision_bridge: VisionBridge | None = None
+        self._scheduler = ModelScheduler()
 
         # Game logic engines
         self._needs_engine = NeedsEngine(config=cfg.needs, env_config=cfg.environment)
@@ -185,6 +188,10 @@ class GameEngine:
         # Pending autonomous LLM remark (lower priority than user chat)
         self._pending_autonomous: Any = None
         self._pending_autonomous_behavior: IdleBehavior | None = None
+
+        # STT queue — debounced and non-cancelling
+        self._stt_queued_text: str | None = None
+        self._stt_queued_time: float = 0.0
 
         # "Look Now" observation tracking
         self._vision_look_prev_count: int | None = None
@@ -241,6 +248,7 @@ class GameEngine:
             self._vision_bridge = VisionBridge(
                 vision_config=self._config.vision,
                 async_loop=self.window._loop,
+                scheduler=self._scheduler,
             )
 
         # Compute layout: action bar on right, tank shrunk
@@ -425,6 +433,9 @@ class GameEngine:
                 alive.append((text, remaining))
         self._notifications = alive
 
+        # Process queued STT input (debounced, non-cancelling)
+        self._check_stt_queue()
+
         # Check for pending conversation response
         self._check_pending_response()
 
@@ -533,6 +544,7 @@ class GameEngine:
             self._mood_engine.current_mood.value,
         )
         self._pending_autonomous_behavior = behavior
+        self._scheduler.acquire("chat")
 
         async def _generate() -> str | None:
             return await manager.generate_autonomous_remark(situation)
@@ -554,6 +566,7 @@ class GameEngine:
             logger.debug("Autonomous remark cancelled (user chat took priority)")
             self._pending_autonomous = None
             self._pending_autonomous_behavior = None
+            self._scheduler.release("chat")
             return
 
         behavior = self._pending_autonomous_behavior
@@ -574,6 +587,7 @@ class GameEngine:
         finally:
             self._pending_autonomous = None
             self._pending_autonomous_behavior = None
+            self._scheduler.release("chat")
 
     def _request_interaction_reaction(self, action_key: str) -> None:
         """Submit an LLM reaction to a player interaction.
@@ -595,6 +609,7 @@ class GameEngine:
             return
 
         logger.info("Requesting interaction reaction: %s", action_key)
+        self._scheduler.acquire("chat")
 
         async def _generate() -> str | None:
             return await manager.generate_autonomous_remark(situation)
@@ -740,17 +755,30 @@ class GameEngine:
             self._request_interaction_reaction(action_key)
 
     def _on_stt_result(self, text: str) -> None:
-        """Handle transcribed speech — auto-submit to creature."""
+        """Handle transcribed speech — queue for debounced, non-cancelling submission.
+
+        Unlike typed input, STT results do NOT cancel in-flight LLM calls.
+        This prevents rapid speech recognition from killing every response
+        before it can complete (~8-33s for the 30B model).
+        """
         if not text or not text.strip():
             return
         logger.info("STT result: %s", text)
-        self._chat_panel.add_message(MessageRole.USER, text)
-        self._on_chat_submit(text)
+        self._stt_queued_text = text
+        self._stt_queued_time = time.monotonic()
 
     def _on_chat_submit(self, text: str) -> None:
-        """Handle chat input submission — send to ConversationManager."""
+        """Handle typed chat input — cancels in-flight LLM calls.
+
+        Typed input is intentional and should always win.  STT input uses
+        a separate path (``_on_stt_result`` + ``_check_stt_queue``) that
+        does NOT cancel in-flight calls.
+        """
         if self.game_over or not text.strip():
             return
+
+        # Typed input takes priority — clear any queued STT text
+        self._stt_queued_text = None
 
         # User chat always wins — cancel any in-flight autonomous remark
         if self._pending_autonomous is not None:
@@ -764,12 +792,17 @@ class GameEngine:
             self._chat_panel.finish_streaming()
             logger.debug("Cancelled previous pending chat for new input")
 
+        self._submit_chat(text)
+
+    def _submit_chat(self, text: str) -> None:
+        """Submit text to ConversationManager (no cancellation logic)."""
         self._creature_renderer.set_animation(AnimationState.TALKING)
         self._interaction_count_delta += 1
 
         manager = self.window.manager
         if manager is not None and self.window._loop is not None:
             self._chat_panel.start_streaming()
+            self._scheduler.acquire("chat")
 
             async def _process() -> str:
                 return await manager.process_input(text)
@@ -784,6 +817,37 @@ class GameEngine:
             )
             self._creature_renderer.set_animation(AnimationState.IDLE)
 
+    def _check_stt_queue(self) -> None:
+        """Submit queued STT text after debounce, without cancelling in-flight calls.
+
+        Called each frame.  Waits for:
+        1. Debounce period to elapse (more speech may be coming).
+        2. No pending LLM response in flight (avoids killing slow responses).
+        """
+        if self._stt_queued_text is None:
+            return
+
+        # Wait for debounce — more speech fragments may arrive
+        if time.monotonic() - self._stt_queued_time < _STT_DEBOUNCE_SECONDS:
+            return
+
+        # Wait for LLM to be idle — don't cancel in-flight responses
+        if self._pending_response is not None:
+            return
+
+        text = self._stt_queued_text
+        self._stt_queued_text = None
+
+        # Cancel autonomous remark if one is pending (user speech > autonomous)
+        if self._pending_autonomous is not None:
+            self._pending_autonomous.cancel()
+            self._pending_autonomous = None
+            self._pending_autonomous_behavior = None
+
+        logger.info("STT submitted (debounced): %s", text)
+        self._chat_panel.add_message(MessageRole.USER, text)
+        self._submit_chat(text)
+
     def _check_pending_response(self) -> None:
         """Check if a pending async conversation response is ready."""
         if self._pending_response is None:
@@ -796,6 +860,7 @@ class GameEngine:
         if self._pending_response.cancelled():
             self._pending_response = None
             self._creature_renderer.set_animation(AnimationState.IDLE)
+            self._scheduler.release("chat")
             return
 
         try:
@@ -813,6 +878,7 @@ class GameEngine:
         finally:
             self._pending_response = None
             self._creature_renderer.set_animation(AnimationState.IDLE)
+            self._scheduler.release("chat")
 
     def _on_mouse_click(self, event: pygame.event.Event) -> None:
         """Handle mouse click events."""
@@ -1240,6 +1306,7 @@ class GameEngine:
                         self._vision_bridge = VisionBridge(
                             vision_config=self._config.vision,
                             async_loop=self.window._loop,
+                            scheduler=self._scheduler,
                         )
                     self._vision_bridge.set_source(source)
                 save_user_settings(self._config)
@@ -1269,6 +1336,7 @@ class GameEngine:
             self._vision_bridge = VisionBridge(
                 vision_config=self._config.vision,
                 async_loop=self.window._loop,
+                scheduler=self._scheduler,
             )
 
         if self._vision_bridge.source == "off":

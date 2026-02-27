@@ -341,7 +341,9 @@ class GameWindow:
             self.shutdown()
 
     def shutdown(self) -> None:
-        """Clean shutdown: save state, stop async loop, quit Pygame."""
+        """Clean shutdown: save state, cancel tasks, stop async loop, quit Pygame."""
+        if not self.running and self._loop is None:
+            return  # Already shut down
         logger.info("Shutting down GameWindow...")
         self.running = False
 
@@ -358,11 +360,15 @@ class GameWindow:
                     "Error saving state during shutdown: %r", exc, exc_info=True
                 )
 
-        # Stop async loop
+        # Cancel all pending async tasks, then stop the loop
         if self._loop is not None:
-            self._loop.call_soon_threadsafe(self._loop.stop)
+            try:
+                self._loop.call_soon_threadsafe(self._cancel_and_stop)
+            except RuntimeError:
+                # Loop already closed
+                pass
             if self._async_thread is not None:
-                self._async_thread.join(timeout=3.0)
+                self._async_thread.join(timeout=5.0)
             self._loop = None
             self._async_thread = None
 
@@ -375,3 +381,30 @@ class GameWindow:
         self._screen = None
         self._clock = None
         logger.info("GameWindow shutdown complete.")
+
+    def _cancel_and_stop(self) -> None:
+        """Cancel all pending tasks on the async loop, then stop it.
+
+        Must be called from within the event loop thread via
+        ``call_soon_threadsafe``.
+        """
+        assert self._loop is not None
+        pending = [
+            t for t in asyncio.all_tasks(self._loop)
+            if not t.done()
+        ]
+        if pending:
+            logger.info("Cancelling %d pending async tasks...", len(pending))
+            for task in pending:
+                task.cancel()
+
+            # Give cancelled tasks one cycle to handle CancelledError
+            async def _drain() -> None:
+                import asyncio as _aio
+                await _aio.gather(*pending, return_exceptions=True)
+
+            self._loop.create_task(_drain()).add_done_callback(
+                lambda _: self._loop.stop() if self._loop is not None else None
+            )
+        else:
+            self._loop.stop()

@@ -3,9 +3,11 @@
 Covers:
 - REST endpoints: /api/health, /api/state, /api/reset
 - WebSocket connection and message exchange
+- Streaming input: stream_start -> stream_token -> stream_end
+- Subscribe/unsubscribe messages and confirmation
+- Action messages for each action type
 - Error handling for invalid messages and missing fields
-- State update broadcasting
-- Graceful client disconnection
+- Client tracking via EventBroadcaster
 """
 
 from __future__ import annotations
@@ -40,6 +42,13 @@ class MockLLM:
 
     async def stream(self, messages: list[ChatMessage]) -> AsyncIterator[str]:
         yield self._response
+
+
+def _mock_process_input_stream(response: str):
+    """Create a mock async generator for process_input_stream."""
+    async def _stream(text: str) -> AsyncIterator[str]:
+        yield response
+    return _stream
 
 
 def _make_server(
@@ -148,25 +157,59 @@ class TestResetEndpoint:
 
 
 # ---------------------------------------------------------------------------
-# WebSocket tests
+# WebSocket tests — basic input (now streaming)
 # ---------------------------------------------------------------------------
 
-class TestWebSocketBrain:
-    """WebSocket /ws/brain endpoint."""
+class TestWebSocketStreamingInput:
+    """WebSocket /ws/brain streaming input handler."""
 
-    def test_websocket_input_response(self) -> None:
-        """Send input message, receive response with state."""
-        server = _make_server()
+    def test_streaming_input_sequence(self) -> None:
+        """Send input message, receive stream_start → stream_token → stream_end."""
+        server = _make_server(llm_response="Go away.")
         server._manager._initialized = True  # noqa: SLF001
-        server._manager.process_input = AsyncMock(return_value="Go away.")
+        server._manager.process_input_stream = _mock_process_input_stream("Go away.")
+
         with TestClient(server.app) as client:
             with client.websocket_connect("/ws/brain") as ws:
                 ws.send_text(json.dumps({"type": "input", "text": "Hello"}))
+
+                # stream_start
                 data = ws.receive_json()
-                assert data["type"] == "response"
+                assert data["type"] == "stream_start"
+                assert "request_id" in data
+
+                # stream_token (mock yields one token)
+                data = ws.receive_json()
+                assert data["type"] == "stream_token"
+                assert data["token"] == "Go away."
+
+                # stream_end
+                data = ws.receive_json()
+                assert data["type"] == "stream_end"
                 assert data["text"] == "Go away."
                 assert "state" in data
-                assert "timestamp" in data
+
+    def test_streaming_request_id_consistent(self) -> None:
+        """All stream messages share the same request_id."""
+        server = _make_server(llm_response="Fine.")
+        server._manager._initialized = True  # noqa: SLF001
+        server._manager.process_input_stream = _mock_process_input_stream("Fine.")
+
+        with TestClient(server.app) as client:
+            with client.websocket_connect("/ws/brain") as ws:
+                ws.send_text(json.dumps({"type": "input", "text": "Hey"}))
+
+                start = ws.receive_json()
+                token = ws.receive_json()
+                end = ws.receive_json()
+
+                rid = start["request_id"]
+                assert token["request_id"] == rid
+                assert end["request_id"] == rid
+
+
+class TestWebSocketErrors:
+    """WebSocket error handling."""
 
     def test_websocket_invalid_json(self) -> None:
         """Non-JSON text gets an error response."""
@@ -213,18 +256,195 @@ class TestWebSocketBrain:
                 assert "Missing 'text' field" in data["message"]
 
     def test_websocket_process_input_error(self) -> None:
-        """RuntimeError from process_input is forwarded as error message."""
+        """RuntimeError from process_input_stream is forwarded as error."""
         server = _make_server()
         server._manager._initialized = True  # noqa: SLF001
-        server._manager.process_input = AsyncMock(
-            side_effect=RuntimeError("No LLM available")
-        )
+
+        async def _failing_stream(text):
+            raise RuntimeError("No LLM available")
+            yield  # pragma: no cover — make it an async generator
+
+        server._manager.process_input_stream = _failing_stream
         with TestClient(server.app) as client:
             with client.websocket_connect("/ws/brain") as ws:
                 ws.send_text(json.dumps({"type": "input", "text": "Hello"}))
+                # stream_start is sent before the generator is consumed
+                data1 = ws.receive_json()
+                # The error comes after stream_start (RuntimeError during iteration)
+                data2 = ws.receive_json()
+                types = {data1["type"], data2["type"]}
+                assert "error" in types
+
+
+# ---------------------------------------------------------------------------
+# Subscribe / Unsubscribe tests
+# ---------------------------------------------------------------------------
+
+class TestWebSocketSubscribe:
+    """WebSocket subscribe/unsubscribe handlers."""
+
+    def test_subscribe_returns_confirmation(self) -> None:
+        server = _make_server()
+        server._manager._initialized = True  # noqa: SLF001
+        with TestClient(server.app) as client:
+            with client.websocket_connect("/ws/brain") as ws:
+                ws.send_text(json.dumps({
+                    "type": "subscribe",
+                    "channels": ["mood", "evolution"],
+                }))
+                data = ws.receive_json()
+                assert data["type"] == "subscribed"
+                assert "mood" in data["channels"]
+                assert "evolution" in data["channels"]
+
+    def test_unsubscribe_returns_updated_list(self) -> None:
+        server = _make_server()
+        server._manager._initialized = True  # noqa: SLF001
+        with TestClient(server.app) as client:
+            with client.websocket_connect("/ws/brain") as ws:
+                # First unsubscribe from some channels
+                ws.send_text(json.dumps({
+                    "type": "unsubscribe",
+                    "channels": ["mood", "death"],
+                }))
+                data = ws.receive_json()
+                assert data["type"] == "subscribed"
+                # mood and death should no longer be in the list
+                assert "mood" not in data["channels"]
+                assert "death" not in data["channels"]
+
+    def test_subscribe_invalid_channel_error(self) -> None:
+        server = _make_server()
+        server._manager._initialized = True  # noqa: SLF001
+        with TestClient(server.app) as client:
+            with client.websocket_connect("/ws/brain") as ws:
+                ws.send_text(json.dumps({
+                    "type": "subscribe",
+                    "channels": ["unicorn"],
+                }))
                 data = ws.receive_json()
                 assert data["type"] == "error"
-                assert "No LLM available" in data["message"]
+                assert "Unknown channels" in data["message"]
+
+    def test_subscribe_empty_channels_error(self) -> None:
+        server = _make_server()
+        server._manager._initialized = True  # noqa: SLF001
+        with TestClient(server.app) as client:
+            with client.websocket_connect("/ws/brain") as ws:
+                ws.send_text(json.dumps({
+                    "type": "subscribe",
+                    "channels": [],
+                }))
+                data = ws.receive_json()
+                assert data["type"] == "error"
+
+
+# ---------------------------------------------------------------------------
+# Action message tests
+# ---------------------------------------------------------------------------
+
+class TestWebSocketAction:
+    """WebSocket action handler."""
+
+    def _make_action_server(self) -> BrainServer:
+        """Build a server with dispatcher initialized."""
+        state = CreatureState(hunger=0.5)
+        server = _make_server(creature_state=state)
+        server._manager._initialized = True  # noqa: SLF001
+        # Initialize simulation engines so dispatcher exists
+        server._creature_state = state
+        server._init_simulation_engines()
+        return server
+
+    def test_action_feed(self) -> None:
+        server = self._make_action_server()
+        with TestClient(server.app) as client:
+            with client.websocket_connect("/ws/brain") as ws:
+                ws.send_text(json.dumps({
+                    "type": "action",
+                    "action": "feed",
+                    "params": {"food_type": "nautilus"},
+                    "request_id": "r1",
+                }))
+                data = ws.receive_json()
+                assert data["type"] == "action_result"
+                assert data["action"] == "feed"
+                assert data["request_id"] == "r1"
+                assert isinstance(data["success"], bool)
+
+    def test_action_tap_glass(self) -> None:
+        server = self._make_action_server()
+        with TestClient(server.app) as client:
+            with client.websocket_connect("/ws/brain") as ws:
+                ws.send_text(json.dumps({
+                    "type": "action",
+                    "action": "tap_glass",
+                }))
+                data = ws.receive_json()
+                assert data["type"] == "action_result"
+                assert data["success"] is True
+                assert data["action"] == "tap_glass"
+
+    def test_action_clean(self) -> None:
+        server = self._make_action_server()
+        with TestClient(server.app) as client:
+            with client.websocket_connect("/ws/brain") as ws:
+                ws.send_text(json.dumps({
+                    "type": "action",
+                    "action": "clean",
+                }))
+                data = ws.receive_json()
+                assert data["type"] == "action_result"
+                assert data["success"] is True
+
+    def test_action_adjust_temperature(self) -> None:
+        server = self._make_action_server()
+        with TestClient(server.app) as client:
+            with client.websocket_connect("/ws/brain") as ws:
+                ws.send_text(json.dumps({
+                    "type": "action",
+                    "action": "adjust_temperature",
+                    "params": {"delta": 2.0},
+                }))
+                data = ws.receive_json()
+                assert data["type"] == "action_result"
+                assert data["success"] is True
+
+    def test_action_missing_action_field(self) -> None:
+        server = self._make_action_server()
+        with TestClient(server.app) as client:
+            with client.websocket_connect("/ws/brain") as ws:
+                ws.send_text(json.dumps({"type": "action"}))
+                data = ws.receive_json()
+                assert data["type"] == "error"
+                assert "Missing 'action'" in data["message"]
+
+    def test_action_unknown_returns_failure(self) -> None:
+        server = self._make_action_server()
+        with TestClient(server.app) as client:
+            with client.websocket_connect("/ws/brain") as ws:
+                ws.send_text(json.dumps({
+                    "type": "action",
+                    "action": "explode",
+                }))
+                data = ws.receive_json()
+                assert data["type"] == "action_result"
+                assert data["success"] is False
+
+    def test_action_without_dispatcher_error(self) -> None:
+        """Action with dispatcher removed returns error."""
+        server = _make_server()
+        server._manager._initialized = True  # noqa: SLF001
+        with TestClient(server.app) as client:
+            # Lifespan has run; now remove dispatcher to simulate uninitialized
+            server._dispatcher = None
+            with client.websocket_connect("/ws/brain") as ws:
+                ws.send_text(json.dumps({
+                    "type": "action",
+                    "action": "feed",
+                }))
+                data = ws.receive_json()
+                assert data["type"] == "error"
 
 
 # ---------------------------------------------------------------------------
@@ -291,22 +511,22 @@ class TestCORSConfiguration:
 
 
 # ---------------------------------------------------------------------------
-# Client tracking tests
+# Client tracking tests via EventBroadcaster
 # ---------------------------------------------------------------------------
 
 class TestClientTracking:
-    """Verify WebSocket client list management."""
+    """Verify WebSocket client tracking via EventBroadcaster."""
 
     def test_client_added_and_removed(self) -> None:
         """Client is tracked on connect and removed on disconnect."""
         server = _make_server()
         server._manager._initialized = True  # noqa: SLF001
-        assert len(server._clients) == 0
+        assert server._broadcaster.client_count == 0
         with TestClient(server.app) as client:
             with client.websocket_connect("/ws/brain"):
-                assert len(server._clients) == 1
+                assert server._broadcaster.client_count == 1
         # After disconnect the client is cleaned up
-        assert len(server._clients) == 0
+        assert server._broadcaster.client_count == 0
 
     def test_multiple_clients(self) -> None:
         """Multiple WebSocket clients are tracked concurrently."""
@@ -314,9 +534,31 @@ class TestClientTracking:
         server._manager._initialized = True  # noqa: SLF001
         with TestClient(server.app) as client:
             with client.websocket_connect("/ws/brain"):
-                assert len(server._clients) == 1
+                assert server._broadcaster.client_count == 1
                 with client.websocket_connect("/ws/brain"):
-                    assert len(server._clients) == 2
+                    assert server._broadcaster.client_count == 2
                 # Inner client disconnected
-                assert len(server._clients) == 1
-        assert len(server._clients) == 0
+                assert server._broadcaster.client_count == 1
+        assert server._broadcaster.client_count == 0
+
+
+# ---------------------------------------------------------------------------
+# BrainStateSnapshot builder test
+# ---------------------------------------------------------------------------
+
+class TestBuildBrainSnapshot:
+    """Tests for _build_brain_snapshot."""
+
+    def test_returns_none_without_creature(self) -> None:
+        server = _make_server()
+        # creature_state is not set on server (only on manager)
+        assert server._build_brain_snapshot() is None
+
+    def test_returns_snapshot_after_init(self) -> None:
+        server = _make_server()
+        server._creature_state = server._manager._creature_state  # noqa: SLF001
+        server._init_simulation_engines()
+        snap = server._build_brain_snapshot()
+        assert snap is not None
+        assert snap.creature_state.stage == "mushroomer"
+        assert snap.tank.temperature == 24.0

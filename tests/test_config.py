@@ -31,6 +31,8 @@ provider = "ollama"
 model = "test-model"
 temperature = 0.5
 max_tokens = 256
+context_window = 4096
+max_response_tokens = 2048
 base_url = "http://localhost:11434"
 
 [memory]
@@ -98,6 +100,8 @@ class TestLoadConfigHappyPath:
         assert cfg.llm.model == "test-model"
         assert cfg.llm.temperature == 0.5
         assert cfg.llm.max_tokens == 256
+        assert cfg.llm.context_window == 4096
+        assert cfg.llm.max_response_tokens == 2048
 
     def test_memory_config_loaded(self, config_with_toml):
         """Memory section parsed correctly."""
