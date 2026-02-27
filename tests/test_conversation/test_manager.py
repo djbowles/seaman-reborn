@@ -101,6 +101,27 @@ class TestInitialize:
         await mgr.initialize()
         assert mgr._persistence is not None
 
+    async def test_initialize_warmup_calls_llm(self, tmp_path):
+        """Initialize sends a warmup chat call to preload the LLM."""
+        cfg = _make_config(save_path=str(tmp_path / "saves"))
+        llm = MockLLM()
+        mgr = ConversationManager(config=cfg, llm=llm, creature_state=CreatureState())
+        await mgr.initialize()
+        # Warmup should have called chat once with a single "." message
+        llm.chat.assert_awaited_once()
+        warmup_msgs = llm.chat.call_args[0][0]
+        assert len(warmup_msgs) == 1
+        assert warmup_msgs[0].content == "."
+
+    async def test_initialize_warmup_failure_nonfatal(self, tmp_path):
+        """LLM warmup failure doesn't prevent initialization."""
+        cfg = _make_config(save_path=str(tmp_path / "saves"))
+        llm = MockLLM()
+        llm.chat = AsyncMock(side_effect=ConnectionError("Ollama not running"))
+        mgr = ConversationManager(config=cfg, llm=llm, creature_state=CreatureState())
+        await mgr.initialize()
+        assert mgr.is_initialized
+
 
 # ---------------------------------------------------------------------------
 # Happy-path process_input tests
@@ -116,6 +137,7 @@ class TestProcessInput:
         mgr = ConversationManager(config=cfg, llm=llm, creature_state=CreatureState())
         await mgr.initialize()
 
+        llm.chat.reset_mock()  # Clear warmup call from initialize()
         response = await mgr.process_input("Hello there!")
         assert isinstance(response, str)
         assert len(response) > 0
@@ -408,6 +430,59 @@ class TestShutdown:
 
 
 # ---------------------------------------------------------------------------
+# LLM settings hot-swap tests
+# ---------------------------------------------------------------------------
+
+class TestUpdateLLMSettings:
+    """Tests for update_llm_settings() — live model/temperature changes."""
+
+    async def test_updates_model_on_provider(self, tmp_path):
+        """update_llm_settings updates the model attribute on the LLM provider."""
+        cfg = _make_config(save_path=str(tmp_path / "saves"))
+        llm = MockLLM()
+        llm.model = "old-model"
+        llm.temperature = 0.5
+        mgr = ConversationManager(config=cfg, llm=llm, creature_state=CreatureState())
+        await mgr.initialize()
+
+        mgr.update_llm_settings("new-model", 0.9)
+        assert llm.model == "new-model"
+        assert llm.temperature == 0.9
+
+    async def test_updates_temperature_on_provider(self, tmp_path):
+        """update_llm_settings updates temperature independently."""
+        cfg = _make_config(save_path=str(tmp_path / "saves"))
+        llm = MockLLM()
+        llm.model = "test-model"
+        llm.temperature = 0.3
+        mgr = ConversationManager(config=cfg, llm=llm, creature_state=CreatureState())
+        await mgr.initialize()
+
+        mgr.update_llm_settings("test-model", 0.7)
+        assert llm.temperature == 0.7
+
+    async def test_no_crash_without_llm(self, tmp_path):
+        """update_llm_settings is safe when no LLM provider is available."""
+        cfg = _make_config(save_path=str(tmp_path / "saves"))
+        with patch(
+            "seaman_brain.conversation.manager.create_provider",
+            side_effect=ImportError("nope"),
+        ):
+            mgr = ConversationManager(config=cfg, creature_state=CreatureState())
+            await mgr.initialize()
+            mgr.update_llm_settings("any-model", 0.5)  # Should not raise
+
+    async def test_no_crash_without_model_attr(self, tmp_path):
+        """update_llm_settings is safe when provider lacks model/temperature attrs."""
+        cfg = _make_config(save_path=str(tmp_path / "saves"))
+        llm = MockLLM()
+        # MockLLM doesn't have model/temperature by default
+        mgr = ConversationManager(config=cfg, llm=llm, creature_state=CreatureState())
+        await mgr.initialize()
+        mgr.update_llm_settings("new-model", 0.5)  # Should not raise
+
+
+# ---------------------------------------------------------------------------
 # Utility method tests
 # ---------------------------------------------------------------------------
 
@@ -590,6 +665,7 @@ class TestGenerateAutonomousRemark:
         mgr = ConversationManager(config=cfg, llm=llm, creature_state=CreatureState())
         await mgr.initialize()
 
+        llm.chat.reset_mock()  # Clear warmup call from initialize()
         result = await mgr.generate_autonomous_remark("You are very hungry.")
         assert result is not None
         assert len(result) > 0

@@ -1082,6 +1082,10 @@ class GameEngine:
         try:
             logger.info("LLM settings applied: model=%s, temp=%.1f", model, temperature)
             save_user_settings(self._config)
+            # Propagate to the live LLM provider
+            manager = self.window.manager
+            if manager is not None:
+                manager.update_llm_settings(model, temperature)
         except Exception as exc:
             logger.error("LLM apply error: %s", exc)
 

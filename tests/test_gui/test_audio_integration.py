@@ -544,3 +544,60 @@ class TestEdgeCases:
         """Getting volume for a channel not in the dict returns 0.0."""
         # All channels should exist, but test the dict.get default
         assert bridge._volumes[AudioChannel.AMBIENT] == 0.3
+
+
+# ── Future Tracking Tests ─────────────────────────────────────────────
+
+
+class TestFutureTracking:
+    """Tests for async future tracking and cancellation on shutdown."""
+
+    def test_pending_futures_initialized_empty(self, bridge: PygameAudioBridge):
+        """Bridge starts with an empty pending futures list."""
+        assert bridge._pending_futures == []
+
+    def test_play_voice_tracks_future(
+        self, bridge_with_manager: PygameAudioBridge
+    ):
+        """play_voice appends a future to _pending_futures."""
+        bridge_with_manager.play_voice("Hello human")
+        assert len(bridge_with_manager._pending_futures) == 1
+
+    def test_start_listening_tracks_future(
+        self, bridge_with_manager: PygameAudioBridge
+    ):
+        """_start_listening appends a future to _pending_futures."""
+        bridge_with_manager._start_listening()
+        assert len(bridge_with_manager._pending_futures) == 1
+
+    def test_update_prunes_completed_futures(self, bridge: PygameAudioBridge):
+        """update() removes completed futures from the list."""
+        done_future = MagicMock()
+        done_future.done.return_value = True
+        pending_future = MagicMock()
+        pending_future.done.return_value = False
+
+        bridge._pending_futures = [done_future, pending_future]
+        bridge.update(0.016)
+        assert len(bridge._pending_futures) == 1
+        assert bridge._pending_futures[0] is pending_future
+
+    def test_shutdown_cancels_pending_futures(self, bridge: PygameAudioBridge):
+        """shutdown() cancels all tracked futures and clears the list."""
+        f1 = MagicMock()
+        f2 = MagicMock()
+        bridge._pending_futures = [f1, f2]
+
+        bridge.shutdown()
+
+        f1.cancel.assert_called_once()
+        f2.cancel.assert_called_once()
+        assert bridge._pending_futures == []
+
+    def test_shutdown_then_play_voice_noop(
+        self, bridge_with_manager: PygameAudioBridge
+    ):
+        """play_voice after shutdown does not add futures."""
+        bridge_with_manager.shutdown()
+        bridge_with_manager.play_voice("Hello")
+        assert bridge_with_manager._pending_futures == []

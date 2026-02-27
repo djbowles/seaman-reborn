@@ -198,6 +198,8 @@ class GameWindow:
         if self._loop is None:
             return
 
+        self._status_message = "Loading brain..."
+
         async def _init() -> None:
             try:
                 from seaman_brain.conversation.manager import ConversationManager

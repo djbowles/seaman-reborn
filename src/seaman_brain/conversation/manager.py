@@ -125,6 +125,17 @@ class ConversationManager:
             except (ImportError, ValueError) as exc:
                 logger.error("Failed to create LLM provider: %s", exc)
 
+        # Warmup: preload the model into VRAM so the first real call isn't slow
+        if self._llm is not None:
+            from seaman_brain.types import ChatMessage, MessageRole
+
+            try:
+                warmup = ChatMessage(role=MessageRole.USER, content=".")
+                await self._llm.chat([warmup])
+                logger.info("LLM warmup complete")
+            except Exception as exc:
+                logger.warning("LLM warmup failed: %s", exc)
+
         # Creature state & persistence
         self._persistence = StatePersistence(cfg.creature.save_path)
         if self._creature_state is None:
@@ -510,6 +521,19 @@ class ConversationManager:
         self._episodic.add(assistant_msg)
 
         return response
+
+    def update_llm_settings(self, model: str, temperature: float) -> None:
+        """Hot-swap LLM model and temperature on the live provider.
+
+        Args:
+            model: New model name (e.g. "qwen3-coder:30b").
+            temperature: New sampling temperature.
+        """
+        if self._llm is not None and hasattr(self._llm, "model"):
+            self._llm.model = model
+        if self._llm is not None and hasattr(self._llm, "temperature"):
+            self._llm.temperature = temperature
+        logger.info("LLM settings updated: model=%s, temperature=%.2f", model, temperature)
 
     async def shutdown(self) -> None:
         """Cleanly shut down: save state and release resources."""

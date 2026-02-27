@@ -94,6 +94,9 @@ class PygameAudioBridge:
         # Shutdown guard — prevents new async submissions after shutdown starts
         self._shutting_down = False
 
+        # Track pending async futures so we can cancel them on shutdown
+        self._pending_futures: list[Any] = []
+
         # Initialize mixer
         self._init_mixer()
 
@@ -237,9 +240,10 @@ class PygameAudioBridge:
 
         if self._async_loop is not None:
             try:
-                asyncio.run_coroutine_threadsafe(
+                future = asyncio.run_coroutine_threadsafe(
                     self._play_voice_async(text), self._async_loop
                 )
+                self._pending_futures.append(future)
             except RuntimeError:
                 # Loop already closed
                 pass
@@ -354,9 +358,10 @@ class PygameAudioBridge:
             return
 
         try:
-            asyncio.run_coroutine_threadsafe(
+            future = asyncio.run_coroutine_threadsafe(
                 self._listen_async(), self._async_loop
             )
+            self._pending_futures.append(future)
         except RuntimeError:
             pass
 
@@ -407,6 +412,9 @@ class PygameAudioBridge:
         Args:
             dt: Delta time in seconds since last frame.
         """
+        # Prune completed futures to prevent unbounded growth
+        self._pending_futures = [f for f in self._pending_futures if not f.done()]
+
         # Check if ambient finished unexpectedly and restart
         if self._ambient_playing and self._ambient_channel is not None:
             try:
@@ -417,7 +425,12 @@ class PygameAudioBridge:
                 pass
 
     def shutdown(self) -> None:
-        """Clean shutdown — stop all audio channels and block new submissions."""
+        """Clean shutdown — cancel pending futures, stop all audio channels."""
+        # Cancel tracked async futures before setting the shutdown flag
+        for future in self._pending_futures:
+            future.cancel()
+        self._pending_futures.clear()
+
         self._shutting_down = True
         self.stop_ambient()
         self.mic_active = False
