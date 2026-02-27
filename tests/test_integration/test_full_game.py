@@ -661,8 +661,8 @@ class TestSaveLoadFullState:
         await mgr1.process_input("Tell me about yourself")
         await mgr1.shutdown()
 
-        # Verify save file
-        save_file = tmp_path / "saves" / "creature.json"
+        # Verify save file (in active bloodline subdirectory)
+        save_file = tmp_path / "saves" / "default" / "creature.json"
         assert save_file.exists()
         saved_data = json.loads(save_file.read_text())
         assert saved_data["interaction_count"] == 3

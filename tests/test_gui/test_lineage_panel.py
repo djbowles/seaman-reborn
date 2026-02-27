@@ -158,6 +158,41 @@ class TestBloodlineList:
         p.open()
         assert len(p._bloodlines) == 0
 
+    def test_refresh_list_handles_os_error(self, tmp_path: Path):
+        """refresh_list catches errors and opens with empty list."""
+        from unittest.mock import patch as _patch
+
+        base = tmp_path / "saves"
+        base.mkdir()
+        p = LineagePanel(save_base_dir=str(base))
+
+        with _patch(
+            "seaman_brain.gui.lineage_panel.StatePersistence.list_bloodlines",
+            side_effect=OSError("Permission denied"),
+        ):
+            p.open()  # Should NOT raise
+
+        assert len(p._bloodlines) == 0
+        assert "Error" in p._status_text
+        assert p.visible is True
+
+    def test_refresh_list_handles_generic_exception(self, tmp_path: Path):
+        """refresh_list catches generic exceptions gracefully."""
+        from unittest.mock import patch as _patch
+
+        base = tmp_path / "saves"
+        base.mkdir()
+        p = LineagePanel(save_base_dir=str(base))
+
+        with _patch(
+            "seaman_brain.gui.lineage_panel.StatePersistence.migrate_flat_saves",
+            side_effect=RuntimeError("unexpected"),
+        ):
+            p.open()  # Should NOT raise
+
+        assert len(p._bloodlines) == 0
+        assert "Error" in p._status_text
+
 
 class TestNewBloodline:
     """Tests for creating new bloodlines."""

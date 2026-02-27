@@ -132,21 +132,19 @@ The PRD (`Seaman 2_ Modern Tech Blueprint.txt`) defines UE5 as the rendering fro
 
 ## What Needs to Happen Next
 
-### Phase 1: Python API Hardening (before UE5 work)
+### Phase 1: Python API Hardening (before UE5 work) — COMPLETE
 
-1. **Wire up EventBroadcaster** — `streaming.py` has a full per-channel subscription system (MOOD, NEEDS, EVOLUTION, BEHAVIOR, TANK, DEATH) that isn't connected to `BrainServer` yet. Wire it in so UE5 gets push notifications for lifecycle events.
+All Phase 1 items are implemented and tested (4 test files in `tests/test_api/`).
 
-2. **Add streaming LLM responses** — Currently buffers full response before sending. UE5 needs token-by-token streaming for "creature is talking" animation sync.
+1. **Wire up EventBroadcaster** — Done. `streaming.py` per-channel subscription system wired into `BrainServer`. Event notifications broadcast for death, mood shifts, needs changes, evolution, and autonomous behaviors. ✓
 
-3. **Add subscribe/unsubscribe messages** — Let UE5 client opt into specific event channels over WebSocket.
+2. **Add streaming LLM responses** — Done. Token-by-token streaming via `process_input_stream()` in ConversationManager, relayed through WebSocket `response_stream` messages. ✓
 
-4. **Trigger EventNotifications** — Hook creature subsystems (evolution, death, mood shifts) to broadcast `event` messages.
+3. **Add subscribe/unsubscribe messages** — Done. Client sends `subscribe`/`unsubscribe` messages with channel names. Server manages per-connection channel sets. ✓
 
-5. **Add action messages** — UE5 needs to send actions beyond text chat:
-   - `feed` — trigger feeding
-   - `tap_glass` — poke the creature
-   - `adjust_temperature` — tank controls
-   - `drain_tank` / `fill_tank` — environment transitions
+4. **Trigger EventNotifications** — Done. Creature subsystems (evolution, death, mood shifts, needs, behavior events) fire `event` messages through the broadcaster. ✓
+
+5. **Add action messages** — Done. 7 action types dispatched: `feed`, `tap_glass`, `adjust_temperature`, `drain_tank`, `fill_tank`, `clean_tank`, `toggle_aerator`. ✓
 
 ### Phase 2: UE5 Project Setup
 

@@ -1505,11 +1505,18 @@ class GameEngine:
             return
 
         if self._game_state == GameState.LINEAGE:
+            try:
+                self._lineage_panel.close()
+            except Exception as exc:
+                logger.error("Lineage panel close failed: %s", exc, exc_info=True)
             self._game_state = GameState.PLAYING
-            self._lineage_panel.close()
         else:
-            self._game_state = GameState.LINEAGE
-            self._lineage_panel.open()
+            try:
+                self._lineage_panel.open()
+                self._game_state = GameState.LINEAGE
+            except Exception as exc:
+                logger.error("Lineage panel open failed: %s", exc, exc_info=True)
+                self._add_notification("Failed to open lineage panel")
 
     def _toggle_mic(self) -> None:
         """Toggle microphone input on/off via the audio bridge."""
@@ -1552,6 +1559,11 @@ class GameEngine:
             self._chat_panel.add_message(
                 MessageRole.SYSTEM, f"Loaded bloodline: {name}"
             )
+
+            # Sync ConversationManager persistence path and state
+            if self._manager is not None:
+                self._manager.switch_bloodline(name, new_state)
+
             self._add_notification(f"Loaded bloodline: {name}")
             self._toggle_lineage()
         except Exception as exc:

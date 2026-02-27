@@ -171,12 +171,18 @@ class LineagePanel:
 
     def refresh_list(self) -> None:
         """Reload bloodlines from disk."""
-        # Ensure migration has happened
-        StatePersistence.migrate_flat_saves(self._save_base_dir)
-        self._bloodlines = StatePersistence.list_bloodlines(self._save_base_dir)
-        self._active_name = StatePersistence.get_active_bloodline(
-            self._save_base_dir
-        )
+        try:
+            # Ensure migration has happened
+            StatePersistence.migrate_flat_saves(self._save_base_dir)
+            self._bloodlines = StatePersistence.list_bloodlines(self._save_base_dir)
+            self._active_name = StatePersistence.get_active_bloodline(
+                self._save_base_dir
+            )
+        except Exception as exc:
+            logger.error("Failed to refresh bloodline list: %s", exc, exc_info=True)
+            self._bloodlines = []
+            self._status_text = f"Error loading bloodlines: {exc}"
+
         # Clamp selection
         if self._bloodlines:
             self._selected_index = min(

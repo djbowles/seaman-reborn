@@ -142,8 +142,12 @@ class ConversationManager:
             except Exception as exc:
                 logger.warning("LLM warmup failed: %s", exc)
 
-        # Creature state & persistence
-        self._persistence = StatePersistence(cfg.creature.save_path)
+        # Creature state & persistence — resolve active bloodline
+        save_base = cfg.creature.save_path
+        StatePersistence.migrate_flat_saves(save_base)
+        active = StatePersistence.get_active_bloodline(save_base)
+        active_dir = f"{save_base}/{active}"
+        self._persistence = StatePersistence(active_dir)
         if self._creature_state is None:
             try:
                 self._creature_state = self._persistence.load()
@@ -544,6 +548,32 @@ class ConversationManager:
         if self._llm is not None and hasattr(self._llm, "temperature"):
             self._llm.temperature = temperature
         logger.info("LLM settings updated: model=%s, temperature=%.2f", model, temperature)
+
+    def switch_bloodline(self, name: str, new_state: CreatureState) -> None:
+        """Switch to a different bloodline, updating persistence and creature state.
+
+        Args:
+            name: Name of the bloodline subdirectory to switch to.
+            new_state: The creature state loaded from the new bloodline.
+        """
+        cfg = self._config
+
+        # Save current state before switching
+        self._save_state()
+
+        # Update persistence to new bloodline directory
+        active_dir = f"{cfg.creature.save_path}/{name}"
+        self._persistence = StatePersistence(active_dir)
+
+        # Update creature state and traits
+        self._creature_state = new_state
+        self._traits = get_default_profile(new_state.stage)
+
+        # Rebuild prompt builder state for new stage
+        if self._prompt_builder is not None:
+            logger.info(
+                "Switched bloodline to %s (stage=%s)", name, new_state.stage.value
+            )
 
     async def shutdown(self) -> None:
         """Cleanly shut down: save state and release resources."""

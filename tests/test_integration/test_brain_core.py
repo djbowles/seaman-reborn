@@ -386,8 +386,8 @@ class TestSessionPersistence:
         await mgr1.process_input("Second message")
         await mgr1.shutdown()
 
-        # Verify save file exists
-        save_file = tmp_path / "saves" / "creature.json"
+        # Verify save file exists (in active bloodline subdirectory)
+        save_file = tmp_path / "saves" / "default" / "creature.json"
         assert save_file.exists()
 
         # === Session 2 ===
@@ -440,7 +440,8 @@ class TestSessionPersistence:
         await mgr.process_input("Test")
         await mgr.shutdown()
 
-        save_file = tmp_path / "saves" / "creature.json"
+        # Saves to active bloodline subdirectory (default)
+        save_file = tmp_path / "saves" / "default" / "creature.json"
         data = json.loads(save_file.read_text())
         assert "stage" in data
         assert "interaction_count" in data
@@ -456,12 +457,12 @@ class TestSessionPersistence:
         await mgr.initialize()
 
         await mgr.process_input("First message")
-        # First save creates creature.json
-        assert (tmp_path / "saves" / "creature.json").exists()
+        # First save creates creature.json in active bloodline subdir
+        assert (tmp_path / "saves" / "default" / "creature.json").exists()
 
         await mgr.process_input("Second message")
         # Second save should create a .bak backup
-        assert (tmp_path / "saves" / "creature.json.bak").exists()
+        assert (tmp_path / "saves" / "default" / "creature.json.bak").exists()
 
 
 # ---------------------------------------------------------------------------

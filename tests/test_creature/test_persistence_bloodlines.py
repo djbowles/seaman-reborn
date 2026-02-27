@@ -71,9 +71,15 @@ class TestMigrateFlatSaves:
         StatePersistence.migrate_flat_saves(base_dir)
         assert not (base_dir / "default").exists()
 
-    def test_no_migration_when_default_exists(self, base_dir: Path):
-        """Skips migration if default/ already exists."""
-        (base_dir / "creature.json").write_text("{}", encoding="utf-8")
+    def test_merges_when_default_exists(self, base_dir: Path):
+        """Merges orphaned root files into existing default/."""
+        # Root has a newer creature.json
+        (base_dir / "creature.json").write_text(
+            '{"stage":"podfish"}', encoding="utf-8"
+        )
+        (base_dir / "creature.json.bak").write_text("{}", encoding="utf-8")
+
+        # default/ already has an older save
         (base_dir / "default").mkdir()
         (base_dir / "default" / "creature.json").write_text(
             '{"stage":"gillman"}', encoding="utf-8"
@@ -81,13 +87,43 @@ class TestMigrateFlatSaves:
 
         StatePersistence.migrate_flat_saves(base_dir)
 
-        # Flat file should still be there (not moved)
-        assert (base_dir / "creature.json").exists()
-        # default/ content unchanged
+        # Root files should be gone (moved into default/)
+        assert not (base_dir / "creature.json").exists()
+        assert not (base_dir / "creature.json.bak").exists()
+
+        # default/ should have the root's files (overwritten)
         data = json.loads(
             (base_dir / "default" / "creature.json").read_text(encoding="utf-8")
         )
-        assert data["stage"] == "gillman"
+        assert data["stage"] == "podfish"
+        assert (base_dir / "default" / "creature.json.bak").exists()
+
+    def test_merges_lineage_when_both_exist(self, base_dir: Path):
+        """Merges lineage files when both root and default have lineage/."""
+        (base_dir / "creature.json").write_text("{}", encoding="utf-8")
+
+        # Root lineage with gen_3
+        root_lineage = base_dir / "lineage"
+        root_lineage.mkdir()
+        (root_lineage / "gen_3.json").write_text("{}", encoding="utf-8")
+
+        # default/ already has lineage with gen_1 and gen_2
+        default_dir = base_dir / "default"
+        default_dir.mkdir()
+        (default_dir / "creature.json").write_text("{}", encoding="utf-8")
+        default_lineage = default_dir / "lineage"
+        default_lineage.mkdir()
+        (default_lineage / "gen_1.json").write_text("{}", encoding="utf-8")
+        (default_lineage / "gen_2.json").write_text("{}", encoding="utf-8")
+
+        StatePersistence.migrate_flat_saves(base_dir)
+
+        # Root lineage should be gone
+        assert not root_lineage.exists()
+        # All generation files should be in default/lineage/
+        assert (default_lineage / "gen_1.json").exists()
+        assert (default_lineage / "gen_2.json").exists()
+        assert (default_lineage / "gen_3.json").exists()
 
 
 class TestListBloodlines:

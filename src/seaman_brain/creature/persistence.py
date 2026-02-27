@@ -147,22 +147,25 @@ class StatePersistence:
             return
 
         default_dir = base / "default"
-        if default_dir.exists():
-            logger.debug("default/ already exists, skipping migration")
-            return
-
         default_dir.mkdir(parents=True, exist_ok=True)
 
-        # Move creature files
+        # Move creature files into default/ (overwrite orphans even if dir exists)
         for pattern in ("creature.json", "creature.json.bak"):
             src = base / pattern
             if src.exists():
                 shutil.move(str(src), str(default_dir / pattern))
 
-        # Move lineage directory
+        # Move lineage directory (only if not already present in default/)
         old_lineage = base / "lineage"
         if old_lineage.exists() and old_lineage.is_dir():
-            shutil.move(str(old_lineage), str(default_dir / "lineage"))
+            dest_lineage = default_dir / "lineage"
+            if not dest_lineage.exists():
+                shutil.move(str(old_lineage), str(dest_lineage))
+            else:
+                # Merge individual generation files
+                for gen_file in old_lineage.iterdir():
+                    shutil.move(str(gen_file), str(dest_lineage / gen_file.name))
+                old_lineage.rmdir()
 
         # Write active marker
         (base / "_active.txt").write_text("default", encoding="utf-8")

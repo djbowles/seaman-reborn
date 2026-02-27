@@ -101,6 +101,51 @@ class TestInitialize:
         await mgr.initialize()
         assert mgr._persistence is not None
 
+    async def test_initialize_resolves_active_bloodline(self, tmp_path):
+        """Initialize resolves the active bloodline from _active.txt."""
+        import json
+
+        save_base = tmp_path / "saves"
+        # Set up a bloodline named "alpha"
+        alpha_dir = save_base / "alpha"
+        alpha_dir.mkdir(parents=True)
+        state = CreatureState(trust_level=0.77)
+        (alpha_dir / "creature.json").write_text(
+            json.dumps(state.to_dict()), encoding="utf-8"
+        )
+        # Mark "alpha" as active
+        (save_base / "_active.txt").write_text("alpha", encoding="utf-8")
+
+        cfg = _make_config(save_path=str(save_base))
+        mgr = ConversationManager(config=cfg, llm=MockLLM())
+        await mgr.initialize()
+
+        # Should have loaded from alpha/, not from base dir
+        assert mgr.creature_state is not None
+        assert mgr.creature_state.trust_level == pytest.approx(0.77)
+
+    async def test_initialize_migrates_flat_saves(self, tmp_path):
+        """Initialize calls migrate_flat_saves before resolving active bloodline."""
+        import json
+
+        save_base = tmp_path / "saves"
+        save_base.mkdir(parents=True)
+        # Old flat layout: creature.json at root
+        state = CreatureState(trust_level=0.55)
+        (save_base / "creature.json").write_text(
+            json.dumps(state.to_dict()), encoding="utf-8"
+        )
+
+        cfg = _make_config(save_path=str(save_base))
+        mgr = ConversationManager(config=cfg, llm=MockLLM())
+        await mgr.initialize()
+
+        # Migration should have moved to default/ and active is "default"
+        assert (save_base / "default" / "creature.json").exists()
+        assert not (save_base / "creature.json").exists()
+        assert mgr.creature_state is not None
+        assert mgr.creature_state.trust_level == pytest.approx(0.55)
+
     async def test_initialize_warmup_calls_llm(self, tmp_path):
         """Initialize sends a warmup chat call to preload the LLM."""
         cfg = _make_config(save_path=str(tmp_path / "saves"))
@@ -223,7 +268,8 @@ class TestProcessInput:
         await mgr.initialize()
 
         await mgr.process_input("Hello")
-        assert (save_dir / "creature.json").exists()
+        # Saves to active bloodline subdirectory (default)
+        assert (save_dir / "default" / "creature.json").exists()
 
 
 # ---------------------------------------------------------------------------
@@ -411,7 +457,8 @@ class TestShutdown:
         await mgr.initialize()
 
         await mgr.shutdown()
-        assert (save_dir / "creature.json").exists()
+        # Saves to active bloodline subdirectory (default)
+        assert (save_dir / "default" / "creature.json").exists()
 
     async def test_shutdown_clears_initialized(self, tmp_path):
         """shutdown() resets the initialized flag."""
@@ -874,7 +921,8 @@ class TestProcessInputStream:
         async for _ in mgr.process_input_stream("Save test"):
             pass
 
-        assert (save_dir / "creature.json").exists()
+        # Saves to active bloodline subdirectory (default)
+        assert (save_dir / "default" / "creature.json").exists()
 
     async def test_stream_not_initialized_raises(self, tmp_path):
         """Raises RuntimeError if not initialized."""
@@ -991,3 +1039,65 @@ class TestLLMTimeouts:
             assert result is None
         finally:
             mgr_mod._LLM_CHAT_TIMEOUT = orig
+
+
+# ---------------------------------------------------------------------------
+# Bloodline switch tests
+# ---------------------------------------------------------------------------
+
+
+class TestSwitchBloodline:
+    """Tests for switch_bloodline() — live bloodline switching."""
+
+    async def test_switch_updates_creature_state(self, tmp_path):
+        """switch_bloodline updates the creature state to the new one."""
+        cfg = _make_config(save_path=str(tmp_path / "saves"))
+        mgr = ConversationManager(config=cfg, llm=MockLLM(), creature_state=CreatureState())
+        await mgr.initialize()
+
+        new_state = CreatureState(trust_level=0.99, stage=CreatureStage.GILLMAN)
+        mgr.switch_bloodline("alpha", new_state)
+
+        assert mgr.creature_state is new_state
+        assert mgr.creature_state.trust_level == pytest.approx(0.99)
+
+    async def test_switch_updates_traits_for_new_stage(self, tmp_path):
+        """switch_bloodline updates traits to match the new stage."""
+        cfg = _make_config(save_path=str(tmp_path / "saves"))
+        mgr = ConversationManager(config=cfg, llm=MockLLM(), creature_state=CreatureState())
+        await mgr.initialize()
+        old_traits = mgr.traits
+
+        new_state = CreatureState(stage=CreatureStage.GILLMAN)
+        mgr.switch_bloodline("beta", new_state)
+
+        assert mgr.traits is not old_traits
+
+    async def test_switch_updates_persistence_path(self, tmp_path):
+        """switch_bloodline changes the persistence save directory."""
+        save_base = tmp_path / "saves"
+        cfg = _make_config(save_path=str(save_base))
+        mgr = ConversationManager(config=cfg, llm=MockLLM(), creature_state=CreatureState())
+        await mgr.initialize()
+
+        new_state = CreatureState(trust_level=0.5)
+        mgr.switch_bloodline("gamma", new_state)
+
+        # Save should go to gamma/ subdirectory
+        mgr._save_state()
+        assert (save_base / "gamma" / "creature.json").exists()
+
+    async def test_switch_saves_old_state_first(self, tmp_path):
+        """switch_bloodline saves current state before switching."""
+        save_base = tmp_path / "saves"
+        cfg = _make_config(save_path=str(save_base))
+        old_state = CreatureState(trust_level=0.33)
+        mgr = ConversationManager(config=cfg, llm=MockLLM(), creature_state=old_state)
+        await mgr.initialize()
+
+        # The old state should be saved to the default bloodline dir
+        new_state = CreatureState(trust_level=0.88)
+        mgr.switch_bloodline("new_bl", new_state)
+
+        # Verify old state was saved
+        assert (save_base / "default" / "creature.json").exists()
