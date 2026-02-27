@@ -596,3 +596,135 @@ class TestKokoroTTSFactory:
         with patch.dict(sys.modules, {"kokoro": None, "pyttsx3": mock_pyttsx3}):
             provider = create_tts_provider(config)
             assert isinstance(provider, NoopTTSProvider)
+
+
+# ── Fix #3: TTS executor timeout ─────────────────────────────────────
+
+
+class TestTTSTimeout:
+    """Tests for TTS executor timeout handling."""
+
+    async def test_synthesize_timeout_returns_empty_wav(self):
+        """Pyttsx3 synthesize timeout returns empty WAV bytes."""
+        import seaman_brain.audio.tts as tts_mod
+
+        orig = tts_mod._TTS_TIMEOUT
+        tts_mod._TTS_TIMEOUT = 0.01  # Very short for test
+
+        try:
+            mock_pyttsx3, mock_engine = _mock_pyttsx3()
+            with patch.dict(sys.modules, {"pyttsx3": mock_pyttsx3}):
+                provider = Pyttsx3TTSProvider()
+
+                # Make sync call block forever
+                def _block(*args, **kwargs):
+                    import time
+                    time.sleep(10)
+
+                provider._synthesize_sync = _block
+
+                result = await provider.synthesize("test")
+                # Should get empty WAV, not hang
+                assert len(result) > 0  # WAV header at minimum
+        finally:
+            tts_mod._TTS_TIMEOUT = orig
+
+    async def test_speak_timeout_does_not_hang(self):
+        """Pyttsx3 speak timeout completes without hanging."""
+        import seaman_brain.audio.tts as tts_mod
+
+        orig = tts_mod._TTS_TIMEOUT
+        tts_mod._TTS_TIMEOUT = 0.01
+
+        try:
+            mock_pyttsx3, mock_engine = _mock_pyttsx3()
+            with patch.dict(sys.modules, {"pyttsx3": mock_pyttsx3}):
+                provider = Pyttsx3TTSProvider()
+
+                def _block(*args, **kwargs):
+                    import time
+                    time.sleep(10)
+
+                provider._speak_sync = _block
+
+                # Should complete, not hang
+                await provider.speak("test")
+        finally:
+            tts_mod._TTS_TIMEOUT = orig
+
+
+# ── Fix #6: Kokoro retry cooldown ────────────────────────────────────
+
+
+class TestKokoroRetryCooldown:
+    """Tests for Kokoro init retry cooldown."""
+
+    def test_retry_skipped_during_cooldown(self):
+        """Kokoro init skipped if last failure was recent."""
+        provider = KokoroTTSProvider()
+        provider._last_failure_time = 999999999.0  # far future
+        provider._retry_interval = 60.0
+
+        # Patch time.monotonic to return something before cooldown expires
+        with patch("time.monotonic", return_value=999999999.0 + 30):
+            provider._initialize()
+
+        # Should still be unavailable (skipped due to cooldown)
+        assert not provider._available
+
+    def test_retry_attempted_after_cooldown(self):
+        """Kokoro init retried after cooldown expires."""
+        provider = KokoroTTSProvider()
+        provider._last_failure_time = 100.0
+        provider._retry_interval = 60.0
+
+        # After cooldown (100 + 60 < 200)
+        with patch("time.monotonic", return_value=200.0):
+            with patch.dict(sys.modules, {"kokoro": None}):
+                provider._initialize()
+
+        # Attempted but failed (kokoro not installed)
+        assert not provider._available
+        assert provider._last_failure_time > 0
+
+
+# ── Fix #25: Empty WAV detection ─────────────────────────────────────
+
+
+class TestEmptyWAVDetection:
+    """Tests for header-only WAV detection in pyttsx3."""
+
+    def test_header_only_wav_logged(self, caplog):
+        """Header-only WAV output logs a warning."""
+        import logging
+
+        mock_pyttsx3, mock_engine = _mock_pyttsx3()
+        with patch.dict(sys.modules, {"pyttsx3": mock_pyttsx3}):
+            provider = Pyttsx3TTSProvider()
+
+            # Create a header-only WAV (44 bytes)
+            buf = io.BytesIO()
+            with wave.open(buf, "wb") as wf:
+                wf.setnchannels(1)
+                wf.setsampwidth(2)
+                wf.setframerate(22050)
+                wf.writeframes(b"")
+            header_only = buf.getvalue()
+            assert len(header_only) == 44
+
+            # Patch temp file to produce header-only WAV
+            with patch("tempfile.NamedTemporaryFile") as mock_tmp:
+                mock_tmp.return_value.__enter__ = lambda s: s
+                mock_tmp.return_value.__exit__ = MagicMock(return_value=False)
+                mock_tmp.return_value.name = "fake.wav"
+
+                from pathlib import Path
+                with patch.object(Path, "exists", return_value=True):
+                    with patch.object(Path, "stat") as mock_stat:
+                        mock_stat.return_value.st_size = 44
+                        with patch.object(Path, "read_bytes", return_value=header_only):
+                            with patch.object(Path, "unlink"):
+                                with caplog.at_level(logging.WARNING):
+                                    provider._synthesize_sync("test")
+
+            assert "header-only" in caplog.text

@@ -601,3 +601,42 @@ class TestFutureTracking:
         bridge_with_manager.shutdown()
         bridge_with_manager.play_voice("Hello")
         assert bridge_with_manager._pending_futures == []
+
+
+# ── Mixer Health-Check Tests (Fix #5) ────────────────────────────────
+
+
+class TestMixerHealthCheck:
+    """Tests for mixer health-check in update() and _reinit_mixer."""
+
+    def test_mixer_lost_triggers_reinit(self, bridge: PygameAudioBridge):
+        """When mixer_initialized but get_init() returns falsy, re-init is called."""
+        assert bridge._mixer_initialized is True
+        # Simulate mixer loss: get_init returns falsy
+        _mixer_mock.get_init.return_value = False
+        bridge.update(0.016)
+        # _init_mixer should have been called again
+        _mixer_mock.init.assert_called()
+
+    def test_mixer_healthy_no_reinit(self, bridge: PygameAudioBridge):
+        """When mixer is healthy, no re-init occurs."""
+        _mixer_mock.get_init.return_value = True
+        init_count = _mixer_mock.init.call_count
+        bridge.update(0.016)
+        assert _mixer_mock.init.call_count == init_count
+
+    def test_reinit_mixer_quits_and_reinits(self, bridge: PygameAudioBridge):
+        """_reinit_mixer quits mixer, resets state, and re-inits."""
+        assert bridge._mixer_initialized is True
+        bridge._reinit_mixer()
+        _mixer_mock.quit.assert_called()
+        # After reinit, mixer_initialized should be restored
+        # (since mock get_init returns True)
+        _mixer_mock.get_init.return_value = True
+        assert bridge._mixer_initialized is True
+
+    def test_reinit_mixer_handles_quit_error(self, bridge: PygameAudioBridge):
+        """_reinit_mixer handles errors from mixer.quit gracefully."""
+        _mixer_mock.quit.side_effect = RuntimeError("already quit")
+        bridge._reinit_mixer()  # Should not raise
+        _mixer_mock.quit.side_effect = None

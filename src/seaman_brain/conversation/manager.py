@@ -8,6 +8,7 @@ and context assembly.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
@@ -30,6 +31,9 @@ from seaman_brain.personality.prompt_builder import PromptBuilder
 from seaman_brain.personality.traits import TraitProfile, get_default_profile
 
 logger = logging.getLogger(__name__)
+
+_LLM_CHAT_TIMEOUT = 120.0
+_LLM_WARMUP_TIMEOUT = 60.0
 
 
 class ConversationManager:
@@ -131,7 +135,9 @@ class ConversationManager:
 
             try:
                 warmup = ChatMessage(role=MessageRole.USER, content=".")
-                await self._llm.chat([warmup])
+                await asyncio.wait_for(
+                    self._llm.chat([warmup]), timeout=_LLM_WARMUP_TIMEOUT
+                )
                 logger.info("LLM warmup complete")
             except Exception as exc:
                 logger.warning("LLM warmup failed: %s", exc)
@@ -268,7 +274,9 @@ class ConversationManager:
 
         # 7. LLM chat
         try:
-            raw_response = await self._llm.chat(context)
+            raw_response = await asyncio.wait_for(
+                self._llm.chat(context), timeout=_LLM_CHAT_TIMEOUT
+            )
         except Exception as exc:
             logger.error("LLM chat failed: %s", exc)
             return self._fallback_response(evolved)
@@ -505,7 +513,9 @@ class ConversationManager:
 
         # 5. LLM call
         try:
-            raw_response = await self._llm.chat(context)
+            raw_response = await asyncio.wait_for(
+                self._llm.chat(context), timeout=_LLM_CHAT_TIMEOUT
+            )
         except Exception as exc:
             logger.error("Autonomous LLM call failed: %s", exc)
             return None

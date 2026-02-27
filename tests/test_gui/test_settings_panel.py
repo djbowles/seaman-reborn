@@ -6,7 +6,7 @@ Pygame is mocked at module level to avoid requiring a display server in CI.
 from __future__ import annotations
 
 import sys
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -536,3 +536,92 @@ class TestVisionTab:
         panel.render(_surface_mock)
         panel.active_tab = SettingsTab.VISION
         panel.handle_mouse_up()
+
+
+# ── Device List Refresh Tests (Fix #26) ──────────────────────────────
+
+
+class TestRefreshDeviceLists:
+    """Tests for refresh_device_lists updating dropdown options."""
+
+    def test_refresh_updates_output_dropdown(self, panel: SettingsPanel):
+        """refresh_device_lists updates output device dropdown."""
+        panel.open()
+        panel.render(_surface_mock)  # Build widgets
+        panel.active_tab = SettingsTab.AUDIO
+        panel.render(_surface_mock)  # Build audio widgets
+
+        with patch(
+            "seaman_brain.gui.settings_panel.list_audio_output_devices",
+            return_value=[(0, "Speaker A"), (1, "Speaker B")],
+        ), patch(
+            "seaman_brain.gui.settings_panel.list_audio_input_devices",
+            return_value=[(0, "Mic A")],
+        ), patch(
+            "seaman_brain.gui.settings_panel.list_tts_voices",
+            return_value=[("v1", "Voice One")],
+        ), patch(
+            "seaman_brain.gui.settings_panel.list_webcams",
+            return_value=[(0, "Camera 0")],
+        ):
+            panel.refresh_device_lists()
+
+        if panel._output_device_dropdown is not None:
+            assert panel._output_device_dropdown.items == ["Speaker A", "Speaker B"]
+
+    def test_refresh_updates_input_dropdown(self, panel: SettingsPanel):
+        """refresh_device_lists updates input device dropdown."""
+        panel.open()
+        panel.render(_surface_mock)
+        panel.active_tab = SettingsTab.AUDIO
+        panel.render(_surface_mock)
+
+        with patch(
+            "seaman_brain.gui.settings_panel.list_audio_output_devices",
+            return_value=[(0, "Speaker A")],
+        ), patch(
+            "seaman_brain.gui.settings_panel.list_audio_input_devices",
+            return_value=[(0, "Mic X"), (1, "Mic Y"), (2, "Mic Z")],
+        ), patch(
+            "seaman_brain.gui.settings_panel.list_tts_voices",
+            return_value=[("v1", "Voice One")],
+        ), patch(
+            "seaman_brain.gui.settings_panel.list_webcams",
+            return_value=[(0, "Camera 0")],
+        ):
+            panel.refresh_device_lists()
+
+        if panel._input_device_dropdown is not None:
+            assert panel._input_device_dropdown.items == ["Mic X", "Mic Y", "Mic Z"]
+
+    def test_refresh_before_build_is_noop(self, config: SeamanConfig):
+        """refresh_device_lists before widgets are built does nothing."""
+        p = SettingsPanel(config=config)
+        # Should not crash even though no widgets have been built
+        p.refresh_device_lists()
+
+    def test_refresh_updates_camera_dropdown(self, panel: SettingsPanel):
+        """refresh_device_lists updates camera device dropdown."""
+        panel.open()
+        panel.render(_surface_mock)
+        panel.active_tab = SettingsTab.VISION
+        panel.render(_surface_mock)
+
+        with patch(
+            "seaman_brain.gui.settings_panel.list_audio_output_devices",
+            return_value=[(0, "Speaker A")],
+        ), patch(
+            "seaman_brain.gui.settings_panel.list_audio_input_devices",
+            return_value=[(0, "Mic A")],
+        ), patch(
+            "seaman_brain.gui.settings_panel.list_tts_voices",
+            return_value=[("v1", "Voice One")],
+        ), patch(
+            "seaman_brain.gui.settings_panel.list_webcams",
+            return_value=[(0, "Cam Front"), (2, "Cam Rear")],
+        ):
+            panel.refresh_device_lists()
+
+        if panel._vision_cam_dropdown is not None:
+            assert panel._vision_cam_dropdown.items == ["Cam Front", "Cam Rear"]
+            assert panel._cam_device_indices == [0, 2]

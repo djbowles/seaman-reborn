@@ -23,6 +23,8 @@ logger = logging.getLogger(__name__)
 # Shared thread pool for TTS operations (CPU-bound, keep off event loop)
 _tts_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="tts")
 
+_TTS_TIMEOUT = 30.0  # seconds before TTS executor call is abandoned
+
 
 @runtime_checkable
 class TTSProvider(Protocol):
@@ -148,6 +150,8 @@ class Pyttsx3TTSProvider:
             if path.exists() and path.stat().st_size > 0:
                 data = path.read_bytes()
                 path.unlink(missing_ok=True)
+                if len(data) <= 44:
+                    logger.warning("TTS produced header-only WAV (no audio data)")
                 return data
 
             # File missing or empty — engine may have failed silently
@@ -199,7 +203,14 @@ class Pyttsx3TTSProvider:
             RuntimeError: If the TTS engine is unavailable.
         """
         loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(_tts_executor, self._synthesize_sync, text)
+        try:
+            return await asyncio.wait_for(
+                loop.run_in_executor(_tts_executor, self._synthesize_sync, text),
+                timeout=_TTS_TIMEOUT,
+            )
+        except TimeoutError:
+            logger.warning("TTS synthesize timed out after %.0fs", _TTS_TIMEOUT)
+            return self._empty_wav()
 
     async def speak(self, text: str) -> None:
         """Speak text through default audio output asynchronously.
@@ -208,7 +219,13 @@ class Pyttsx3TTSProvider:
             text: The text to speak aloud.
         """
         loop = asyncio.get_running_loop()
-        await loop.run_in_executor(_tts_executor, self._speak_sync, text)
+        try:
+            await asyncio.wait_for(
+                loop.run_in_executor(_tts_executor, self._speak_sync, text),
+                timeout=_TTS_TIMEOUT,
+            )
+        except TimeoutError:
+            logger.warning("TTS speak timed out after %.0fs", _TTS_TIMEOUT)
 
 
 class KokoroTTSProvider:
@@ -225,10 +242,18 @@ class KokoroTTSProvider:
         self._available = False
         self._init_error: str = ""
         self._pipeline: object | None = None
+        self._last_failure_time: float = 0.0
+        self._retry_interval: float = 60.0
 
     def _initialize(self) -> None:
         """Lazy-load Kokoro pipeline on first use."""
         if self._pipeline is not None:
+            return
+        # Skip retry if last failure was recent
+        import time as _time
+        if self._last_failure_time and (
+            _time.monotonic() - self._last_failure_time < self._retry_interval
+        ):
             return
         try:
             from kokoro import KPipeline
@@ -239,10 +264,13 @@ class KokoroTTSProvider:
         except ImportError as exc:
             self._available = False
             self._init_error = f"kokoro not installed: {exc}"
+            self._last_failure_time = _time.monotonic()
             logger.warning("Kokoro TTS unavailable: %s", self._init_error)
         except Exception as exc:
             self._available = False
+            self._pipeline = None
             self._init_error = str(exc)
+            self._last_failure_time = _time.monotonic()
             logger.warning("Kokoro TTS init failed: %s", exc)
 
     @property
@@ -334,7 +362,14 @@ class KokoroTTSProvider:
             RuntimeError: If the TTS engine is unavailable.
         """
         loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(_tts_executor, self._synthesize_sync, text)
+        try:
+            return await asyncio.wait_for(
+                loop.run_in_executor(_tts_executor, self._synthesize_sync, text),
+                timeout=_TTS_TIMEOUT,
+            )
+        except TimeoutError:
+            logger.warning("Kokoro TTS synthesize timed out after %.0fs", _TTS_TIMEOUT)
+            return self._empty_wav()
 
     async def speak(self, text: str) -> None:
         """Speak text through default audio output asynchronously.
@@ -343,7 +378,13 @@ class KokoroTTSProvider:
             text: The text to speak aloud.
         """
         loop = asyncio.get_running_loop()
-        await loop.run_in_executor(_tts_executor, self._speak_sync, text)
+        try:
+            await asyncio.wait_for(
+                loop.run_in_executor(_tts_executor, self._speak_sync, text),
+                timeout=_TTS_TIMEOUT,
+            )
+        except TimeoutError:
+            logger.warning("Kokoro TTS speak timed out after %.0fs", _TTS_TIMEOUT)
 
 
 def create_tts_provider(config: AudioConfig | None = None) -> TTSProvider:

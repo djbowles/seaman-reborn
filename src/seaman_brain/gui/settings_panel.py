@@ -782,6 +782,41 @@ class SettingsPanel:
         if self.on_vision_change is not None:
             self.on_vision_change("look_now", True)
 
+    def refresh_device_lists(self) -> None:
+        """Re-enumerate audio/video devices and update dropdown options."""
+        if not self._widgets_built:
+            return
+
+        if self._output_device_dropdown is not None:
+            out_devs = list_audio_output_devices()
+            out_names = [name for _, name in out_devs]
+            out_idx = _find_saved_index(out_names, self._config.audio.audio_output_device)
+            self._output_device_dropdown.set_items(out_names, selected_index=out_idx)
+
+        if self._input_device_dropdown is not None:
+            in_devs = list_audio_input_devices()
+            in_names = [name for _, name in in_devs]
+            in_idx = _find_saved_index(in_names, self._config.audio.audio_input_device)
+            self._input_device_dropdown.set_items(in_names, selected_index=in_idx)
+
+        if self._tts_voice_dropdown is not None:
+            voices = list_tts_voices(self._config.audio.tts_provider)
+            voice_names = [name for _, name in voices]
+            voice_idx = _find_saved_index(voice_names, self._config.audio.tts_voice)
+            self._tts_voice_dropdown.set_items(voice_names, selected_index=voice_idx)
+
+        if self._vision_cam_dropdown is not None:
+            cams = list_webcams()
+            cam_names = [name for _, name in cams]
+            self._cam_device_indices = [dev_idx for dev_idx, _ in cams]
+            cam_idx = 0
+            saved_cam = self._config.vision.webcam_index
+            for i, dev_idx in enumerate(self._cam_device_indices):
+                if dev_idx == saved_cam:
+                    cam_idx = i
+                    break
+            self._vision_cam_dropdown.set_items(cam_names, selected_index=cam_idx)
+
     def set_last_observation(self, text: str) -> None:
         """Update the displayed last observation text.
 

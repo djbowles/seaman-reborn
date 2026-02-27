@@ -520,3 +520,76 @@ class TestUpdateTTSVoice:
         """update_tts_voice with mock TTS provider doesn't crash."""
         manager.update_tts_voice("Any Voice")
         assert manager._config.tts_voice == "Any Voice"
+
+
+# ── Fix #10: STT upgrade returns bool and resets on failure ──────────
+
+
+class TestSTTUpgradeReturnsBool:
+    """Tests for _try_upgrade_stt returning bool."""
+
+    def test_upgrade_returns_true_on_success(self, sounds_dir):
+        """_try_upgrade_stt returns True when upgrade succeeds."""
+        from seaman_brain.audio.stt import NoopSTTProvider
+
+        config = AudioConfig()
+        mock_tts = MagicMock()
+        noop_stt = NoopSTTProvider()
+        manager = AudioManager(
+            config=config,
+            tts_provider=mock_tts,
+            stt_provider=noop_stt,
+            sounds_dir=sounds_dir,
+        )
+
+        real_provider = MagicMock()  # not a NoopSTTProvider
+        with patch(
+            "seaman_brain.audio.manager.create_stt_provider",
+            return_value=real_provider,
+        ):
+            result = manager._try_upgrade_stt()
+        assert result is True
+        assert manager._stt is real_provider
+
+    def test_upgrade_returns_false_on_noop(self, sounds_dir):
+        """_try_upgrade_stt returns False when only NoopSTT is available."""
+        from seaman_brain.audio.stt import NoopSTTProvider
+
+        config = AudioConfig()
+        mock_tts = MagicMock()
+        noop_stt = NoopSTTProvider()
+        manager = AudioManager(
+            config=config,
+            tts_provider=mock_tts,
+            stt_provider=noop_stt,
+            sounds_dir=sounds_dir,
+        )
+
+        with patch(
+            "seaman_brain.audio.manager.create_stt_provider",
+            return_value=NoopSTTProvider(),
+        ):
+            result = manager._try_upgrade_stt()
+        assert result is False
+
+    def test_stt_enabled_resets_on_upgrade_failure(self, sounds_dir):
+        """stt_enabled setter resets to False when upgrade fails."""
+        from seaman_brain.audio.stt import NoopSTTProvider
+
+        config = AudioConfig()
+        mock_tts = MagicMock()
+        noop_stt = NoopSTTProvider()
+        manager = AudioManager(
+            config=config,
+            tts_provider=mock_tts,
+            stt_provider=noop_stt,
+            sounds_dir=sounds_dir,
+        )
+
+        with patch(
+            "seaman_brain.audio.manager.create_stt_provider",
+            return_value=NoopSTTProvider(),
+        ):
+            manager.stt_enabled = True
+        # Should have reverted because upgrade failed
+        assert manager.stt_enabled is False

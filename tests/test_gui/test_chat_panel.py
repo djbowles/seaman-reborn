@@ -849,3 +849,88 @@ class TestSendButton:
         panel._send_hover = True
         panel.handle_mouse_move(5, 5)
         assert panel._send_hover is False
+
+
+# ── Message Truncation Tests (Fix #18) ────────────────────────────────
+
+
+class TestMessageTruncation:
+    """Tests for _MAX_MESSAGE_LENGTH truncation in add_message."""
+
+    def test_long_message_truncated(self):
+        """Messages longer than _MAX_MESSAGE_LENGTH are truncated with '...'."""
+        from seaman_brain.gui.chat_panel import _MAX_MESSAGE_LENGTH
+
+        panel = ChatPanel()
+        long_text = "A" * (_MAX_MESSAGE_LENGTH + 500)
+        panel.add_message(MessageRole.USER, long_text)
+        msg = panel._messages[-1]
+        assert len(msg.text) == _MAX_MESSAGE_LENGTH + 3  # +3 for "..."
+        assert msg.text.endswith("...")
+
+    def test_short_message_not_truncated(self):
+        """Messages under _MAX_MESSAGE_LENGTH pass through unchanged."""
+        panel = ChatPanel()
+        short = "Hello, Seaman!"
+        panel.add_message(MessageRole.USER, short)
+        assert panel._messages[-1].text == short
+
+    def test_exact_limit_not_truncated(self):
+        """Message at exactly _MAX_MESSAGE_LENGTH is not truncated."""
+        from seaman_brain.gui.chat_panel import _MAX_MESSAGE_LENGTH
+
+        panel = ChatPanel()
+        text = "B" * _MAX_MESSAGE_LENGTH
+        panel.add_message(MessageRole.ASSISTANT, text)
+        assert panel._messages[-1].text == text
+
+
+# ── Character-Level Word Breaking Tests (Fix #18) ─────────────────────
+
+
+class TestCharacterLevelBreaking:
+    """Tests for character-level breaking of words wider than max_width."""
+
+    def test_long_spaceless_word_breaks(self):
+        """A word wider than max_width is broken character-by-character."""
+        panel = ChatPanel()
+        # Mock font.size: each char is 20px, so max_width=100 fits 5 chars
+        panel._font = MagicMock()
+        panel._font.size = lambda t: (len(t) * 20, 16)
+
+        result = panel._wrap_text("AAAAABBBBBCCCCC", max_width=100)
+        # 15 chars at 20px each = 300px total; should break into 5-char chunks
+        assert len(result) == 3
+        assert result[0] == "AAAAA"
+        assert result[1] == "BBBBB"
+        assert result[2] == "CCCCC"
+
+    def test_mixed_short_and_long_words(self):
+        """Normal words fit, but a long word in the middle gets broken."""
+        panel = ChatPanel()
+        panel._font = MagicMock()
+        panel._font.size = lambda t: (len(t) * 10, 16)
+
+        result = panel._wrap_text("hi AAAAAAAAAAAA ok", max_width=50)
+        # "hi" fits (20px), "AAAAAAAAAAAA" (120px) breaks into 5-char chunks,
+        # "ok" (20px) fits
+        assert any(len(line) <= 5 for line in result)
+        # Reconstruct text to make sure nothing was lost
+        joined = "".join(result)
+        assert "hi" in joined
+        assert "AAAAAAAAAAAA" in joined
+        assert "ok" in joined
+
+    def test_empty_string_returns_empty(self):
+        """Empty string returns single empty-string list."""
+        panel = ChatPanel()
+        panel._font = MagicMock()
+        result = panel._wrap_text("", max_width=100)
+        assert result == [""]
+
+    def test_no_font_returns_text_unchanged(self):
+        """With no font, text is returned as-is in a single-element list."""
+        panel = ChatPanel()
+        panel._font = None
+        result = panel._wrap_text("hello world", max_width=100)
+        assert result == ["hello world"]

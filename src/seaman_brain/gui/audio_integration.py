@@ -406,6 +406,17 @@ class PygameAudioBridge:
             pass
         return False
 
+    def _reinit_mixer(self) -> None:
+        """Quit and re-initialize Pygame mixer (e.g. after output device change)."""
+        try:
+            import pygame.mixer
+            pygame.mixer.quit()
+        except Exception:
+            pass
+        self._mixer_initialized = False
+        self.audio_available = False
+        self._init_mixer()
+
     def update(self, dt: float) -> None:
         """Per-frame update for audio state.
 
@@ -414,6 +425,17 @@ class PygameAudioBridge:
         """
         # Prune completed futures to prevent unbounded growth
         self._pending_futures = [f for f in self._pending_futures if not f.done()]
+
+        # Health-check: re-init mixer if it was lost
+        if self._mixer_initialized:
+            try:
+                import pygame.mixer
+                if not pygame.mixer.get_init():
+                    logger.warning("Pygame mixer lost, re-initializing")
+                    self._mixer_initialized = False
+                    self._init_mixer()
+            except Exception:
+                pass
 
         # Check if ambient finished unexpectedly and restart
         if self._ambient_playing and self._ambient_channel is not None:

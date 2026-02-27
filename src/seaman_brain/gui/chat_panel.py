@@ -43,6 +43,7 @@ _MSG_MARGIN = 4
 _BUBBLE_RADIUS = 6
 _SCROLLBAR_WIDTH = 8
 _MAX_HISTORY = 200
+_MAX_MESSAGE_LENGTH = 2000
 _FONT_SIZE = 15
 _CURSOR_BLINK_RATE = 0.53  # seconds
 _HEADER_HEIGHT = 24
@@ -200,8 +201,18 @@ class ChatPanel:
                 else:
                     if current_line:
                         lines.append(current_line)
-                    # If single word exceeds width, force it on its own line
-                    current_line = word
+                    # Break word character-by-character if it exceeds max_width
+                    if self._font.size(word)[0] > max_width:
+                        chunk = ""
+                        for ch in word:
+                            if self._font.size(chunk + ch)[0] > max_width and chunk:
+                                lines.append(chunk)
+                                chunk = ch
+                            else:
+                                chunk += ch
+                        current_line = chunk
+                    else:
+                        current_line = word
             if current_line:
                 lines.append(current_line)
         return lines if lines else [""]
@@ -213,6 +224,8 @@ class ChatPanel:
             role: Who sent the message (USER, ASSISTANT, SYSTEM).
             text: The message content.
         """
+        if len(text) > _MAX_MESSAGE_LENGTH:
+            text = text[:_MAX_MESSAGE_LENGTH] + "..."
         msg = ChatMessage(role=role, text=text)
         self._messages.append(msg)
         # Reset scroll to bottom when new message arrives
@@ -485,6 +498,10 @@ class ChatPanel:
             total_h += h
 
         self._total_content_height = total_h
+
+        # Clamp surface dimensions to valid range
+        mw = max(1, min(mw, 8192))
+        mh = max(1, min(mh, 8192))
 
         # Create a clipping surface for the message area
         clip_surface = pygame.Surface((mw, mh), pygame.SRCALPHA)

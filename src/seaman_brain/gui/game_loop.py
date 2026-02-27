@@ -78,6 +78,7 @@ _BEHAVIOR_CHECK_INTERVAL = 5.0  # seconds between behavior checks
 _EVENT_CHECK_INTERVAL = 3.0  # seconds between event checks
 _VISION_LOOK_TIMEOUT = 30.0  # seconds before Look Now gives up
 _STT_DEBOUNCE_SECONDS = 1.5  # wait for speech to settle before submitting
+_PENDING_TIMEOUT = 180.0  # seconds before a stuck pending future is force-cancelled
 
 # Situation prompts for interaction reactions via LLM
 _INTERACTION_SITUATIONS: dict[str, str] = {
@@ -184,9 +185,11 @@ class GameEngine:
 
         # Pending conversation future
         self._pending_response: Any = None
+        self._pending_response_time: float = 0.0
 
         # Pending autonomous LLM remark (lower priority than user chat)
         self._pending_autonomous: Any = None
+        self._pending_autonomous_time: float = 0.0
         self._pending_autonomous_behavior: IdleBehavior | None = None
 
         # STT queue — debounced and non-cancelling
@@ -355,7 +358,10 @@ class GameEngine:
             elapsed = self._needs_timer
             self._needs_timer = 0.0
             self._creature_state.age += elapsed
-            self._update_needs(elapsed)
+            try:
+                self._update_needs(elapsed)
+            except Exception as exc:
+                logger.error("Needs update error (continuing with stale state): %s", exc)
 
         # Check death
         cause = self._death_engine.check_death(
@@ -552,6 +558,7 @@ class GameEngine:
         self._pending_autonomous = asyncio.run_coroutine_threadsafe(
             _generate(), loop
         )
+        self._pending_autonomous_time = time.monotonic()
 
     def _check_pending_autonomous(self) -> None:
         """Check if a pending autonomous LLM remark is ready."""
@@ -559,6 +566,15 @@ class GameEngine:
             return
 
         if not self._pending_autonomous.done():
+            # Force-cancel if stuck beyond timeout
+            if time.monotonic() - self._pending_autonomous_time > _PENDING_TIMEOUT:
+                logger.warning(
+                    "Pending autonomous remark timed out after %.0fs", _PENDING_TIMEOUT
+                )
+                self._pending_autonomous.cancel()
+                self._pending_autonomous = None
+                self._pending_autonomous_behavior = None
+                self._scheduler.release("chat")
             return
 
         # Cancelled by user chat — silently discard
@@ -589,14 +605,26 @@ class GameEngine:
             self._pending_autonomous_behavior = None
             self._scheduler.release("chat")
 
+    _INTERACTION_FALLBACKS: dict[str, str] = {
+        "feed": "*munches*",
+        "tap_glass": "*startles*",
+        "clean": "*looks around at the clean tank*",
+        "aerate": "*watches the bubbles*",
+        "temp_up": "*stretches in the warmth*",
+        "temp_down": "*shivers*",
+        "drain": "*blinks at the water level*",
+    }
+
     def _request_interaction_reaction(self, action_key: str) -> None:
         """Submit an LLM reaction to a player interaction.
 
-        Same gating as ``_request_autonomous_remark``, but no fallback —
-        if the LLM is busy the reaction is simply skipped (the notification
-        text is sufficient).
+        Same gating as ``_request_autonomous_remark``. When the LLM is busy,
+        shows a canned fallback emote instead of silent skip.
         """
         if self._pending_response is not None or self._pending_autonomous is not None:
+            fallback = self._INTERACTION_FALLBACKS.get(action_key)
+            if fallback:
+                self._chat_panel.add_message(MessageRole.ASSISTANT, fallback)
             return
 
         manager = self.window.manager
@@ -642,6 +670,13 @@ class GameEngine:
 
     def _start_evolution(self, new_stage: CreatureStage) -> None:
         """Begin evolution celebration sequence."""
+        # Cancel any pending autonomous remark — evolution takes priority
+        if self._pending_autonomous is not None:
+            self._pending_autonomous.cancel()
+            self._pending_autonomous = None
+            self._pending_autonomous_behavior = None
+            self._scheduler.release("chat")
+
         old_stage = self._creature_state.stage
         self._evolution_engine.evolve(self._creature_state, new_stage)
         self._evolution_active = True
@@ -800,7 +835,11 @@ class GameEngine:
         self._interaction_count_delta += 1
 
         manager = self.window.manager
-        if manager is not None and self.window._loop is not None:
+        if (
+            manager is not None
+            and self.window._loop is not None
+            and manager.is_initialized
+        ):
             self._chat_panel.start_streaming()
             self._scheduler.acquire("chat")
 
@@ -810,6 +849,7 @@ class GameEngine:
             self._pending_response = asyncio.run_coroutine_threadsafe(
                 _process(), self.window._loop
             )
+            self._pending_response_time = time.monotonic()
         else:
             self._chat_panel.add_message(
                 MessageRole.ASSISTANT,
@@ -854,6 +894,17 @@ class GameEngine:
             return
 
         if not self._pending_response.done():
+            # Force-cancel if stuck beyond timeout
+            if time.monotonic() - self._pending_response_time > _PENDING_TIMEOUT:
+                logger.warning("Pending chat response timed out after %.0fs", _PENDING_TIMEOUT)
+                self._pending_response.cancel()
+                self._chat_panel.finish_streaming()
+                self._chat_panel.add_message(
+                    MessageRole.ASSISTANT, "*yawns* ...lost my train of thought."
+                )
+                self._pending_response = None
+                self._creature_renderer.set_animation(AnimationState.IDLE)
+                self._scheduler.release("chat")
             return
 
         # Cancelled by a newer chat submission — silently discard
@@ -1000,6 +1051,12 @@ class GameEngine:
             self._toggle_lineage()
             return
 
+        # Death screen: Enter/Space restarts
+        if self.game_over:
+            if event.key in (pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_SPACE):
+                self._restart_game()
+            return
+
         # When overlays are open, consume all other keys
         if self._game_state in (GameState.SETTINGS, GameState.LINEAGE):
             return
@@ -1035,6 +1092,7 @@ class GameEngine:
         else:
             self._game_state = GameState.SETTINGS
             self._settings_panel.open()
+            self._settings_panel.refresh_device_lists()
             # Async-load Ollama model list when opening settings
             self._load_model_list_async()
 
@@ -1073,6 +1131,12 @@ class GameEngine:
         """Callback when personality settings change."""
         try:
             logger.info("Personality traits updated: %s", traits)
+            # Propagate to live ConversationManager
+            manager = self.window.manager
+            if manager is not None and hasattr(manager, "_traits"):
+                manager._traits = TraitProfile(**{
+                    k: v for k, v in traits.items() if hasattr(TraitProfile, k)
+                })
             save_user_settings(self._config)
         except Exception as exc:
             logger.error("Personality change error: %s", exc)
@@ -1089,16 +1153,33 @@ class GameEngine:
         except Exception as exc:
             logger.error("LLM apply error: %s", exc)
 
+    def _ensure_audio_manager(self) -> None:
+        """Attempt to create AudioManager if it's None (lazy retry)."""
+        if self._audio_manager is not None:
+            return
+        try:
+            self._audio_manager = AudioManager(config=self._config.audio)
+            logger.info("AudioManager created (lazy retry)")
+            if self._audio_bridge is not None:
+                self._audio_bridge._audio_manager = self._audio_manager
+        except Exception as exc:
+            logger.warning("AudioManager lazy retry failed: %s", exc)
+
     def _on_audio_change(self, key: str, value: Any) -> None:
         """Callback when audio settings change."""
         try:
+            self._ensure_audio_manager()
             logger.info("Audio setting changed: %s = %s", key, value)
             if self._audio_bridge is not None:
                 # Apply audio changes at runtime where possible
                 if key == "tts_enabled":
                     self._audio_bridge._config.tts_enabled = value
+                    if self._audio_manager is not None:
+                        self._audio_manager.tts_enabled = value
                 elif key == "sfx_enabled":
                     self._audio_bridge._config.sfx_enabled = value
+                    if self._audio_manager is not None:
+                        self._audio_manager.sfx_enabled = value
                 elif key == "tts_volume":
                     self._audio_bridge._config.tts_volume = value
                 elif key == "sfx_volume":
@@ -1107,8 +1188,16 @@ class GameEngine:
                     self._audio_bridge._config.ambient_volume = value
                 elif key == "stt_enabled":
                     self._audio_bridge._config.stt_enabled = value
+                    if self._audio_manager is not None:
+                        self._audio_manager.stt_enabled = value
                     if value:
-                        if self._audio_bridge._audio_manager is not None:
+                        # Check if upgrade actually succeeded
+                        if (
+                            self._audio_manager is not None
+                            and not self._audio_manager.stt_enabled
+                        ):
+                            self._add_notification("STT unavailable — check audio deps")
+                        elif self._audio_bridge._audio_manager is not None:
                             self._audio_bridge.toggle_microphone()
                             self._add_notification("Speech-to-text enabled")
                         else:
@@ -1122,6 +1211,10 @@ class GameEngine:
                     if self._audio_manager is not None:
                         self._audio_manager.update_tts_voice(voice_name)
                     self._add_notification(f"Voice: {voice_name}")
+                elif key == "audio_output_device":
+                    if self._audio_bridge is not None:
+                        self._audio_bridge._reinit_mixer()
+                    self._add_notification(f"Output: {value}")
                 elif key == "audio_input_device":
                     device_name = str(value)
                     if self._audio_manager is not None:
@@ -1129,6 +1222,8 @@ class GameEngine:
                         from seaman_brain.audio.stt import SpeechRecognitionSTTProvider
                         if isinstance(stt, SpeechRecognitionSTTProvider):
                             stt.set_input_device(device_name)
+                        elif hasattr(stt, "_config"):
+                            stt._config.audio_input_device = device_name
                     self._add_notification(f"Mic: {device_name}")
             save_user_settings(self._config)
         except Exception as exc:
@@ -1177,38 +1272,60 @@ class GameEngine:
             self._render_game_over(surface)
             return
 
-        # 1. Tank background
-        self._tank_renderer.render(surface, self._tank)
+        # Each sub-renderer is wrapped individually so one crash
+        # doesn't kill the entire frame.
+        try:
+            self._tank_renderer.render(surface, self._tank)
+        except Exception as exc:
+            logger.error("Tank render error: %s", exc, exc_info=True)
 
-        # 2. Creature
-        self._creature_renderer.render(surface)
+        try:
+            self._creature_renderer.render(surface)
+        except Exception as exc:
+            logger.error("Creature render error: %s", exc, exc_info=True)
 
-        # 3. Interaction effects (ripples, food drops)
-        self._interaction_manager.render(surface)
+        try:
+            self._interaction_manager.render(surface)
+        except Exception as exc:
+            logger.error("Interaction render error: %s", exc, exc_info=True)
 
-        # 3b. Action bar
-        self._action_bar.render(surface)
+        try:
+            self._action_bar.render(surface)
+        except Exception as exc:
+            logger.error("Action bar render error: %s", exc, exc_info=True)
 
-        # 4. HUD
-        self._hud.render(surface, self._creature_state, self._tank)
+        try:
+            self._hud.render(surface, self._creature_state, self._tank)
+        except Exception as exc:
+            logger.error("HUD render error: %s", exc, exc_info=True)
 
-        # 5. Chat panel
-        self._chat_panel.render(surface)
+        try:
+            self._chat_panel.render(surface)
+        except Exception as exc:
+            logger.error("Chat panel render error: %s", exc, exc_info=True)
 
-        # 6. Notifications
-        self._render_notifications(surface)
+        try:
+            self._render_notifications(surface)
+        except Exception as exc:
+            logger.error("Notification render error: %s", exc, exc_info=True)
 
-        # 7. Evolution celebration overlay
         if self._evolution_active:
-            self._render_evolution_overlay(surface)
+            try:
+                self._render_evolution_overlay(surface)
+            except Exception as exc:
+                logger.error("Evolution overlay render error: %s", exc, exc_info=True)
 
-        # 8. Settings overlay (on top of everything)
         if self._game_state == GameState.SETTINGS and self._settings_panel is not None:
-            self._settings_panel.render(surface)
+            try:
+                self._settings_panel.render(surface)
+            except Exception as exc:
+                logger.error("Settings render error: %s", exc, exc_info=True)
 
-        # 9. Lineage overlay (on top of everything)
         if self._game_state == GameState.LINEAGE and self._lineage_panel is not None:
-            self._lineage_panel.render(surface)
+            try:
+                self._lineage_panel.render(surface)
+            except Exception as exc:
+                logger.error("Lineage render error: %s", exc, exc_info=True)
 
     def _render_game_over(self, surface: pygame.Surface) -> None:
         """Render the game-over screen."""
@@ -1406,12 +1523,40 @@ class GameEngine:
 
     def _switch_bloodline(self, name: str) -> None:
         """Switch to a different bloodline save directory."""
+        from seaman_brain.creature.persistence import StatePersistence
+
         try:
             logger.info("Switching to bloodline: %s", name)
+            save_path = f"{self._config.creature.save_path}/{name}"
+            persistence = StatePersistence(save_path)
+            new_state = persistence.load()
+
+            # Cancel pending operations
+            if self._pending_response is not None:
+                self._pending_response.cancel()
+                self._pending_response = None
+                self._scheduler.release("chat")
+            if self._pending_autonomous is not None:
+                self._pending_autonomous.cancel()
+                self._pending_autonomous = None
+                self._pending_autonomous_behavior = None
+                self._scheduler.release("chat")
+
+            # Update game state
+            self._creature_state = new_state
+            self._creature_renderer.set_stage(new_state.stage)
+            self._creature_renderer.set_animation(AnimationState.IDLE)
+            self._needs = CreatureNeeds()
+            self._tank = TankEnvironment.from_config(self._config.environment)
+            self._chat_panel.clear_messages()
+            self._chat_panel.add_message(
+                MessageRole.SYSTEM, f"Loaded bloodline: {name}"
+            )
             self._add_notification(f"Loaded bloodline: {name}")
             self._toggle_lineage()
         except Exception as exc:
             logger.error("Failed to switch bloodline: %s", exc)
+            self._add_notification(f"Failed to load: {exc}")
 
     def _new_bloodline(self, name: str) -> None:
         """Create a new bloodline with a fresh creature."""

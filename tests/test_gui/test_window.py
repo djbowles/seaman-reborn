@@ -433,7 +433,7 @@ class TestAsyncBridge:
         from seaman_brain.gui.window import GameWindow
 
         win = GameWindow()
-        with pytest.raises(RuntimeError, match="Async bridge not started"):
+        with pytest.raises(RuntimeError, match="Async bridge not running"):
 
             async def _noop() -> None:
                 pass
@@ -694,3 +694,90 @@ class TestConditionalOverlay:
         win._render_status_overlay = spy
         win.render()
         spy.assert_not_called()
+
+
+# ── Async Loop Crash Safety (Fix #1, #8) ────────────────────────────
+
+
+class TestLoopCrashSafety:
+    """Tests for event loop crash recovery and dead-loop guards."""
+
+    def test_loop_alive_flag_set_on_start(self):
+        """_loop_alive is True when async bridge is running."""
+        from seaman_brain.gui.window import GameWindow
+
+        win = GameWindow()
+        win._start_async_bridge()
+        try:
+            assert win._loop_alive is True
+        finally:
+            win._loop.call_soon_threadsafe(win._loop.stop)
+            win._async_thread.join(timeout=2.0)
+
+    def test_loop_alive_false_after_stop(self):
+        """_loop_alive becomes False after the loop stops."""
+        from seaman_brain.gui.window import GameWindow
+
+        win = GameWindow()
+        win._start_async_bridge()
+        win._loop.call_soon_threadsafe(win._loop.stop)
+        win._async_thread.join(timeout=2.0)
+        assert win._loop_alive is False
+
+    def test_submit_async_raises_when_loop_dead(self):
+        """submit_async() raises RuntimeError when loop is not alive."""
+        from seaman_brain.gui.window import GameWindow
+
+        win = GameWindow()
+        win._start_async_bridge()
+        # Stop the loop to simulate crash
+        win._loop.call_soon_threadsafe(win._loop.stop)
+        win._async_thread.join(timeout=2.0)
+
+        with pytest.raises(RuntimeError, match="not running"):
+
+            async def _noop() -> None:
+                pass
+
+            win.submit_async(_noop())
+
+    def test_font_fallback_on_sysfont_failure(self):
+        """Window falls back to Font(None, ...) when SysFont fails."""
+        from seaman_brain.gui.window import GameWindow
+
+        win = GameWindow()
+        _pygame_mock.font.SysFont.side_effect = RuntimeError("no font")
+        win.initialize()
+        # Should not raise, falls back to Font(None, ...)
+        assert win._font is not None
+        _pygame_mock.font.SysFont.side_effect = None  # restore
+
+
+# ── Shutdown Drain Timeout (Fix #24) ─────────────────────────────────
+
+
+class TestShutdownDrainTimeout:
+    """Tests for bounded shutdown drain."""
+
+    def test_shutdown_completes_with_stuck_tasks(self):
+        """shutdown() completes even when async tasks won't cancel cleanly."""
+        from seaman_brain.gui.window import GameWindow
+
+        win = GameWindow()
+        win._start_async_bridge()
+
+        # Submit a long-running task that ignores cancellation
+        import asyncio
+
+        async def _stuck():
+            try:
+                await asyncio.sleep(999)
+            except asyncio.CancelledError:
+                # Re-raise eventually but delay significantly
+                await asyncio.sleep(999)
+
+        asyncio.run_coroutine_threadsafe(_stuck(), win._loop)
+
+        # Shutdown should complete within a few seconds, not hang
+        win.shutdown()
+        assert win._loop is None

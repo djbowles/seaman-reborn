@@ -61,6 +61,7 @@ class GameWindow:
 
         # Async bridge
         self._loop: asyncio.AbstractEventLoop | None = None
+        self._loop_alive: bool = False
         self._async_thread: threading.Thread | None = None
         self._manager: Any | None = None
         self._manager_initialized = False
@@ -159,8 +160,12 @@ class GameWindow:
         self._clock = pygame.time.Clock()
 
         pygame.font.init()
-        self._font = pygame.font.SysFont("consolas", 16)
-        self._title_font = pygame.font.SysFont("consolas", 24, bold=True)
+        try:
+            self._font = pygame.font.SysFont("consolas", 16)
+            self._title_font = pygame.font.SysFont("consolas", 24, bold=True)
+        except Exception:
+            self._font = pygame.font.Font(None, 16)
+            self._title_font = pygame.font.Font(None, 24)
 
         self._status_message = "Ready"
         logger.info(
@@ -186,7 +191,13 @@ class GameWindow:
         def _run_loop() -> None:
             assert self._loop is not None
             asyncio.set_event_loop(self._loop)
-            self._loop.run_forever()
+            try:
+                self._loop_alive = True
+                self._loop.run_forever()
+            except Exception:
+                logger.critical("Async event loop crashed", exc_info=True)
+            finally:
+                self._loop_alive = False
 
         self._async_thread = threading.Thread(
             target=_run_loop, daemon=True, name="seaman-async"
@@ -227,8 +238,8 @@ class GameWindow:
         Raises:
             RuntimeError: If the async bridge is not running.
         """
-        if self._loop is None:
-            raise RuntimeError("Async bridge not started")
+        if self._loop is None or not self._loop_alive:
+            raise RuntimeError("Async bridge not running")
         return asyncio.run_coroutine_threadsafe(coro, self._loop)
 
     def handle_events(self) -> None:
@@ -400,10 +411,9 @@ class GameWindow:
             for task in pending:
                 task.cancel()
 
-            # Give cancelled tasks one cycle to handle CancelledError
+            # Give cancelled tasks a bounded time to handle CancelledError
             async def _drain() -> None:
-                import asyncio as _aio
-                await _aio.gather(*pending, return_exceptions=True)
+                await asyncio.wait(pending, timeout=3.0)
 
             self._loop.create_task(_drain()).add_done_callback(
                 lambda _: self._loop.stop() if self._loop is not None else None

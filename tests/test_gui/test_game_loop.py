@@ -807,8 +807,14 @@ class TestSTTToggle:
         bridge._config = MagicMock()
         bridge._audio_manager = None
         engine._audio_bridge = bridge
+        engine._audio_manager = None
 
-        engine._on_audio_change("stt_enabled", True)
+        # Prevent lazy retry from creating a new AudioManager
+        with patch(
+            "seaman_brain.gui.game_loop.AudioManager",
+            side_effect=RuntimeError("no audio"),
+        ):
+            engine._on_audio_change("stt_enabled", True)
 
         assert any("not yet available" in n[0] for n in engine._notifications)
 
@@ -1221,3 +1227,242 @@ class TestInteractionReactions:
 
         engine._request_interaction_reaction("unknown_action")
         assert engine._pending_autonomous is None
+
+
+# ── Fix #7: Chat submit initialization guard ─────────────────────────
+
+
+class TestChatSubmitInitGuard:
+    """Tests for uninitialized manager fallback."""
+
+    def test_uninitialized_manager_fallback(self, engine: GameEngine):
+        """When manager is not initialized, submit_chat shows fallback."""
+        mock_manager = MagicMock()
+        mock_manager.is_initialized = False
+        engine.window._manager = mock_manager
+        engine.window._loop = MagicMock()
+
+        engine._submit_chat("hello")
+        # Should NOT start streaming (manager not initialized)
+        assert engine._pending_response is None
+
+    def test_initialized_manager_proceeds(self, engine: GameEngine):
+        """When manager IS initialized, submit_chat creates future."""
+        mock_manager = MagicMock()
+        mock_manager.is_initialized = True
+        engine.window._manager = mock_manager
+        engine.window._loop = MagicMock()
+
+        with patch(
+            "seaman_brain.gui.game_loop.asyncio.run_coroutine_threadsafe",
+            return_value=Future(),
+        ):
+            engine._submit_chat("hello")
+        assert engine._pending_response is not None
+
+
+# ── Fix #15: Stuck pending-flag timeout ──────────────────────────────
+
+
+class TestPendingTimeout:
+    """Tests for stuck pending future force-cancellation."""
+
+    def test_stuck_chat_response_cancelled(self, engine: GameEngine):
+        """Pending chat response cancelled after timeout."""
+        import seaman_brain.gui.game_loop as gl_mod
+
+        orig = gl_mod._PENDING_TIMEOUT
+        gl_mod._PENDING_TIMEOUT = 0.0  # immediate timeout for test
+
+        try:
+            future = Future()
+            engine._pending_response = future
+            engine._pending_response_time = 0.0  # long ago
+
+            engine._check_pending_response()
+            assert engine._pending_response is None
+            assert future.cancelled()
+        finally:
+            gl_mod._PENDING_TIMEOUT = orig
+
+    def test_stuck_autonomous_cancelled(self, engine: GameEngine):
+        """Pending autonomous remark cancelled after timeout."""
+        import seaman_brain.gui.game_loop as gl_mod
+
+        orig = gl_mod._PENDING_TIMEOUT
+        gl_mod._PENDING_TIMEOUT = 0.0
+
+        try:
+            future = Future()
+            engine._pending_autonomous = future
+            engine._pending_autonomous_time = 0.0
+
+            engine._check_pending_autonomous()
+            assert engine._pending_autonomous is None
+            assert future.cancelled()
+        finally:
+            gl_mod._PENDING_TIMEOUT = orig
+
+
+# ── Fix #14: Per-sub-renderer try-except ─────────────────────────────
+
+
+class TestSubRendererIsolation:
+    """Tests for render pipeline crash isolation."""
+
+    def test_one_sub_renderer_crash_others_still_called(self, engine: GameEngine):
+        """A crash in one sub-renderer doesn't prevent others from running."""
+        engine._tank_renderer.render = MagicMock(side_effect=RuntimeError("boom"))
+        # These should still be called:
+        engine._creature_renderer.render = MagicMock()
+        engine._chat_panel.render = MagicMock()
+        engine._hud.render = MagicMock()
+
+        engine._render(_surface_mock)
+
+        engine._creature_renderer.render.assert_called_once()
+        engine._chat_panel.render.assert_called_once()
+        engine._hud.render.assert_called_once()
+
+
+# ── Fix #17: Needs update exception isolation ────────────────────────
+
+
+class TestNeedsExceptionIsolation:
+    """Tests for needs update crash isolation."""
+
+    def test_needs_exception_continues_game(self, engine: GameEngine):
+        """A needs update exception doesn't crash the game loop."""
+        engine._needs_engine.update = MagicMock(side_effect=RuntimeError("bad needs"))
+        engine._needs_timer = 2.0  # trigger needs update
+
+        # Should not raise — exception is caught
+        engine._update(0.1)
+        # Game should still be running
+        assert not engine.game_over
+
+
+# ── Fix #16: Interaction reaction fallback ───────────────────────────
+
+
+class TestInteractionFallback:
+    """Tests for canned fallback when LLM is busy."""
+
+    def test_fallback_shown_when_llm_busy(self, engine: GameEngine):
+        """When LLM is busy, a canned emote is shown instead of silence."""
+        engine._pending_response = Future()  # simulate busy LLM
+
+        engine._request_interaction_reaction("feed")
+        # Check that a canned message was added
+        msgs = list(engine._chat_panel._messages)
+        assert any("munches" in m.text for m in msgs)
+
+    def test_no_fallback_for_unknown_action(self, engine: GameEngine):
+        """Unknown action key still silently skips."""
+        engine._pending_response = Future()
+        initial_count = len(engine._chat_panel._messages)
+
+        engine._request_interaction_reaction("unknown_action")
+        assert len(engine._chat_panel._messages) == initial_count
+
+
+# ── Fix #13: Death screen keyboard support ───────────────────────────
+
+
+class TestDeathScreenKeyboard:
+    """Tests for keyboard restart on death screen."""
+
+    def test_enter_restarts_on_death(self, engine: GameEngine):
+        """Pressing Enter on death screen restarts the game."""
+        engine.game_over = True
+        event = MagicMock()
+        event.key = _pygame_mock.K_RETURN
+
+        engine._on_key_down(event)
+        assert not engine.game_over
+
+    def test_space_restarts_on_death(self, engine: GameEngine):
+        """Pressing Space on death screen restarts the game."""
+        _pygame_mock.K_SPACE = 32
+        engine.game_over = True
+        event = MagicMock()
+        event.key = 32
+
+        engine._on_key_down(event)
+        assert not engine.game_over
+
+
+# ── Fix #23: Evolution cancels pending autonomous ────────────────────
+
+
+class TestEvolutionCancelsAutonomous:
+    """Tests for evolution cancelling pending autonomous remark."""
+
+    def test_evolution_cancels_autonomous(self, engine: GameEngine):
+        """Starting evolution cancels any pending autonomous remark."""
+        future = Future()
+        engine._pending_autonomous = future
+        engine._pending_autonomous_behavior = MagicMock()
+
+        engine._start_evolution(CreatureStage.GILLMAN)
+
+        assert engine._pending_autonomous is None
+        assert engine._pending_autonomous_behavior is None
+        assert future.cancelled()
+
+    def test_evolution_without_autonomous_ok(self, engine: GameEngine):
+        """Evolution works fine when no autonomous remark is pending."""
+        engine._pending_autonomous = None
+        engine._start_evolution(CreatureStage.GILLMAN)
+        assert engine._evolution_active is True
+
+
+# ── Fix #27: Personality trait runtime propagation ───────────────────
+
+
+class TestPersonalityPropagation:
+    """Tests for runtime personality trait propagation to manager."""
+
+    def test_traits_propagated_to_manager(self, engine: GameEngine):
+        """Personality change propagates TraitProfile to manager."""
+        from seaman_brain.personality.traits import TraitProfile
+
+        mock_manager = MagicMock()
+        mock_manager._traits = TraitProfile()
+        engine.window._manager = mock_manager
+
+        new_traits = {"cynicism": 0.9, "wit": 0.5, "patience": 0.1}
+        engine._on_personality_change(new_traits)
+
+        assert mock_manager._traits.cynicism == pytest.approx(0.9)
+        assert mock_manager._traits.wit == pytest.approx(0.5)
+
+    def test_traits_no_crash_without_manager(self, engine: GameEngine):
+        """Personality change doesn't crash when no manager."""
+        engine.window._manager = None
+        engine._on_personality_change({"cynicism": 0.5})  # Should not raise
+
+
+# ── Fix #4: AudioManager lazy retry ──────────────────────────────────
+
+
+class TestAudioManagerLazyRetry:
+    """Tests for AudioManager lazy retry on audio change."""
+
+    def test_ensure_audio_manager_creates_on_none(self, engine: GameEngine):
+        """_ensure_audio_manager creates AudioManager when None."""
+        engine._audio_manager = None
+        with patch(
+            "seaman_brain.gui.game_loop.AudioManager",
+            return_value=MagicMock(),
+        ) as mock_cls:
+            engine._ensure_audio_manager()
+        mock_cls.assert_called_once()
+        assert engine._audio_manager is not None
+
+    def test_ensure_audio_manager_noop_when_exists(self, engine: GameEngine):
+        """_ensure_audio_manager does nothing when manager exists."""
+        existing = MagicMock()
+        engine._audio_manager = existing
+        engine._ensure_audio_manager()
+        assert engine._audio_manager is existing

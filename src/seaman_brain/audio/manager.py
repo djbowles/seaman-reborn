@@ -80,25 +80,31 @@ class AudioManager:
         logger.info("STT %s", "enabled" if value else "disabled")
         # Recreate STT provider if enabling and current is noop
         if value and isinstance(self._stt, NoopSTTProvider):
-            self._try_upgrade_stt()
+            if not self._try_upgrade_stt():
+                self._stt_enabled = False
 
-    def _try_upgrade_stt(self) -> None:
-        """Attempt to replace NoopSTTProvider with a real one."""
+    def _try_upgrade_stt(self) -> bool:
+        """Attempt to replace NoopSTTProvider with a real one.
+
+        Returns:
+            True if upgrade succeeded, False otherwise.
+        """
         logger.info("Attempting STT upgrade from %s...", type(self._stt).__name__)
         self._config.stt_enabled = True
         try:
             provider = create_stt_provider(self._config)
         except Exception:
             logger.warning("STT provider creation failed", exc_info=True)
-            return
+            return False
         if isinstance(provider, NoopSTTProvider):
             logger.warning(
                 "STT upgrade returned NoopSTTProvider — check that PyAudio "
                 "and speech_recognition are installed"
             )
-            return
+            return False
         self._stt = provider
         logger.info("STT provider upgraded to %s", type(provider).__name__)
+        return True
 
     def update_tts_voice(self, voice_name: str) -> None:
         """Update the TTS voice at runtime.

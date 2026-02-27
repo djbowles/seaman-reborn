@@ -8,6 +8,7 @@ Stage-specific TOML files can override personality traits.
 from __future__ import annotations
 
 import logging
+import threading
 import tomllib
 from pathlib import Path
 from typing import Any
@@ -17,6 +18,12 @@ from pydantic import BaseModel, Field
 logger = logging.getLogger(__name__)
 
 _USER_SETTINGS_PATH = Path("data/user_settings.toml")
+
+# Debounce state for save_user_settings
+_save_lock = threading.Lock()
+_SAVE_DEBOUNCE = 0.5  # seconds
+_pending_save_timer: threading.Timer | None = None
+_pending_save_config: Any = None
 
 
 class LLMConfig(BaseModel):
@@ -275,12 +282,41 @@ def _load_user_settings(path: Path | None = None) -> dict[str, Any]:
 def save_user_settings(config: SeamanConfig) -> None:
     """Save user-configurable settings to data/user_settings.toml.
 
-    Only saves sections that the user can change via the settings panel:
-    audio, vision, personality (base_traits), llm (model, temperature).
+    Debounced: rapid calls within _SAVE_DEBOUNCE seconds are coalesced into
+    a single write. Only saves sections that the user can change via the
+    settings panel: audio, vision, personality (base_traits), llm.
 
     Args:
         config: Current SeamanConfig to extract settings from.
     """
+    global _pending_save_timer, _pending_save_config
+
+    with _save_lock:
+        _pending_save_config = config
+        if _pending_save_timer is not None:
+            _pending_save_timer.cancel()
+        _pending_save_timer = threading.Timer(_SAVE_DEBOUNCE, _flush_save)
+        _pending_save_timer.daemon = True
+        _pending_save_timer.start()
+
+
+def _flush_save() -> None:
+    """Actually write the pending config to disk (called by debounce timer)."""
+    global _pending_save_timer, _pending_save_config
+
+    with _save_lock:
+        config = _pending_save_config
+        _pending_save_timer = None
+        _pending_save_config = None
+
+    if config is None:
+        return
+
+    _do_save(config)
+
+
+def _do_save(config: SeamanConfig) -> None:
+    """Write user settings to disk."""
     _USER_SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
 
     lines: list[str] = ["# Auto-saved user settings — overrides defaults", ""]

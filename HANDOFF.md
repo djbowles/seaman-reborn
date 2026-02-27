@@ -423,3 +423,202 @@ Four-phase infrastructure upgrade addressing LLM token misconfiguration, VRAM sc
 - `callable` lowercase type hints in `needs/feeding.py:93`, `needs/care.py:90`, `gui/chat_panel.py:77`
 - `needs/system.py:128` uses `creature_state.comfort` as proxy for stimulation
 - `behavior/autonomous.py:225` takes `creature_state: dict[str, Any]` instead of typed `CreatureState`
+
+---
+
+## Runtime Failure Analysis (2026-02-26)
+
+Systematic 5-agent audit traced **all user flows where audio or visual output permanently stops functioning**. 47 unique failure paths identified across audio pipeline, render pipeline, async bridge, settings mutations, and needs/behavior/events. Organized below by fix priority for a staged hardening plan.
+
+### Already Fixed (this session)
+
+| Bug | Fix | Commit |
+|-----|-----|--------|
+| LLM cold start (~60s unresponsive) | Warmup call in `manager.py:initialize()` | `1c84c6a` |
+| Settings model change doesn't reach OllamaProvider | `update_llm_settings()` in manager, called from `game_loop._on_llm_apply()` | `1c84c6a` |
+| TTS task destroyed on shutdown | Future tracking in `audio_integration.py`, cancel in `shutdown()` | `1c84c6a` |
+
+### TIER 1 — Permanent, Unrecoverable Failures (6 issues)
+
+**1. Async event loop thread dies silently**
+- **File:** `window.py:186-189` — `_run_loop()` has NO try/except
+- **Trigger:** Any unhandled exception in a scheduled task
+- **Result:** Loop thread dies, all async subsystems (chat, TTS, STT, vision, behavior) permanently dead. Visual rendering continues but creature is braindead. No error shown.
+- **Fix:** Wrap `run_forever()` in try/except with logging + optional loop restart
+
+**2. LLM calls hang indefinitely (no timeout)**
+- **Files:** `manager.py:271` (process_input), `manager.py:134` (warmup), `manager.py:508` (autonomous)
+- **Trigger:** Ollama hangs, network dead, GPU deadlock
+- **Result:** `await self._llm.chat()` blocks forever. `_pending_response` never completes. Chat permanently locked.
+- **Fix:** `asyncio.wait_for(self._llm.chat(...), timeout=120.0)` on all LLM calls, `timeout=60.0` for warmup
+
+**3. TTS executor thread pool saturation**
+- **Files:** `audio/tts.py:24` — `ThreadPoolExecutor(max_workers=1)`, `audio/manager.py:154`
+- **Trigger:** `pyttsx3.init()` or `engine.runAndWait()` blocks (SAPI5 deadlock on Windows)
+- **Result:** Single-worker pool saturated, all subsequent TTS calls queue forever. No timeout.
+- **Fix:** Add timeout wrapper around `loop.run_in_executor()` calls
+
+**4. AudioManager creation fails → permanent silence**
+- **Files:** `game_loop.py:232-237`
+- **Trigger:** pyttsx3 import fails, no audio device
+- **Result:** `_audio_manager = None` for entire session. No retry mechanism.
+- **Fix:** Retry mechanism or lazy re-creation when settings change
+
+**5. Pygame mixer invalidation → no SFX/ambient**
+- **Files:** `audio_integration.py:103-128`
+- **Trigger:** Mixer uninitialized externally (display mode change, hardware disconnect)
+- **Result:** `_mixer_initialized` never re-checked. SFX and ambient permanently silent.
+- **Fix:** Health-check in `update()`, re-initialize mixer if `get_init()` returns False
+
+**6. Kokoro TTS lazy load fails → permanent voice silence**
+- **Files:** `audio/tts.py:214-246`
+- **Trigger:** kokoro not installed, CUDA OOM on first `synthesize()`
+- **Result:** `_available = False` set permanently. All voice output becomes empty bytes.
+- **Fix:** Retry after delay, or auto-fallback to pyttsx3 with notification
+
+### TIER 2 — High Impact, Conditional (11 issues)
+
+**7. Race: user chats before manager finishes initializing**
+- **File:** `game_loop.py:802-803`
+- **Root cause:** Checks `manager is not None` but NOT `manager.is_initialized`
+- **Fix:** Add `and manager.is_initialized` guard
+
+**8. Submit to dead/stopped loop → silent future hang**
+- **File:** `window.py:218-232`
+- **Root cause:** `run_coroutine_threadsafe()` returns Future that never completes if loop is dead
+- **Fix:** Check `loop.is_running()` before submitting
+
+**9. Audio output device change not propagated at runtime**
+- **Files:** `game_loop.py:1088-1107`
+- **Root cause:** Saved to config but mixer/pyttsx3 never re-initialized
+- **Fix:** Implement `update_audio_output_device()` in AudioManager, reinit mixer
+
+**10. STT provider upgrade fails silently**
+- **Files:** `audio/manager.py:85-101`
+- **Root cause:** `_try_upgrade_stt()` catches all exceptions, stays on NoopSTTProvider
+- **Fix:** UI notification on failure, retry mechanism
+
+**11. Settings config desynchronization (TTS/STT state)**
+- **Files:** `game_loop.py:1098-1107`
+- **Root cause:** `audio_bridge._config` and `audio_manager._tts_enabled` are separate state
+- **Fix:** Single source of truth, or sync both on every settings change
+
+**12. STT device change ignored for FasterWhisper**
+- **Files:** `game_loop.py:1125-1132`
+- **Root cause:** Only handles `SpeechRecognitionSTTProvider`, `isinstance()` fails for others
+- **Fix:** Protocol method `set_input_device()` on all STT providers
+
+**13. Creature death → complete audio/visual halt**
+- **Files:** `game_loop.py:360-366, 667-679`
+- **Root cause:** `game_over=True` stops all updates; only death screen renders
+- **Note:** This is intentional but needs polish (death screen interactivity)
+
+**14. Unguarded render sub-calls in `_render()`**
+- **Files:** `game_loop.py:1168-1211`
+- **Root cause:** tank_renderer, creature_renderer, settings_panel, lineage_panel renders are NOT individually wrapped in try-except. One throw kills the entire frame.
+- **Fix:** Wrap each sub-render in try-except
+
+**15. `_pending_response` / `_pending_autonomous` flags stuck**
+- **Files:** `game_loop.py:851-881, 556-590`
+- **Root cause:** If LLM future never completes, flags block all subsequent chat/behavior
+- **Fix:** Timeout guard that force-clears stuck flags after N seconds
+
+**16. Interaction reactions silently skipped when LLM busy**
+- **Files:** `game_loop.py:592-620`
+- **Root cause:** `if _pending_response is not None: return` — no canned fallback
+- **Fix:** Queue reaction or use canned fallback
+
+**17. NeedsEngine exception cascades**
+- **Files:** `game_loop.py:354-358`
+- **Root cause:** No try-except around `_update_needs()`. Exception kills mood/behavior/event updates.
+- **Fix:** Wrap in try-except, log error, continue with stale state
+
+### TIER 3 — Lower Impact / Edge Cases (10 issues)
+
+**18. Chat panel text wrapping DoS**
+- **File:** `chat_panel.py:175-207`
+- **Trigger:** Very long spaceless message from LLM
+- **Fix:** Max message length or chunked wrapping
+
+**19. Surface creation OOM**
+- **Files:** `chat_panel.py:427`, `tank_renderer.py:483`, `game_loop.py:1262`
+- **Trigger:** Large window + VRAM exhaustion
+- **Fix:** Pre-allocate surfaces, validate dimensions
+
+**20. Font initialization cascade failure**
+- **Files:** Multiple (`window.py:162`, `hud.py:190`, `chat_panel.py:141`, etc.)
+- **Trigger:** "consolas" not installed
+- **Fix:** Robust fallback chain (`consolas` → `courier` → `pygame.font.Font(None, size)`)
+
+**21. Rapid settings toggles → TOML corruption**
+- **Files:** `config.py:275-326`
+- **Trigger:** Concurrent writes from rapid toggles
+- **Fix:** File locking or debounced save
+
+**22. Bloodline switch → creature state None**
+- **Files:** `game_loop.py:1407-1414`
+- **Root cause:** Switch doesn't reload creature state (incomplete implementation)
+- **Fix:** Full bloodline switch with ConversationManager reinitialization
+
+**23. Evolution during active behavior → stage/audio mismatch**
+- **Files:** `game_loop.py:641-642`
+- **Root cause:** Pending LLM call was built with old stage context
+- **Fix:** Cancel pending autonomous on evolution trigger
+
+**24. `_cancel_and_stop()` hangs in `gather()` on shutdown**
+- **Files:** `window.py:387-412`
+- **Trigger:** Task ignores CancelledError or blocks on I/O
+- **Fix:** Add timeout to `_drain()` gather
+
+**25. pyttsx3 silent file failure**
+- **Files:** `audio/tts.py:144-155`
+- **Trigger:** SAPI5 error state produces empty file
+- **Fix:** Raise exception on empty output instead of returning empty WAV
+
+**26. Webcam device index mismatch after hardware change**
+- **Files:** `settings_panel.py:366-383`
+- **Trigger:** Camera unplugged while settings panel open
+- **Fix:** Rebuild device list on panel open, validate indices
+
+**27. Personality trait changes not applied at runtime**
+- **Files:** `game_loop.py:1072-1078`
+- **Root cause:** Config saved but ConversationManager still uses old TraitProfile
+- **Fix:** Add `update_personality_traits()` to ConversationManager
+
+### Cross-Cutting Patterns
+
+| Pattern | Occurrences | Fix |
+|---------|------------|-----|
+| No timeout on async I/O | LLM chat, warmup, vision, STT listen | `asyncio.wait_for()` |
+| No try-except around sub-renders | tank, creature, settings, lineage | Individual wrapping |
+| Silent fallback to None (no retry) | AudioManager, STT, Kokoro, mixer | Health check + retry |
+| Shared mutable config without locks | 5+ mutation sites across threads | Immutable updates or lock |
+| No loop-alive validation | submit_async, play_voice, start_listening | `loop.is_running()` check |
+| Stuck flags blocking without timeout | `_pending_response`, `_pending_autonomous` | Timeout + forced clear |
+
+### Suggested Fix Stages (for superplan)
+
+**Stage 1 — Async Safety Net** (highest ROI, prevents total system death)
+- Issues: #1, #2, #7, #8, #15
+- Files: `window.py`, `manager.py`, `game_loop.py`
+- Core: exception-proof the event loop, add timeouts to all LLM calls, add `is_initialized` guard, add `is_running()` check, add stuck-flag timeout
+
+**Stage 2 — Audio Pipeline Resilience**
+- Issues: #3, #4, #5, #6, #9, #10, #11, #12, #25
+- Files: `audio/tts.py`, `audio/manager.py`, `audio_integration.py`, `game_loop.py`
+- Core: TTS executor timeout, AudioManager retry/lazy-recreate, mixer health check, device propagation, STT provider upgrade feedback, config sync
+
+**Stage 3 — Render Pipeline Hardening**
+- Issues: #14, #18, #19, #20
+- Files: `game_loop.py`, `chat_panel.py`, `tank_renderer.py`, multiple font sites
+- Core: try-except per sub-render, text length limits, surface dimension validation, font fallback chain
+
+**Stage 4 — Game State Safety**
+- Issues: #13, #16, #17, #22, #23, #27
+- Files: `game_loop.py`, `creature/persistence.py`, `conversation/manager.py`
+- Core: needs exception handling, interaction fallbacks, bloodline switch completion, evolution cancellation, personality hot-swap
+
+**Stage 5 — Config & Settings Robustness**
+- Issues: #21, #24, #26
+- Files: `config.py`, `settings_panel.py`, `window.py`
+- Core: debounced TOML save, device list refresh, shutdown drain timeout

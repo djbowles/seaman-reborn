@@ -10,6 +10,7 @@ from seaman_brain.config import (
     SeamanConfig,
     StageConfig,
     VisionConfig,
+    _flush_save,
     load_config,
     load_config_with_stage,
     load_presets,
@@ -411,20 +412,26 @@ class TestUserSettingsPersistence:
         """save_user_settings creates the TOML file."""
         settings_file = tmp_path / "data" / "user_settings.toml"
         monkeypatch.setattr(_config_mod, "_USER_SETTINGS_PATH", settings_file)
+        monkeypatch.setattr(_config_mod, "_pending_save_timer", None)
+        monkeypatch.setattr(_config_mod, "_pending_save_config", None)
 
         cfg = SeamanConfig()
         save_user_settings(cfg)
+        _flush_save()
         assert settings_file.exists()
 
     def test_round_trip_audio(self, tmp_path, monkeypatch):
         """Audio settings survive save/load cycle."""
         settings_file = tmp_path / "data" / "user_settings.toml"
         monkeypatch.setattr(_config_mod, "_USER_SETTINGS_PATH", settings_file)
+        monkeypatch.setattr(_config_mod, "_pending_save_timer", None)
+        monkeypatch.setattr(_config_mod, "_pending_save_config", None)
 
         cfg = SeamanConfig()
         cfg.audio.tts_volume = 0.42
         cfg.audio.sfx_enabled = False
         save_user_settings(cfg)
+        _flush_save()
 
         loaded = load_config("config", user_settings_path=settings_file)
         assert loaded.audio.tts_volume == pytest.approx(0.42)
@@ -434,12 +441,15 @@ class TestUserSettingsPersistence:
         """Vision settings survive save/load cycle."""
         settings_file = tmp_path / "data" / "user_settings.toml"
         monkeypatch.setattr(_config_mod, "_USER_SETTINGS_PATH", settings_file)
+        monkeypatch.setattr(_config_mod, "_pending_save_timer", None)
+        monkeypatch.setattr(_config_mod, "_pending_save_config", None)
 
         cfg = SeamanConfig()
         cfg.vision.enabled = True
         cfg.vision.source = "tank"
         cfg.vision.webcam_index = 2
         save_user_settings(cfg)
+        _flush_save()
 
         loaded = load_config("config", user_settings_path=settings_file)
         assert loaded.vision.enabled is True
@@ -450,11 +460,14 @@ class TestUserSettingsPersistence:
         """LLM settings survive save/load cycle."""
         settings_file = tmp_path / "data" / "user_settings.toml"
         monkeypatch.setattr(_config_mod, "_USER_SETTINGS_PATH", settings_file)
+        monkeypatch.setattr(_config_mod, "_pending_save_timer", None)
+        monkeypatch.setattr(_config_mod, "_pending_save_config", None)
 
         cfg = SeamanConfig()
         cfg.llm.model = "custom-model:7b"
         cfg.llm.temperature = 0.3
         save_user_settings(cfg)
+        _flush_save()
 
         loaded = load_config("config", user_settings_path=settings_file)
         assert loaded.llm.model == "custom-model:7b"
@@ -476,3 +489,102 @@ class TestUserSettingsPersistence:
         assert loaded.vision.enabled is True
         # Other vision defaults still intact
         assert loaded.vision.vision_model == "qwen3-vl:8b"
+
+
+# ── Debounced Save Tests ──────────────────────────────────────────────
+
+
+class TestDebouncedSave:
+    """Tests for debounced save_user_settings (Fix #21)."""
+
+    def test_rapid_saves_coalesced(self, tmp_path, monkeypatch):
+        """Multiple rapid calls produce only one file write."""
+        import time
+
+        settings_file = tmp_path / "data" / "user_settings.toml"
+        monkeypatch.setattr(_config_mod, "_USER_SETTINGS_PATH", settings_file)
+        # Reset debounce state
+        monkeypatch.setattr(_config_mod, "_pending_save_timer", None)
+        monkeypatch.setattr(_config_mod, "_pending_save_config", None)
+
+        cfg1 = SeamanConfig()
+        cfg1.llm.model = "model-first"
+        cfg2 = SeamanConfig()
+        cfg2.llm.model = "model-second"
+        cfg3 = SeamanConfig()
+        cfg3.llm.model = "model-third"
+
+        # Fire three rapid saves
+        save_user_settings(cfg1)
+        save_user_settings(cfg2)
+        save_user_settings(cfg3)
+
+        # Wait for debounce timer to flush
+        time.sleep(1.0)
+
+        assert settings_file.exists()
+        content = settings_file.read_text()
+        # Only the last value should be written
+        assert "model-third" in content
+        assert "model-first" not in content
+
+    def test_concurrent_save_no_corruption(self, tmp_path, monkeypatch):
+        """Concurrent saves from different threads don't corrupt the file."""
+        import threading
+        import time
+
+        settings_file = tmp_path / "data" / "user_settings.toml"
+        monkeypatch.setattr(_config_mod, "_USER_SETTINGS_PATH", settings_file)
+        monkeypatch.setattr(_config_mod, "_pending_save_timer", None)
+        monkeypatch.setattr(_config_mod, "_pending_save_config", None)
+
+        errors: list[Exception] = []
+
+        def _save_from_thread(model_name: str):
+            try:
+                cfg = SeamanConfig()
+                cfg.llm.model = model_name
+                save_user_settings(cfg)
+            except Exception as exc:
+                errors.append(exc)
+
+        threads = [
+            threading.Thread(target=_save_from_thread, args=(f"thread-model-{i}",))
+            for i in range(5)
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        # Wait for debounce timer to flush
+        time.sleep(1.0)
+
+        assert not errors
+        assert settings_file.exists()
+        content = settings_file.read_text()
+        # File should contain valid TOML (has header and model key)
+        assert "[llm]" in content
+        assert "model = " in content
+
+    def test_flush_save_writes_immediately(self, tmp_path, monkeypatch):
+        """_flush_save writes the pending config to disk."""
+        settings_file = tmp_path / "data" / "user_settings.toml"
+        monkeypatch.setattr(_config_mod, "_USER_SETTINGS_PATH", settings_file)
+
+        cfg = SeamanConfig()
+        cfg.llm.model = "flush-test-model"
+        monkeypatch.setattr(_config_mod, "_pending_save_config", cfg)
+        monkeypatch.setattr(_config_mod, "_pending_save_timer", None)
+
+        _config_mod._flush_save()
+
+        assert settings_file.exists()
+        content = settings_file.read_text()
+        assert "flush-test-model" in content
+
+    def test_flush_save_none_config_noop(self, monkeypatch):
+        """_flush_save with no pending config does nothing."""
+        monkeypatch.setattr(_config_mod, "_pending_save_config", None)
+        monkeypatch.setattr(_config_mod, "_pending_save_timer", None)
+        _config_mod._flush_save()  # Should not raise

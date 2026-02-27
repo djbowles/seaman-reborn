@@ -895,3 +895,99 @@ class TestProcessInputStream:
             with pytest.raises(RuntimeError, match="No LLM provider"):
                 async for _ in mgr.process_input_stream("Hello"):
                     pass
+
+
+# ---------------------------------------------------------------------------
+# LLM Timeout tests (Fix #2)
+# ---------------------------------------------------------------------------
+import asyncio  # noqa: E402
+
+
+class TestLLMTimeouts:
+    """Tests for LLM call timeout handling."""
+
+    async def test_warmup_timeout_caught(self, tmp_path):
+        """Warmup timeout is caught gracefully."""
+        import seaman_brain.conversation.manager as mgr_mod
+
+        # Temporarily reduce timeout for test speed
+        orig = mgr_mod._LLM_WARMUP_TIMEOUT
+        mgr_mod._LLM_WARMUP_TIMEOUT = 0.1
+
+        try:
+            slow_llm = MockLLM()
+            slow_llm.chat = AsyncMock(side_effect=asyncio.TimeoutError)
+
+            cfg = _make_config(save_path=str(tmp_path / "saves"))
+            mgr = ConversationManager(
+                config=cfg, llm=slow_llm, creature_state=CreatureState()
+            )
+            # Should not raise — warmup timeout is caught
+            await mgr.initialize()
+            assert mgr.is_initialized
+        finally:
+            mgr_mod._LLM_WARMUP_TIMEOUT = orig
+
+    async def test_chat_timeout_returns_fallback(self, tmp_path):
+        """Chat call timeout returns fallback response."""
+        import seaman_brain.conversation.manager as mgr_mod
+
+        orig = mgr_mod._LLM_CHAT_TIMEOUT
+        mgr_mod._LLM_CHAT_TIMEOUT = 0.1
+
+        try:
+            slow_llm = MockLLM()
+            # First call (warmup) succeeds, subsequent calls timeout
+            call_count = 0
+
+            async def _slow_chat(msgs):
+                nonlocal call_count
+                call_count += 1
+                if call_count > 1:
+                    await asyncio.sleep(999)
+                return "ok"
+
+            slow_llm.chat = _slow_chat
+
+            cfg = _make_config(save_path=str(tmp_path / "saves"))
+            mgr = ConversationManager(
+                config=cfg, llm=slow_llm, creature_state=CreatureState()
+            )
+            await mgr.initialize()
+
+            result = await mgr.process_input("Hello")
+            # Should get fallback response (not hang)
+            assert result == "..."
+        finally:
+            mgr_mod._LLM_CHAT_TIMEOUT = orig
+
+    async def test_autonomous_timeout_returns_none(self, tmp_path):
+        """Autonomous LLM call timeout returns None."""
+        import seaman_brain.conversation.manager as mgr_mod
+
+        orig = mgr_mod._LLM_CHAT_TIMEOUT
+        mgr_mod._LLM_CHAT_TIMEOUT = 0.1
+
+        try:
+            slow_llm = MockLLM()
+            call_count = 0
+
+            async def _slow_chat(msgs):
+                nonlocal call_count
+                call_count += 1
+                if call_count > 1:
+                    await asyncio.sleep(999)
+                return "ok"
+
+            slow_llm.chat = _slow_chat
+
+            cfg = _make_config(save_path=str(tmp_path / "saves"))
+            mgr = ConversationManager(
+                config=cfg, llm=slow_llm, creature_state=CreatureState()
+            )
+            await mgr.initialize()
+
+            result = await mgr.generate_autonomous_remark("test situation")
+            assert result is None
+        finally:
+            mgr_mod._LLM_CHAT_TIMEOUT = orig
