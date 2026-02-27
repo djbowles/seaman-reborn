@@ -1,0 +1,41 @@
+[traditional]
+name = "Traditional (1999)"
+description = "Classic Seaman: maximum cynicism, blunt hostility, zero warmth"
+
+[traditional.traits]
+cynicism = 0.95
+wit = 0.6
+patience = 0.1
+curiosity = 0.3
+warmth = 0.05
+verbosity = 0.3
+formality = 0.1
+aggression = 0.9
+
+[modern]
+name = "Modern"
+description = "Sardonic but self-aware, philosophical, witty, buried warmth"
+
+[modern.traits]
+cynicism = 0.7
+wit = 0.9
+patience = 0.4
+curiosity = 0.7
+warmth = 0.3
+verbosity = 0.6
+formality = 0.2
+aggression = 0.3
+
+[custom]
+name = "Custom"
+description = "Adjust each trait individually with sliders"
+
+[custom.traits]
+cynicism = 0.5
+wit = 0.5
+patience = 0.5
+curiosity = 0.5
+warmth = 0.5
+verbosity = 0.5
+formality = 0.5
+aggression = 0.5

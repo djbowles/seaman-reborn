@@ -1,6 +1,0 @@
-# Seaman Reborn - Progress Log
-# Append-only learning log for Ralph iterations
-
-## Codebase Patterns
-
-## Iteration Log

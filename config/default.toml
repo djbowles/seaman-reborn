@@ -3,6 +3,8 @@ provider = "ollama"
 model = "qwen3-coder:30b"
 temperature = 0.8
 max_tokens = 512
+context_window = 8192
+max_response_tokens = 4096
 base_url = "http://localhost:11434"
 
 [memory]
@@ -41,6 +43,67 @@ gillman = { interactions = 20, trust = 0.3 }
 podfish = { interactions = 50, trust = 0.5 }
 tadman = { interactions = 100, trust = 0.6 }
 frogman = { interactions = 200, trust = 0.8 }
+
+[audio]
+tts_enabled = true
+stt_enabled = false
+sfx_enabled = true
+tts_provider = "pyttsx3"
+stt_provider = "speech_recognition"
+tts_voice = ""
+tts_rate = 150
+tts_volume = 0.8
+tts_speed = 1.0
+sfx_volume = 0.5
+ambient_volume = 0.3
+audio_output_device = ""
+audio_input_device = ""
+stt_model = "large-v3-turbo"
+stt_silence_threshold = 0.01
+stt_silence_duration = 1.5
+
+[environment]
+initial_temperature = 24.0
+optimal_temp_min = 20.0
+optimal_temp_max = 28.0
+lethal_temp_min = 10.0
+lethal_temp_max = 38.0
+cleanliness_decay_rate = 0.01
+oxygen_decay_rate = 0.005
+initial_environment = "aquarium"
+
+[needs]
+hunger_rate = 0.02
+comfort_decay_rate = 0.01
+health_regen_rate = 0.005
+health_damage_rate = 0.01
+stimulation_decay_rate = 0.015
+critical_hunger_threshold = 0.8
+critical_health_threshold = 0.2
+starvation_time_hours = 1.0
+feeding_cooldown_seconds = 30
+
+[vision]
+enabled = false
+vision_model = "qwen3-vl:8b"
+source = "webcam"
+capture_interval = 30.0
+max_observations = 3
+webcam_index = 0
+
+[gui]
+window_width = 1024
+window_height = 768
+fps = 30
+theme = "classic"
+show_debug_hud = false
+chat_panel_height_ratio = 0.33
+
+[api]
+host = "127.0.0.1"
+port = 8420
+cors_origins = ["http://localhost:3000", "http://127.0.0.1:3000"]
+broadcast_interval_ms = 500
 
 [cli]
 show_debug = false

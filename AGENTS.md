@@ -7,12 +7,20 @@
 - `MessageRole` enum: SYSTEM, USER, ASSISTANT
 - `ChatMessage` dataclass: role + content + timestamp
 - `MemoryRecord` dataclass: text, embedding, timestamp, importance, source
+- `DeathCause` enum: STARVATION, SUFFOCATION, HYPOTHERMIA, HYPERTHERMIA, ILLNESS, OLD_AGE
+- `CreatureMood` enum: HOSTILE, IRRITATED, SARDONIC, NEUTRAL, CURIOUS, AMUSED, PHILOSOPHICAL, CONTENT
+- `FoodType` enum: PELLET, WORM, INSECT, NAUTILUS
 
 ### `config.py` — Configuration
 - `SeamanConfig` Pydantic model: top-level config aggregating all sub-configs
 - `LLMConfig`: provider name, model, temperature, max_tokens, base_url
 - `MemoryConfig`: buffer_size, vector_dims, top_k, extraction_interval
 - `PersonalityConfig`: base traits, stage overrides path
+- `AudioConfig`: tts_provider, stt_provider, tts_model, stt_model, volumes
+- `EnvironmentConfig`: default tank temperature, cleanliness rates, oxygen rates
+- `NeedsConfig`: hunger_rate, comfort_decay, health_threshold, stimulation_decay
+- `GUIConfig`: window_width, window_height, fps, theme
+- `APIConfig`: host, port, cors_origins
 - Loads from `config/default.toml`, merges stage-specific TOML overrides
 
 ---
@@ -53,13 +61,14 @@
 #### `prompt_builder.py` — System Prompt Assembly (CRITICAL)
 - Builds the system prompt that defines Seaman's personality
 - Incorporates: stage-specific traits, remembered facts about the user, creature mood, time context
+- Strict negative constraints suppressing AI assistant tone
 - This is the most important file for achieving authentic Seaman personality
 
 #### `constraints.py` — Output Filtering
 - Forbidden phrase list (breaks character immersion)
 - Response length enforcement
 - Personality consistency checks
-- Strips AI assistant clichés ("As an AI...", "I'd be happy to...", etc.)
+- Strips AI assistant cliches ("As an AI...", "I'd be happy to...", etc.)
 
 ---
 
@@ -97,7 +106,7 @@
 ### Subpackage: `creature/`
 
 #### `state.py` — Creature State
-- `CreatureState` dataclass: stage, age, interaction_count, mood, trust_level, last_fed, etc.
+- `CreatureState` dataclass: stage, age, interaction_count, mood, trust_level, hunger, health, comfort, last_fed, last_interaction, birth_time
 - Serializable to/from JSON
 
 #### `evolution.py` — Stage Transitions
@@ -109,6 +118,32 @@
 - `StatePersistence`: JSON file save/load for CreatureState
 - Auto-saves after each interaction
 - Creates backups before stage transitions
+
+#### `genome.py` — Creature Genome & Physical Traits
+- `CreatureGenome` dataclass: ~12 heritable float traits (body_size, head_ratio, eye_size, coloring_hue, etc.)
+- `generate_random_genome()`: gaussian-distributed around stage defaults
+- `mutate_genome(parent, mutation_rate)`: child genome with random drift
+- `update_epigenetic_drift(genome, care, environment, days)`: subtle life-driven shifts
+
+#### `self_model.py` — Creature Self-Awareness
+- `SelfModel`: generates natural language body description from genome + stage
+- `build_self_description()`: current self-perception text
+- Tracks physical changes between updates, detects "new_changes"
+- `get_prompt_injection()`: formatted block for LLM system prompt
+- Stage-gated awareness (Mushroomer: minimal, Frogman: rich self-knowledge)
+
+#### `genetics.py` — Genetic Inheritance System
+- `GeneticLegacy` dataclass: genome, distilled_memories, personality_drift, death_cause, generation_number
+- `extract_legacy()`: on death, distill genome + memories + personality into legacy artifact
+- `InheritanceEngine.hatch_from_legacy()`: create new creature from parent's legacy
+- `AncestralMemory` dataclass: faded memories with confidence decay across generations
+- Memory confidence degrades per generation (grandparent memories hazier than parent)
+
+#### `lineage.py` — Lineage Tracking
+- `LineageTracker`: persistent family tree across all generations
+- `LineageEntry`: generation, genome, lifespan, death_cause, stage_reached, notable_facts
+- `get_lineage_summary()`: prompt-injectable text ("You are the 4th generation...")
+- Persisted to data/saves/lineage/family_tree.json
 
 ---
 
@@ -142,3 +177,143 @@
 - `/traits` — show current personality traits
 - `/reset` — reset creature to initial state
 - `/quit` — save and exit
+
+---
+
+### Subpackage: `audio/`
+
+#### `tts.py` — Text-to-Speech
+- `TTSProvider` Protocol: `async synthesize(text) -> bytes`, `speak(text) -> None`
+- `Pyttsx3TTSProvider`: offline cross-platform TTS via pyttsx3
+- Configurable voice, rate, volume
+
+#### `stt.py` — Speech-to-Text
+- `STTProvider` Protocol: `async listen() -> str`
+- `SpeechRecognitionSTTProvider`: wraps SpeechRecognition library
+- Configurable backend (vosk offline, google online)
+
+#### `manager.py` — Audio Manager
+- `AudioManager`: coordinates TTS, STT, and SFX
+- Per-channel enable/disable (tts, stt, sfx)
+- Thread-safe for concurrent GUI usage
+
+---
+
+### Subpackage: `environment/`
+
+#### `clock.py` — Real-Time Clock
+- `GameClock`: time-of-day, day-of-week, session tracking
+- Detects long absences with severity levels
+- `get_time_context() -> dict` for prompt injection
+
+#### `tank.py` — Tank Environment
+- `TankEnvironment`: temperature, cleanliness, oxygen, water_level, environment_type
+- `update(elapsed)` degrades conditions over time
+- `drain()` transitions aquarium -> terrarium
+- `is_habitable()` checks survival conditions
+
+---
+
+### Subpackage: `needs/`
+
+#### `system.py` — Creature Needs
+- `CreatureNeeds`: hunger, comfort, health, stimulation (all 0-1)
+- `NeedsEngine.update()` calculates needs from time + tank + interaction
+- `get_urgent_needs()` returns needs requiring attention
+
+#### `feeding.py` — Feeding Mechanics
+- `FoodType` enum, `FeedingResult` dataclass
+- `FeedingEngine.feed()` applies food effects, validates stage-appropriate food
+- Overfeeding penalty, cooldown system
+
+#### `care.py` — Tank Care
+- `TankCareEngine`: temperature adjustment, cleaning, drain
+- Stage-specific requirements (sprinkler for Frogman)
+- Warning generation for urgent maintenance
+
+#### `death.py` — Death Mechanics
+- `DeathEngine.check_death()` monitors for death conditions
+- `DeathCause` enum with cause-specific messages
+- Revival: reset to new egg state
+
+---
+
+### Subpackage: `behavior/`
+
+#### `mood.py` — Dynamic Mood Engine
+- `MoodEngine.calculate_mood()` from needs, trust, time, interactions, traits
+- Gradual mood transitions (no instant jumps)
+- `get_mood_modifiers()` returns prompt modifiers
+
+#### `autonomous.py` — Autonomous Behavior
+- `BehaviorEngine`: idle behaviors (swim, tap glass, complain, observe, sleep)
+- Weighted by mood and needs
+- Cooldown system, optional LLM-powered idle speech
+
+#### `events.py` — Event System
+- `EventSystem`: scheduled and random events
+- Time-triggered (holidays, 3am visits), stage-triggered (breeding, cannibalism)
+- Events modify creature state and trigger dialogue
+
+---
+
+### Subpackage: `gui/`
+
+#### `window.py` — Pygame Window & Main Loop
+- `GameWindow`: Pygame init, event loop, update/render cycle
+- Configurable size and FPS
+- Async bridge for ConversationManager
+
+#### `tank_renderer.py` — Tank Environment Renderer
+- Aquarium mode: animated water, bubbles, gravel
+- Terrarium mode: dry substrate, rocks, moisture
+- Temperature/cleanliness visual indicators
+
+#### `sprites.py` — Creature Sprite System
+- Procedural art for 5 stages (no external assets)
+- Animation states: IDLE, SWIMMING, TALKING, EATING, SLEEPING
+- Face tracks mouse cursor
+
+#### `chat_panel.py` — Chat Panel Overlay
+- Semi-transparent overlay, scrollable history
+- Text input with cursor, streaming response display
+- Toggle with Tab key
+
+#### `hud.py` — HUD & Status Display
+- Need bars, mood indicator, trust meter
+- Tank condition indicators
+- Compact and expanded modes
+
+#### `interactions.py` — Interactive Elements
+- Feeding (click to drop food), temperature controls
+- Glass tapping, tank cleaning button
+- Visual feedback (ripples, food animation)
+
+#### `audio_integration.py` — Pygame Audio Bridge
+- Ambient sound loops, creature voice via TTS
+- UI sound effects, microphone toggle
+- Per-channel volume controls
+
+#### `game_loop.py` — Full Game Integration
+- `GameEngine`: orchestrates all GUI subsystems
+- Async conversation bridge, needs/mood/behavior ticking
+- Evolution and death sequences
+
+---
+
+### Subpackage: `api/`
+
+#### `server.py` — FastAPI WebSocket Server
+- WebSocket endpoint `/ws/brain` for real-time communication
+- REST endpoints: `/api/state`, `/api/health`, `/api/reset`
+- `python -m seaman_brain --api` launches server
+
+#### `protocol.py` — State Protocol Schema
+- Pydantic models: InputMessage, ResponseMessage, StateUpdate, EventNotification
+- BrainStateSnapshot: full serializable state
+- Protocol versioning
+
+#### `streaming.py` — Real-Time Event Streaming
+- `EventBroadcaster`: pushes state changes to WebSocket clients
+- Subscribable channels: mood, needs, evolution, behavior, tank, death
+- State diff streaming, configurable intervals
