@@ -166,6 +166,7 @@ class SettingsPanel:
         self._output_device_dropdown: Dropdown | None = None
         self._input_device_dropdown: Dropdown | None = None
         self._tts_voice_dropdown: Dropdown | None = None
+        self._voice_ids: list[str] = []
 
         self._widgets_built = False
 
@@ -341,11 +342,14 @@ class SettingsPanel:
 
         voices = list_tts_voices(self._config.audio.tts_provider)
         voice_names = [name for _, name in voices]
-        voice_idx = _find_saved_index(voice_names, self._config.audio.tts_voice)
+        self._voice_ids = [vid for vid, _ in voices]
+        voice_idx = _find_saved_index(self._voice_ids, self._config.audio.tts_voice)
         self._tts_voice_dropdown = Dropdown(
             x, device_y + 68, w, 26, "TTS Voice",
             items=voice_names, selected_index=voice_idx,
-            on_change=lambda _i, v: self._on_audio_setting("tts_voice", v),
+            on_change=lambda i, _v: self._on_audio_setting(
+                "tts_voice", self._voice_ids[i] if i < len(self._voice_ids) else ""
+            ),
         )
 
         self._audio_widgets = [
@@ -842,8 +846,9 @@ class SettingsPanel:
             if self._tts_voice_dropdown is not None:
                 voices = list_tts_voices(self._config.audio.tts_provider)
                 voice_names = [name for _, name in voices]
-                voice_idx = _find_saved_index(voice_names, self._config.audio.tts_voice)
-                result["tts_voice"] = (voice_names, voice_idx)
+                voice_ids = [vid for vid, _ in voices]
+                voice_idx = _find_saved_index(voice_ids, self._config.audio.tts_voice)
+                result["tts_voice"] = (voice_names, voice_ids, voice_idx)
 
             if self._vision_cam_dropdown is not None:
                 cams = list_webcams()
@@ -884,7 +889,8 @@ class SettingsPanel:
             self._input_device_dropdown.set_items(names, selected_index=idx)
 
         if "tts_voice" in pending and self._tts_voice_dropdown is not None:
-            names, idx = pending["tts_voice"]
+            names, voice_ids, idx = pending["tts_voice"]
+            self._voice_ids = voice_ids
             self._tts_voice_dropdown.set_items(names, selected_index=idx)
 
         if "camera" in pending and self._vision_cam_dropdown is not None:
