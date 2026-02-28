@@ -890,6 +890,31 @@ class TestAsyncBridgeRestart:
 
         win.shutdown()
 
+    def test_scaled_flag_passed_when_available(self):
+        """pygame.SCALED flag is included in set_mode() when available."""
+        _pygame_mock.SCALED = 0x00000020
+        from seaman_brain.gui.window import GameWindow
+
+        win = GameWindow()
+        _pygame_mock.display.set_mode.reset_mock()
+        win._screen = None  # Allow re-init
+        win.initialize()
+        args, kwargs = _pygame_mock.display.set_mode.call_args
+        assert args[1] & _pygame_mock.SCALED
+
+    def test_scaled_flag_absent_graceful_fallback(self):
+        """set_mode() uses flags=0 when pygame.SCALED is missing."""
+        if hasattr(_pygame_mock, "SCALED"):
+            del _pygame_mock.SCALED
+        from seaman_brain.gui.window import GameWindow
+
+        win = GameWindow()
+        _pygame_mock.display.set_mode.reset_mock()
+        win._screen = None
+        win.initialize()
+        args, kwargs = _pygame_mock.display.set_mode.call_args
+        assert args[1] == 0
+
     def test_start_async_bridge_cleans_dead_loop(self):
         """_start_async_bridge cleans up a dead loop before creating new one."""
         from seaman_brain.gui.window import GameWindow

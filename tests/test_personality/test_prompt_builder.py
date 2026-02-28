@@ -418,3 +418,32 @@ class TestVisionSection:
             observations=[],
         )
         assert "WHAT YOU CAN SEE" not in result
+
+    def test_vision_tool_hint_when_available(self, builder, default_traits):
+        """Vision capability hint present when tool available and no observations."""
+        result = builder.build(
+            CreatureStage.PODFISH, default_traits,
+            observations=None,
+            vision_tool_available=True,
+        )
+        assert "VISION CAPABILITY" in result
+        assert "look_at_user" in result
+
+    def test_no_vision_tool_hint_when_observations_present(self, builder, default_traits):
+        """Vision capability hint absent when observations are already present."""
+        result = builder.build(
+            CreatureStage.PODFISH, default_traits,
+            observations=["The human is smiling"],
+            vision_tool_available=True,
+        )
+        assert "VISION CAPABILITY" not in result
+        assert "WHAT YOU CAN SEE RIGHT NOW:" in result
+
+    def test_no_vision_tool_hint_when_not_available(self, builder, default_traits):
+        """Vision capability hint absent when tool not available."""
+        result = builder.build(
+            CreatureStage.PODFISH, default_traits,
+            observations=None,
+            vision_tool_available=False,
+        )
+        assert "VISION CAPABILITY" not in result

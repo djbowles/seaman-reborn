@@ -95,11 +95,17 @@ class LineagePanel:
         # Confirm delete state
         self._confirm_delete = False
 
-        # Widgets
+        # Rename state
+        self._rename_active = False
+        self._rename_text = ""
+        self._rename_cursor = 0
+
+            # Widgets
         self._close_button: Button | None = None
         self._new_button: Button | None = None
         self._load_button: Button | None = None
         self._delete_button: Button | None = None
+        self._rename_button: Button | None = None
         self._confirm_yes: Button | None = None
         self._confirm_no: Button | None = None
         self._widgets_built = False
@@ -130,8 +136,9 @@ class LineagePanel:
         py = self._panel_y
         right_x = px + _LIST_WIDTH + 2 * _CONTENT_PADDING
         btn_y = py + _PANEL_HEIGHT - 60
-        btn_w = 100
+        btn_w = 80
         btn_h = 30
+        btn_gap = 8
 
         self._close_button = Button(
             px + _PANEL_WIDTH - 36, py + 4, 28, 28, "X",
@@ -143,11 +150,15 @@ class LineagePanel:
             on_click=self._on_new_click,
         )
         self._load_button = Button(
-            right_x + btn_w + 10, btn_y, btn_w, btn_h, "Load",
+            right_x + btn_w + btn_gap, btn_y, btn_w, btn_h, "Load",
             on_click=self._on_load_click,
         )
+        self._rename_button = Button(
+            right_x + 2 * (btn_w + btn_gap), btn_y, btn_w, btn_h, "Rename",
+            on_click=self._on_rename_click,
+        )
         self._delete_button = Button(
-            right_x + 2 * (btn_w + 10), btn_y, btn_w, btn_h, "Delete",
+            right_x + 3 * (btn_w + btn_gap), btn_y, btn_w, btn_h, "Delete",
             on_click=self._on_delete_click,
         )
 
@@ -245,13 +256,18 @@ class LineagePanel:
         # Right: details
         self._render_details(surface)
 
-        # Action buttons
-        if self._new_button is not None:
-            self._new_button.render(surface)
-        if self._load_button is not None:
-            self._load_button.render(surface)
-        if self._delete_button is not None:
-            self._delete_button.render(surface)
+        # Action buttons (hidden during rename)
+        if not self._rename_active:
+            if self._new_button is not None:
+                self._new_button.render(surface)
+            if self._load_button is not None:
+                self._load_button.render(surface)
+            if self._rename_button is not None:
+                self._rename_button.render(surface)
+            if self._delete_button is not None:
+                self._delete_button.render(surface)
+        else:
+            self._render_rename_input(surface)
 
         # Confirmation overlay
         if self._confirm_delete:
@@ -378,12 +394,21 @@ class LineagePanel:
             return True  # Consume click during confirmation
 
         # Action buttons
-        if self._new_button is not None and self._new_button.handle_click(mx, my):
-            return True
-        if self._load_button is not None and self._load_button.handle_click(mx, my):
-            return True
-        if self._delete_button is not None and self._delete_button.handle_click(mx, my):
-            return True
+        if not self._rename_active:
+            if self._new_button is not None and self._new_button.handle_click(mx, my):
+                return True
+            if self._load_button is not None and self._load_button.handle_click(mx, my):
+                return True
+            if (
+                self._rename_button is not None
+                and self._rename_button.handle_click(mx, my)
+            ):
+                return True
+            if (
+                self._delete_button is not None
+                and self._delete_button.handle_click(mx, my)
+            ):
+                return True
 
         # List item click
         list_x = self._panel_x + _CONTENT_PADDING
@@ -412,8 +437,8 @@ class LineagePanel:
             self._close_button.handle_mouse_move(mx, my)
 
         for btn in (
-            self._new_button, self._load_button, self._delete_button,
-            self._confirm_yes, self._confirm_no,
+            self._new_button, self._load_button, self._rename_button,
+            self._delete_button, self._confirm_yes, self._confirm_no,
         ):
             if btn is not None:
                 btn.handle_mouse_move(mx, my)
@@ -429,6 +454,154 @@ class LineagePanel:
                 self._hovered_index = -1
         else:
             self._hovered_index = -1
+
+    # ── Key event handling (rename) ──────────────────────────────────
+
+    def handle_event(self, event: pygame.event.Event) -> bool:
+        """Handle a Pygame event (key presses during rename mode).
+
+        Args:
+            event: A Pygame event.
+
+        Returns:
+            True if the event was consumed.
+        """
+        if not self.visible or not self._rename_active:
+            return False
+
+        if event.type != pygame.KEYDOWN:
+            return False
+
+        if event.key == pygame.K_RETURN or event.key == getattr(pygame, "K_KP_ENTER", 271):
+            self._commit_rename()
+            return True
+        if event.key == pygame.K_ESCAPE:
+            self._cancel_rename()
+            return True
+        if event.key == pygame.K_BACKSPACE:
+            if self._rename_cursor > 0:
+                self._rename_text = (
+                    self._rename_text[: self._rename_cursor - 1]
+                    + self._rename_text[self._rename_cursor:]
+                )
+                self._rename_cursor -= 1
+            return True
+        if event.key == pygame.K_DELETE:
+            if self._rename_cursor < len(self._rename_text):
+                self._rename_text = (
+                    self._rename_text[: self._rename_cursor]
+                    + self._rename_text[self._rename_cursor + 1:]
+                )
+            return True
+        if event.key == pygame.K_LEFT:
+            self._rename_cursor = max(0, self._rename_cursor - 1)
+            return True
+        if event.key == pygame.K_RIGHT:
+            self._rename_cursor = min(len(self._rename_text), self._rename_cursor + 1)
+            return True
+        if event.key == pygame.K_HOME:
+            self._rename_cursor = 0
+            return True
+        if event.key == pygame.K_END:
+            self._rename_cursor = len(self._rename_text)
+            return True
+
+        # Printable character
+        if hasattr(event, "unicode") and event.unicode and event.unicode.isprintable():
+            ch = event.unicode
+            self._rename_text = (
+                self._rename_text[: self._rename_cursor]
+                + ch
+                + self._rename_text[self._rename_cursor:]
+            )
+            self._rename_cursor += 1
+            return True
+
+        return True  # Consume all keys during rename
+
+    def _on_rename_click(self) -> None:
+        """Enter rename mode with the selected bloodline's name."""
+        if not self._bloodlines:
+            return
+        bl = self._bloodlines[self._selected_index]
+        self._rename_active = True
+        self._rename_text = bl.name
+        self._rename_cursor = len(bl.name)
+        self._confirm_delete = False
+
+    def _commit_rename(self) -> None:
+        """Apply the rename and exit rename mode."""
+        if not self._bloodlines:
+            self._cancel_rename()
+            return
+
+        bl = self._bloodlines[self._selected_index]
+        new_name = self._rename_text.strip()
+
+        if not new_name or new_name == bl.name:
+            self._cancel_rename()
+            return
+
+        try:
+            StatePersistence.rename_bloodline(
+                bl.name, new_name, self._save_base_dir
+            )
+            self._status_text = f"Renamed: {bl.name} -> {new_name}"
+            self.refresh_list()
+            # Re-select the renamed bloodline
+            for i, b in enumerate(self._bloodlines):
+                if b.name == new_name:
+                    self._selected_index = i
+                    break
+        except (ValueError, FileNotFoundError, OSError) as exc:
+            self._status_text = f"Rename failed: {exc}"
+            logger.error("Rename failed: %s", exc)
+
+        self._rename_active = False
+
+    def _cancel_rename(self) -> None:
+        """Exit rename mode without applying."""
+        self._rename_active = False
+        self._rename_text = ""
+        self._rename_cursor = 0
+
+    def _render_rename_input(self, surface: pygame.Surface) -> None:
+        """Render the text input box for rename mode."""
+        if self._font is None:
+            return
+
+        px = self._panel_x
+        py = self._panel_y
+        right_x = px + _LIST_WIDTH + 2 * _CONTENT_PADDING
+        input_y = py + _PANEL_HEIGHT - 60
+        input_w = _PANEL_WIDTH - _LIST_WIDTH - 3 * _CONTENT_PADDING
+        input_h = 30
+
+        # Background
+        pygame.draw.rect(
+            surface, (25, 40, 65), (right_x, input_y, input_w, input_h)
+        )
+        pygame.draw.rect(
+            surface, (100, 140, 200), (right_x, input_y, input_w, input_h), 1
+        )
+
+        # Text
+        display_text = self._rename_text
+        text_surf = self._font.render(display_text, True, _TEXT_COLOR)
+        surface.blit(text_surf, (right_x + 6, input_y + 7))
+
+        # Cursor
+        cursor_x = right_x + 6 + self._font.size(
+            self._rename_text[: self._rename_cursor]
+        )[0]
+        pygame.draw.line(
+            surface, _TEXT_COLOR,
+            (cursor_x, input_y + 4), (cursor_x, input_y + input_h - 4),
+        )
+
+        # Hint text below
+        hint = self._font.render("Enter=save  Esc=cancel", True, _TEXT_DIM)
+        surface.blit(hint, (right_x, input_y + input_h + 4))
 
     # ── Callbacks ─────────────────────────────────────────────────────
 

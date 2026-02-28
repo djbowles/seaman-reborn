@@ -7,7 +7,7 @@ Providers handle async chat completion and streaming for creature cognition.
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 from seaman_brain.types import ChatMessage
 
@@ -39,5 +39,30 @@ class LLMProvider(Protocol):
 
         Yields:
             Individual response tokens/chunks as they arrive.
+        """
+        ...
+
+
+@runtime_checkable
+class ToolCapableLLM(Protocol):
+    """Protocol for LLM providers that support tool/function calling.
+
+    Extends the base LLM capability with tool-use support.
+    Kept separate to avoid breaking providers that don't support tools.
+    """
+
+    async def chat_with_tools(
+        self,
+        messages: list[ChatMessage],
+        tools: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Send messages with tool definitions and return structured response.
+
+        Args:
+            messages: Ordered conversation history.
+            tools: List of tool definitions in provider-specific format.
+
+        Returns:
+            Dict with "content" (str | None) and "tool_calls" (list | None).
         """
         ...

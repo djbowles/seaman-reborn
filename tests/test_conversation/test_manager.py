@@ -29,6 +29,27 @@ class MockLLM:
         yield self._response
 
 
+class MockToolLLM(MockLLM):
+    """A mock LLM that supports tool calling."""
+
+    def __init__(
+        self,
+        response: str = "Whatever.",
+        tool_responses: list[dict] | None = None,
+    ) -> None:
+        super().__init__(response)
+        self._tool_responses = tool_responses or []
+        self._tool_call_count = 0
+        self.chat_with_tools = AsyncMock(side_effect=self._mock_tool_chat)
+
+    async def _mock_tool_chat(self, messages, tools):
+        if self._tool_call_count < len(self._tool_responses):
+            result = self._tool_responses[self._tool_call_count]
+            self._tool_call_count += 1
+            return result
+        return {"content": self._response, "tool_calls": None}
+
+
 def _make_config(save_path: str = "data/saves") -> SeamanConfig:
     """Create a minimal SeamanConfig suitable for testing."""
     return SeamanConfig(
@@ -1196,3 +1217,133 @@ class TestUpdatePersonalityTraits:
         assert mgr.traits.cynicism == pytest.approx(0.1)
         # wit should be the default (0.5)
         assert mgr.traits.wit == pytest.approx(0.5)
+
+
+# ---------------------------------------------------------------------------
+# Tool-use / LLM-initiated vision
+# ---------------------------------------------------------------------------
+
+
+class TestToolLoop:
+    """Tests for the tool-calling loop in process_input."""
+
+    async def test_no_tools_without_bridge(self, tmp_path):
+        """Without vision bridge, uses regular chat even with ToolCapableLLM."""
+        cfg = _make_config(save_path=str(tmp_path / "saves"))
+        llm = MockToolLLM(response="No tools here.")
+        mgr = ConversationManager(config=cfg, llm=llm, creature_state=CreatureState())
+        await mgr.initialize()
+
+        # Reset call count after warmup
+        llm.chat.reset_mock()
+        result = await mgr.process_input("hello")
+        # Should use regular chat, not chat_with_tools
+        llm.chat.assert_called_once()
+        llm.chat_with_tools.assert_not_called()
+        assert "No tools" in result
+
+    async def test_tool_loop_no_tool_calls(self, tmp_path):
+        """Tool loop returns content when LLM doesn't call any tools."""
+        cfg = _make_config(save_path=str(tmp_path / "saves"))
+        llm = MockToolLLM(response="Just text.")
+        mgr = ConversationManager(config=cfg, llm=llm, creature_state=CreatureState())
+        await mgr.initialize()
+
+        # Set up vision bridge
+        bridge = MagicMock()
+        bridge.get_recent_observations.return_value = []
+        mgr.set_vision_bridge(bridge)
+
+        result = await mgr.process_input("hello")
+        llm.chat_with_tools.assert_called_once()
+        assert "Just text" in result
+
+    async def test_tool_loop_single_tool_call(self, tmp_path):
+        """Tool loop executes a tool call and gets final response."""
+        cfg = _make_config(save_path=str(tmp_path / "saves"))
+
+        tool_responses = [
+            # First call: LLM requests tool
+            {
+                "content": None,
+                "tool_calls": [
+                    {"function": {"name": "look_at_user", "arguments": {}}}
+                ],
+            },
+            # Second call: LLM gives text response after seeing tool result
+            {"content": "I can see you!", "tool_calls": None},
+        ]
+        llm = MockToolLLM(response="fallback", tool_responses=tool_responses)
+        mgr = ConversationManager(config=cfg, llm=llm, creature_state=CreatureState())
+        await mgr.initialize()
+
+        # Mock vision bridge with an observation that appears after trigger
+        bridge = MagicMock()
+        call_count = [0]
+
+        def get_obs():
+            call_count[0] += 1
+            if call_count[0] >= 3:  # After a few polls
+                return ["A human sitting at a desk"]
+            return []
+
+        bridge.get_recent_observations.side_effect = get_obs
+        bridge.trigger_observation = MagicMock()
+        mgr.set_vision_bridge(bridge)
+
+        result = await mgr.process_input("what do I look like?")
+
+        assert llm.chat_with_tools.call_count == 2
+        bridge.trigger_observation.assert_called_once()
+        assert "I can see you" in result
+
+    async def test_tool_loop_max_iterations(self, tmp_path):
+        """Tool loop stops after max iterations."""
+        cfg = _make_config(save_path=str(tmp_path / "saves"))
+
+        # LLM always requests tools (never gives content)
+        tool_response = {
+            "content": None,
+            "tool_calls": [
+                {"function": {"name": "look_at_user", "arguments": {}}}
+            ],
+        }
+        # Provide 10 identical responses (more than max iterations)
+        llm = MockToolLLM(
+            response="final",
+            tool_responses=[tool_response] * 10,
+        )
+        mgr = ConversationManager(config=cfg, llm=llm, creature_state=CreatureState())
+        await mgr.initialize()
+
+        bridge = MagicMock()
+        bridge.get_recent_observations.return_value = ["something"]
+        bridge.trigger_observation = MagicMock()
+        mgr.set_vision_bridge(bridge)
+
+        from seaman_brain.conversation.manager import _TOOL_MAX_ITERATIONS
+
+        await mgr.process_input("keep looking")
+
+        # Should stop at max iterations
+        assert llm.chat_with_tools.call_count == _TOOL_MAX_ITERATIONS
+
+
+class TestSetVisionBridge:
+    """Tests for vision bridge wiring."""
+
+    async def test_set_vision_bridge(self, tmp_path):
+        """set_vision_bridge stores the bridge reference."""
+        cfg = _make_config(save_path=str(tmp_path / "saves"))
+        mgr = ConversationManager(config=cfg, llm=MockLLM(), creature_state=CreatureState())
+        bridge = MagicMock()
+        mgr.set_vision_bridge(bridge)
+        assert mgr._vision_bridge is bridge
+
+    async def test_execute_look_at_user_no_bridge(self, tmp_path):
+        """_execute_look_at_user returns error when no bridge."""
+        cfg = _make_config(save_path=str(tmp_path / "saves"))
+        mgr = ConversationManager(config=cfg, llm=MockLLM(), creature_state=CreatureState())
+        await mgr.initialize()
+        result = await mgr._execute_look_at_user()
+        assert "not available" in result

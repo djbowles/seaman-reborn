@@ -231,6 +231,7 @@ class PromptBuilder:
         memories: list[str] | None = None,
         creature_state: dict[str, Any] | None = None,
         observations: list[str] | None = None,
+        vision_tool_available: bool = False,
     ) -> str:
         """Build the full system prompt for an LLM call.
 
@@ -242,6 +243,7 @@ class PromptBuilder:
                 state fields. Keys used: "mood" (str), "trust_level" (float),
                 "interaction_count" (int), "hunger" (float), "health" (float).
             observations: Recent vision observations (what the creature sees).
+            vision_tool_available: Whether the look_at_user tool is available.
 
         Returns:
             Complete system prompt string for the LLM.
@@ -275,6 +277,15 @@ class PromptBuilder:
         vision_text = _vision_section(observations or [])
         if vision_text:
             sections.append(vision_text)
+        elif vision_tool_available:
+            # No observations yet, but tool is available — hint to the creature
+            sections.append(
+                "VISION CAPABILITY:\n"
+                "You have the ability to look at the user through a webcam by "
+                "using the look_at_user tool. Use it when you are curious about "
+                "what the user looks like, what they are doing, or when they "
+                "ask you to look at them."
+            )
 
         # 5. Needs-driven behavior hints
         needs_text = self._needs_hints(state)

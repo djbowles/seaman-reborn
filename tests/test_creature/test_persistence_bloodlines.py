@@ -233,6 +233,64 @@ class TestActiveBloodline:
         assert (new_dir / "_active.txt").exists()
 
 
+class TestRenameBloodline:
+    """Tests for StatePersistence.rename_bloodline."""
+
+    def test_rename_happy_path(self, base_dir: Path):
+        """Renaming moves the directory."""
+        _write_creature(base_dir / "alpha")
+        StatePersistence.rename_bloodline("alpha", "beta", base_dir)
+        assert not (base_dir / "alpha").exists()
+        assert (base_dir / "beta" / "creature.json").exists()
+
+    def test_rename_updates_active(self, base_dir: Path):
+        """Renaming the active bloodline updates _active.txt."""
+        _write_creature(base_dir / "alpha")
+        StatePersistence.set_active_bloodline("alpha", base_dir)
+        StatePersistence.rename_bloodline("alpha", "beta", base_dir)
+        assert StatePersistence.get_active_bloodline(base_dir) == "beta"
+
+    def test_rename_non_active_preserves_active(self, base_dir: Path):
+        """Renaming a non-active bloodline doesn't change _active.txt."""
+        _write_creature(base_dir / "alpha")
+        _write_creature(base_dir / "gamma")
+        StatePersistence.set_active_bloodline("gamma", base_dir)
+        StatePersistence.rename_bloodline("alpha", "beta", base_dir)
+        assert StatePersistence.get_active_bloodline(base_dir) == "gamma"
+
+    def test_rename_empty_name_raises(self, base_dir: Path):
+        """Empty new name raises ValueError."""
+        _write_creature(base_dir / "alpha")
+        with pytest.raises(ValueError, match="empty"):
+            StatePersistence.rename_bloodline("alpha", "  ", base_dir)
+
+    def test_rename_path_separator_raises(self, base_dir: Path):
+        """Name with path separators raises ValueError."""
+        _write_creature(base_dir / "alpha")
+        with pytest.raises(ValueError, match="path separator"):
+            StatePersistence.rename_bloodline("alpha", "foo/bar", base_dir)
+        with pytest.raises(ValueError, match="path separator"):
+            StatePersistence.rename_bloodline("alpha", "foo\\bar", base_dir)
+
+    def test_rename_underscore_prefix_raises(self, base_dir: Path):
+        """Name starting with underscore raises ValueError."""
+        _write_creature(base_dir / "alpha")
+        with pytest.raises(ValueError, match="underscore"):
+            StatePersistence.rename_bloodline("alpha", "_hidden", base_dir)
+
+    def test_rename_collision_raises(self, base_dir: Path):
+        """Renaming to an existing name raises ValueError."""
+        _write_creature(base_dir / "alpha")
+        _write_creature(base_dir / "beta")
+        with pytest.raises(ValueError, match="already exists"):
+            StatePersistence.rename_bloodline("alpha", "beta", base_dir)
+
+    def test_rename_source_missing_raises(self, base_dir: Path):
+        """Renaming a nonexistent bloodline raises FileNotFoundError."""
+        with pytest.raises(FileNotFoundError, match="not found"):
+            StatePersistence.rename_bloodline("nope", "beta", base_dir)
+
+
 class TestBloodlineInfoDataclass:
     """Tests for the BloodlineInfo dataclass."""
 

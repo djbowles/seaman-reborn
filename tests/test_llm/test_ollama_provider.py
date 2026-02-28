@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from seaman_brain.config import LLMConfig
-from seaman_brain.llm.base import LLMProvider
+from seaman_brain.llm.base import LLMProvider, ToolCapableLLM
 from seaman_brain.llm.ollama_provider import OllamaProvider
 from seaman_brain.types import ChatMessage, MessageRole
 
@@ -233,3 +233,67 @@ class TestOllamaProviderErrors:
             await provider.chat(sample_messages)
 
         assert exc_info.value.__cause__ is original
+
+
+# --- Tool calling tests ---
+
+
+class TestOllamaProviderToolCalling:
+    """Tests for OllamaProvider.chat_with_tools."""
+
+    def test_satisfies_tool_capable_protocol(self, llm_config: LLMConfig) -> None:
+        """OllamaProvider satisfies the ToolCapableLLM protocol."""
+        provider = OllamaProvider(llm_config)
+        assert isinstance(provider, ToolCapableLLM)
+
+    async def test_chat_with_tools_returns_content(
+        self, llm_config: LLMConfig, sample_messages: list[ChatMessage]
+    ) -> None:
+        """chat_with_tools returns content when no tool calls."""
+        provider = OllamaProvider(llm_config)
+        mock_response = _make_chat_response("I see you clearly.")
+        mock_response.message.tool_calls = None
+        provider._client.chat = AsyncMock(return_value=mock_response)
+
+        tools = [{"type": "function", "function": {"name": "look_at_user"}}]
+        result = await provider.chat_with_tools(sample_messages, tools)
+
+        assert result["content"] == "I see you clearly."
+        assert result["tool_calls"] is None
+        # Verify tools were passed to the client
+        call_kwargs = provider._client.chat.call_args
+        assert call_kwargs.kwargs.get("tools") == tools or call_kwargs[1].get("tools") == tools
+
+    async def test_chat_with_tools_returns_tool_calls(
+        self, llm_config: LLMConfig, sample_messages: list[ChatMessage]
+    ) -> None:
+        """chat_with_tools extracts tool_calls from response."""
+        provider = OllamaProvider(llm_config)
+        mock_response = _make_chat_response("")
+        mock_response.message.content = None
+
+        # Mock a tool call
+        tc = MagicMock()
+        tc.function.name = "look_at_user"
+        tc.function.arguments = {}
+        mock_response.message.tool_calls = [tc]
+
+        provider._client.chat = AsyncMock(return_value=mock_response)
+
+        tools = [{"type": "function", "function": {"name": "look_at_user"}}]
+        result = await provider.chat_with_tools(sample_messages, tools)
+
+        assert result["content"] is None
+        assert result["tool_calls"] is not None
+        assert len(result["tool_calls"]) == 1
+        assert result["tool_calls"][0]["function"]["name"] == "look_at_user"
+
+    async def test_chat_with_tools_connection_error(
+        self, llm_config: LLMConfig, sample_messages: list[ChatMessage]
+    ) -> None:
+        """chat_with_tools wraps connection errors."""
+        provider = OllamaProvider(llm_config)
+        provider._client.chat = AsyncMock(side_effect=Exception("Connection refused"))
+
+        with pytest.raises(ConnectionError, match="Failed to connect"):
+            await provider.chat_with_tools(sample_messages, [])

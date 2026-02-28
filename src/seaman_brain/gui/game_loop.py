@@ -46,6 +46,7 @@ from seaman_brain.gui.window import GameWindow
 from seaman_brain.llm.scheduler import ModelScheduler
 from seaman_brain.needs.care import AERATOR_COOLDOWN_SECONDS, CLEANING_DURATION_SECONDS
 from seaman_brain.needs.death import DeathCause, DeathEngine
+from seaman_brain.needs.feeding import FoodType
 from seaman_brain.needs.system import CreatureNeeds, NeedsEngine
 from seaman_brain.personality.traits import TraitProfile
 from seaman_brain.types import CreatureStage, MessageRole
@@ -61,6 +62,12 @@ _GAMEOVER_HINT = (180, 180, 180)
 _EVOLUTION_GLOW = (255, 220, 100)
 _NOTIFICATION_BG = (20, 40, 60, 200)
 _NOTIFICATION_TEXT = (220, 220, 180)
+_FOOD_MENU_BG = (20, 35, 58, 230)
+_FOOD_MENU_BORDER = (60, 90, 130)
+_FOOD_MENU_HOVER = (40, 65, 100)
+_FOOD_MENU_TEXT = (200, 220, 240)
+_FOOD_MENU_ITEM_H = 32
+_FOOD_MENU_WIDTH = 120
 
 # ── Game state enum ──────────────────────────────────────────────────
 
@@ -202,6 +209,11 @@ class GameEngine:
 
         # Thread-safe queue for model list updates from async callback
         self._pending_model_list: list[str] | None = None
+
+        # Food selection submenu
+        self._food_menu_visible = False
+        self._food_menu_items: list[tuple[FoodType, pygame.Rect]] = []
+        self._food_menu_hovered: int = -1
 
         # Diagnostic heartbeat
         self._heartbeat_timer: float = 0.0
@@ -469,6 +481,12 @@ class GameEngine:
                     manager.set_vision_observations(
                         self._vision_bridge.get_recent_observations()
                     )
+                    # Wire vision bridge for LLM-initiated vision (once)
+                    if (
+                        hasattr(manager, "set_vision_bridge")
+                        and getattr(manager, "_vision_bridge", None) is None
+                    ):
+                        manager.set_vision_bridge(self._vision_bridge)
         except Exception as exc:
             logger.error("Audio/vision bridge error: %s", exc, exc_info=True)
 
@@ -771,19 +789,14 @@ class GameEngine:
 
         if action_key == "feed":
             available = im.feeding_engine.get_available_foods(creature.stage)
-            if available:
-                result = im.feeding_engine.feed(creature, available[0])
-                self._interaction_count_delta += 1
-                if result.success:
-                    self._add_notification(result.message)
-                    self._creature_renderer.set_animation(AnimationState.EATING)
-                    if self._audio_bridge is not None:
-                        self._audio_bridge.play_sfx("feeding_splash")
-                    action_succeeded = True
-                else:
-                    self._add_notification(result.message)
-            else:
+            if not available:
                 self._add_notification("No food available for this stage.")
+            elif len(available) == 1:
+                self._feed_creature(available[0])
+                action_succeeded = True
+            else:
+                self._show_food_menu(available)
+                return  # Menu shown — no LLM reaction yet
 
         elif action_key == "aerate":
             if tank.environment_type == EnvironmentType.TERRARIUM:
@@ -830,6 +843,48 @@ class GameEngine:
         # Request LLM reaction to the interaction
         if action_succeeded:
             self._request_interaction_reaction(action_key)
+
+    def _show_food_menu(self, foods: list[FoodType]) -> None:
+        """Show a popup menu of food choices next to the Feed button."""
+        feed_btn = next((b for b in self._action_bar.buttons if b.key == "feed"), None)
+        if feed_btn is None:
+            return
+
+        menu_x = feed_btn.x - _FOOD_MENU_WIDTH - 4
+        menu_y = feed_btn.y
+
+        items: list[tuple[FoodType, pygame.Rect]] = []
+        for i, food in enumerate(foods):
+            rect = pygame.Rect(
+                menu_x, menu_y + i * _FOOD_MENU_ITEM_H,
+                _FOOD_MENU_WIDTH, _FOOD_MENU_ITEM_H,
+            )
+            items.append((food, rect))
+
+        self._food_menu_items = items
+        self._food_menu_visible = True
+        self._food_menu_hovered = -1
+
+    def _close_food_menu(self) -> None:
+        """Close the food selection submenu."""
+        self._food_menu_visible = False
+        self._food_menu_items = []
+        self._food_menu_hovered = -1
+
+    def _feed_creature(self, food_type: FoodType) -> None:
+        """Feed the creature with the given food type and trigger reactions."""
+        im = self._interaction_manager
+        creature = self._creature_state
+        result = im.feeding_engine.feed(creature, food_type)
+        self._interaction_count_delta += 1
+        if result.success:
+            self._add_notification(result.message)
+            self._creature_renderer.set_animation(AnimationState.EATING)
+            if self._audio_bridge is not None:
+                self._audio_bridge.play_sfx("feeding_splash")
+            self._request_interaction_reaction("feed")
+        else:
+            self._add_notification(result.message)
 
     def _on_stt_result(self, text: str) -> None:
         """Handle transcribed speech — queue for debounced, non-cancelling submission.
@@ -1020,6 +1075,17 @@ class GameEngine:
             self._restart_game()
             return
 
+        # Food submenu clicks — check before action bar
+        if self._food_menu_visible:
+            for i, (food, rect) in enumerate(self._food_menu_items):
+                if rect.collidepoint(mx, my):
+                    self._close_food_menu()
+                    self._feed_creature(food)
+                    return
+            # Click outside menu closes it
+            self._close_food_menu()
+            return
+
         # Action bar clicks
         if self._action_bar.handle_click(mx, my):
             return
@@ -1062,6 +1128,14 @@ class GameEngine:
                 logger.error("Lineage mouse move error: %s", exc)
             return
 
+        # Food menu hover
+        if self._food_menu_visible:
+            self._food_menu_hovered = -1
+            for i, (_, rect) in enumerate(self._food_menu_items):
+                if rect.collidepoint(mx, my):
+                    self._food_menu_hovered = i
+                    break
+
         self._creature_renderer.set_mouse_position(float(mx), float(my))
         self._interaction_manager.handle_mouse_move(mx, my)
         self._action_bar.handle_mouse_move(mx, my)
@@ -1087,7 +1161,9 @@ class GameEngine:
         """Handle key press events."""
         # ESC: close overlays if open, quit if in gameplay
         if event.key == pygame.K_ESCAPE:
-            if self._game_state == GameState.SETTINGS:
+            if self._food_menu_visible:
+                self._close_food_menu()
+            elif self._game_state == GameState.SETTINGS:
                 self._toggle_settings()
             elif self._game_state == GameState.LINEAGE:
                 self._toggle_lineage()
@@ -1111,8 +1187,11 @@ class GameEngine:
                 self._restart_game()
             return
 
-        # When overlays are open, consume all other keys
-        if self._game_state in (GameState.SETTINGS, GameState.LINEAGE):
+        # When overlays are open, forward keys to the overlay then consume
+        if self._game_state == GameState.LINEAGE and self._lineage_panel is not None:
+            self._lineage_panel.handle_event(event)
+            return
+        if self._game_state == GameState.SETTINGS:
             return
 
         # Chat panel gets first chance
@@ -1363,6 +1442,12 @@ class GameEngine:
         except Exception as exc:
             logger.error("Action bar render error: %s", exc, exc_info=True)
 
+        if self._food_menu_visible:
+            try:
+                self._render_food_menu(surface)
+            except Exception as exc:
+                logger.error("Food menu render error: %s", exc, exc_info=True)
+
         try:
             self._hud.render(surface, self._creature_state, self._tank)
         except Exception as exc:
@@ -1456,6 +1541,23 @@ class GameEngine:
         tx = (w - text_surf.get_width()) // 2
         ty = h // 4
         surface.blit(text_surf, (tx, ty))
+
+    def _render_food_menu(self, surface: pygame.Surface) -> None:
+        """Render the food selection popup next to the Feed button."""
+        if not self._food_menu_items or self._overlay_font is None:
+            return
+
+        for i, (food, rect) in enumerate(self._food_menu_items):
+            bg = _FOOD_MENU_HOVER if i == self._food_menu_hovered else _FOOD_MENU_BG
+            bg_surf = pygame.Surface((rect.width, rect.height), pygame.SRCALPHA)
+            bg_surf.fill(bg)
+            surface.blit(bg_surf, (rect.x, rect.y))
+            pygame.draw.rect(surface, _FOOD_MENU_BORDER, rect, 1)
+            label = food.value.capitalize()
+            text_surf = self._overlay_font.render(label, True, _FOOD_MENU_TEXT)
+            tx = rect.x + 8
+            ty = rect.y + (rect.height - text_surf.get_height()) // 2
+            surface.blit(text_surf, (tx, ty))
 
     def _render_notifications(self, surface: pygame.Surface) -> None:
         """Render temporary notification toasts."""

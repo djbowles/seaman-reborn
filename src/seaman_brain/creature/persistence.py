@@ -241,6 +241,52 @@ class StatePersistence:
         return "default"
 
     @classmethod
+    def rename_bloodline(
+        cls,
+        old_name: str,
+        new_name: str,
+        base_dir: str | Path = "data/saves",
+    ) -> None:
+        """Rename a bloodline directory.
+
+        Validates the new name and moves the directory. Updates _active.txt
+        if the renamed bloodline is the currently active one.
+
+        Args:
+            old_name: Current bloodline directory name.
+            new_name: Desired new name.
+            base_dir: The base saves directory.
+
+        Raises:
+            ValueError: If the new name is invalid or a collision exists.
+            FileNotFoundError: If the source bloodline doesn't exist.
+        """
+        new_name = new_name.strip()
+        if not new_name:
+            raise ValueError("Bloodline name cannot be empty")
+        if "/" in new_name or "\\" in new_name:
+            raise ValueError("Bloodline name cannot contain path separators")
+        if new_name.startswith("_"):
+            raise ValueError("Bloodline name cannot start with underscore")
+
+        base = Path(base_dir)
+        old_dir = base / old_name
+        new_dir = base / new_name
+
+        if not old_dir.exists():
+            raise FileNotFoundError(f"Bloodline '{old_name}' not found")
+        if new_dir.exists():
+            raise ValueError(f"Bloodline '{new_name}' already exists")
+
+        shutil.move(str(old_dir), str(new_dir))
+        logger.info("Renamed bloodline %s -> %s", old_name, new_name)
+
+        # Update active marker if renaming the active bloodline
+        active = cls.get_active_bloodline(base_dir)
+        if active == old_name:
+            cls.set_active_bloodline(new_name, base_dir)
+
+    @classmethod
     def set_active_bloodline(
         cls, name: str, base_dir: str | Path = "data/saves"
     ) -> None:

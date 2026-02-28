@@ -160,8 +160,11 @@ class GameWindow:
             return
 
         pygame.init()
+        flags = 0
+        if hasattr(pygame, "SCALED"):
+            flags |= pygame.SCALED
         self._screen = pygame.display.set_mode(
-            (self.config.window_width, self.config.window_height)
+            (self.config.window_width, self.config.window_height), flags
         )
         pygame.display.set_caption("Seaman Reborn")
         self._clock = pygame.time.Clock()

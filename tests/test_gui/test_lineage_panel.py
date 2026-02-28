@@ -16,6 +16,16 @@ import pytest
 
 _pygame_mock = MagicMock()
 _pygame_mock.SRCALPHA = 65536
+_pygame_mock.KEYDOWN = 768
+_pygame_mock.K_RETURN = 13
+_pygame_mock.K_KP_ENTER = 271
+_pygame_mock.K_ESCAPE = 27
+_pygame_mock.K_BACKSPACE = 8
+_pygame_mock.K_DELETE = 127
+_pygame_mock.K_LEFT = 276
+_pygame_mock.K_RIGHT = 275
+_pygame_mock.K_HOME = 278
+_pygame_mock.K_END = 279
 _pygame_mock.init.return_value = (6, 0)
 _pygame_mock.font.init.return_value = None
 
@@ -74,6 +84,16 @@ def _reset_mocks():
     widgets_mod.pygame = _pygame_mock
     widgets_mod._FONT = None
     lp_mod.pygame = _pygame_mock
+    _pygame_mock.KEYDOWN = 768
+    _pygame_mock.K_RETURN = 13
+    _pygame_mock.K_KP_ENTER = 271
+    _pygame_mock.K_ESCAPE = 27
+    _pygame_mock.K_BACKSPACE = 8
+    _pygame_mock.K_DELETE = 127
+    _pygame_mock.K_LEFT = 276
+    _pygame_mock.K_RIGHT = 275
+    _pygame_mock.K_HOME = 278
+    _pygame_mock.K_END = 279
     _pygame_mock.draw.reset_mock()
     _surface_mock.reset_mock()
     _font_mock.reset_mock()
@@ -431,3 +451,125 @@ class TestCloseCallback:
         p.open()
         p.close()
         cb.assert_not_called()
+
+
+# ── Rename Tests ──────────────────────────────────────────────────────
+
+
+def _make_key_event(key, unicode_char=""):
+    """Create a mock Pygame KEYDOWN event."""
+    ev = MagicMock()
+    ev.type = _pygame_mock.KEYDOWN
+    ev.key = key
+    ev.unicode = unicode_char
+    return ev
+
+
+class TestRenameMode:
+    """Tests for bloodline rename UI."""
+
+    def test_rename_click_enters_mode(self, panel: LineagePanel):
+        """Clicking Rename enters rename mode with current name."""
+        panel.open()
+        panel._build_widgets()
+        panel._on_rename_click()
+        assert panel._rename_active is True
+        assert panel._rename_text == "default"
+
+    def test_escape_cancels_rename(self, panel: LineagePanel):
+        """Pressing Escape exits rename mode without changes."""
+        panel.open()
+        panel._build_widgets()
+        panel._on_rename_click()
+        event = _make_key_event(_pygame_mock.K_ESCAPE)
+        panel.handle_event(event)
+        assert panel._rename_active is False
+
+    def test_enter_commits_rename(self, panel: LineagePanel, save_dir: Path):
+        """Pressing Enter commits the rename."""
+        panel.open()
+        panel._build_widgets()
+        panel._on_rename_click()
+        panel._rename_text = "renamed_bl"
+        panel._rename_cursor = len("renamed_bl")
+        event = _make_key_event(_pygame_mock.K_RETURN)
+        panel.handle_event(event)
+        assert panel._rename_active is False
+        assert (save_dir / "renamed_bl" / "creature.json").exists()
+        assert not (save_dir / "default").exists()
+
+    def test_typing_inserts_characters(self, panel: LineagePanel):
+        """Typing printable characters inserts them at cursor."""
+        panel.open()
+        panel._build_widgets()
+        panel._on_rename_click()
+        panel._rename_text = ""
+        panel._rename_cursor = 0
+        for ch in "abc":
+            event = _make_key_event(ord(ch), ch)
+            panel.handle_event(event)
+        assert panel._rename_text == "abc"
+        assert panel._rename_cursor == 3
+
+    def test_backspace_deletes_char(self, panel: LineagePanel):
+        """Backspace deletes the character before cursor."""
+        panel.open()
+        panel._build_widgets()
+        panel._on_rename_click()
+        panel._rename_text = "hello"
+        panel._rename_cursor = 5
+        event = _make_key_event(_pygame_mock.K_BACKSPACE)
+        panel.handle_event(event)
+        assert panel._rename_text == "hell"
+        assert panel._rename_cursor == 4
+
+    def test_handle_event_not_consumed_when_hidden(self, panel: LineagePanel):
+        """Events are not consumed when panel is hidden."""
+        event = _make_key_event(_pygame_mock.K_RETURN)
+        assert panel.handle_event(event) is False
+
+    def test_handle_event_not_consumed_outside_rename(self, panel: LineagePanel):
+        """Events are not consumed when not in rename mode."""
+        panel.open()
+        event = _make_key_event(_pygame_mock.K_RETURN)
+        assert panel.handle_event(event) is False
+
+    def test_rename_no_bloodlines_noop(self, tmp_path: Path):
+        """Rename click with empty list is a noop."""
+        empty = tmp_path / "empty"
+        empty.mkdir()
+        p = LineagePanel(save_base_dir=str(empty))
+        p.open()
+        p._build_widgets()
+        p._on_rename_click()
+        assert p._rename_active is False
+
+    def test_rename_same_name_cancels(self, panel: LineagePanel):
+        """Committing with the same name just cancels."""
+        panel.open()
+        panel._build_widgets()
+        panel._on_rename_click()
+        # Don't change text — it's already "default"
+        event = _make_key_event(_pygame_mock.K_RETURN)
+        panel.handle_event(event)
+        assert panel._rename_active is False
+        assert "Renamed" not in panel._status_text
+
+    def test_rename_invalid_shows_error(self, panel: LineagePanel):
+        """Renaming to invalid name shows error status."""
+        panel.open()
+        panel._build_widgets()
+        panel._on_rename_click()
+        panel._rename_text = "_bad"
+        panel._rename_cursor = 4
+        event = _make_key_event(_pygame_mock.K_RETURN)
+        panel.handle_event(event)
+        assert panel._rename_active is False
+        assert "failed" in panel._status_text.lower()
+
+    def test_render_rename_input(self, panel: LineagePanel):
+        """Rendering in rename mode doesn't crash."""
+        panel.open()
+        panel._build_widgets()
+        panel._on_rename_click()
+        panel.render(_surface_mock)  # Should not raise

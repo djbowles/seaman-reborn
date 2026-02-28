@@ -19,7 +19,7 @@ from seaman_brain.conversation.context_assembler import ContextAssembler
 from seaman_brain.creature.evolution import EvolutionEngine
 from seaman_brain.creature.persistence import StatePersistence
 from seaman_brain.creature.state import CreatureState
-from seaman_brain.llm.base import LLMProvider
+from seaman_brain.llm.base import LLMProvider, ToolCapableLLM
 from seaman_brain.llm.factory import create_provider
 from seaman_brain.memory.embeddings import EmbeddingProvider
 from seaman_brain.memory.episodic import EpisodicMemory
@@ -35,6 +35,25 @@ logger = logging.getLogger(__name__)
 _LLM_CHAT_TIMEOUT = 120.0
 _LLM_WARMUP_TIMEOUT = 60.0
 _LLM_STREAM_TOKEN_TIMEOUT = 30.0  # max seconds between tokens before aborting
+_TOOL_MAX_ITERATIONS = 3
+_VISION_POLL_TIMEOUT = 30.0  # seconds to wait for vision observation
+
+# Ollama function-calling tool definition for "look_at_user"
+_LOOK_AT_USER_TOOL: dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": "look_at_user",
+        "description": (
+            "Look at the user through the webcam to see what they look like "
+            "or what is happening in their environment."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+    },
+}
 
 
 class ConversationManager:
@@ -87,6 +106,7 @@ class ConversationManager:
         self._context_assembler: ContextAssembler | None = None
         self._traits: TraitProfile | None = None
         self._vision_observations: list[str] = []
+        self._vision_bridge: Any = None  # VisionBridge, set via set_vision_bridge()
 
     @property
     def creature_state(self) -> CreatureState | None:
@@ -102,6 +122,15 @@ class ConversationManager:
     def is_initialized(self) -> bool:
         """Whether initialize() has been called."""
         return self._initialized
+
+    def set_vision_bridge(self, bridge: Any) -> None:
+        """Set the VisionBridge for LLM-initiated vision.
+
+        Args:
+            bridge: A VisionBridge instance (or any object with
+                trigger_observation() and get_recent_observations()).
+        """
+        self._vision_bridge = bridge
 
     def set_vision_observations(self, observations: list[str]) -> None:
         """Update the current vision observations for prompt injection.
@@ -261,12 +290,17 @@ class ConversationManager:
                 logger.warning("Memory retrieval failed: %s", exc)
 
         # 5. Build system prompt
+        use_tools = (
+            self._vision_bridge is not None
+            and isinstance(self._llm, ToolCapableLLM)
+        )
         system_prompt = self._prompt_builder.build(
             stage=self._creature_state.stage,
             traits=self._traits,
             memories=memory_texts if memory_texts else None,
             creature_state=self._creature_state.to_dict(),
             observations=self._vision_observations if self._vision_observations else None,
+            vision_tool_available=use_tools,
         )
 
         # 6. Assemble context
@@ -277,11 +311,14 @@ class ConversationManager:
             retrieved_memories=None,  # Already injected into system prompt
         )
 
-        # 7. LLM chat
+        # 7. LLM chat (with optional tool loop for vision)
         try:
-            raw_response = await asyncio.wait_for(
-                self._llm.chat(context), timeout=_LLM_CHAT_TIMEOUT
-            )
+            if use_tools:
+                raw_response = await self._tool_loop(context)
+            else:
+                raw_response = await asyncio.wait_for(
+                    self._llm.chat(context), timeout=_LLM_CHAT_TIMEOUT
+                )
         except Exception as exc:
             logger.error("LLM chat failed: %s", exc)
             return self._fallback_response(evolved)
@@ -611,6 +648,91 @@ class ConversationManager:
             self._save_state()
             logger.info("State saved during shutdown.")
         self._initialized = False
+
+    async def _tool_loop(self, context: list[Any]) -> str:
+        """Run the LLM with tool-calling support, executing tools as needed.
+
+        Calls chat_with_tools in a loop. If the LLM returns tool_calls,
+        executes them and feeds results back. Stops after a text response
+        or _TOOL_MAX_ITERATIONS iterations.
+
+        Args:
+            context: The assembled conversation context.
+
+        Returns:
+            The final text response from the LLM.
+        """
+        assert isinstance(self._llm, ToolCapableLLM)
+        from seaman_brain.types import ChatMessage, MessageRole
+
+        messages = list(context)
+        tools = [_LOOK_AT_USER_TOOL]
+
+        for _ in range(_TOOL_MAX_ITERATIONS):
+            result = await asyncio.wait_for(
+                self._llm.chat_with_tools(messages, tools),
+                timeout=_LLM_CHAT_TIMEOUT,
+            )
+
+            tool_calls = result.get("tool_calls")
+            content = result.get("content")
+
+            if not tool_calls:
+                return content or ""
+
+            # Execute each tool call
+            for tc in tool_calls:
+                func_name = tc.get("function", {}).get("name", "")
+                if func_name == "look_at_user":
+                    tool_result = await self._execute_look_at_user()
+                else:
+                    tool_result = f"Unknown tool: {func_name}"
+
+                # Append assistant message with tool call info
+                if content:
+                    messages.append(
+                        ChatMessage(role=MessageRole.ASSISTANT, content=content)
+                    )
+                    content = None  # Only append once
+
+                # Append tool result
+                messages.append(
+                    ChatMessage(role=MessageRole.TOOL, content=tool_result)
+                )
+
+            logger.info("Tool loop: executed %d tool calls", len(tool_calls))
+
+        # Max iterations reached — return whatever content we have
+        logger.warning("Tool loop reached max iterations (%d)", _TOOL_MAX_ITERATIONS)
+        return content or ""
+
+    async def _execute_look_at_user(self) -> str:
+        """Execute the look_at_user tool — capture webcam and return observation.
+
+        Returns:
+            The vision observation text, or an error message.
+        """
+        if self._vision_bridge is None:
+            return "Vision is not available."
+
+        bridge = self._vision_bridge
+        prev_count = len(bridge.get_recent_observations())
+
+        # Trigger a capture (screen=None since we're not in the render thread)
+        bridge.trigger_observation(None)
+
+        # Poll for the result
+        start = asyncio.get_event_loop().time()
+        while asyncio.get_event_loop().time() - start < _VISION_POLL_TIMEOUT:
+            await asyncio.sleep(0.5)
+            current = bridge.get_recent_observations()
+            if len(current) > prev_count:
+                observation = current[0]  # Most recent
+                logger.info("LLM-initiated vision captured: %s", observation[:80])
+                return f"You looked at the user and saw: {observation}"
+
+        logger.warning("LLM-initiated vision timed out after %.0fs", _VISION_POLL_TIMEOUT)
+        return "You tried to look but couldn't see anything right now."
 
     def _save_state(self) -> None:
         """Persist creature state to disk, with error logging."""

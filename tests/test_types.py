@@ -38,13 +38,14 @@ class TestCreatureStage:
 class TestMessageRole:
     """Tests for the MessageRole enum."""
 
-    def test_has_three_roles(self):
-        assert len(MessageRole) == 3
+    def test_has_four_roles(self):
+        assert len(MessageRole) == 4
 
     def test_role_values(self):
         assert MessageRole.SYSTEM.value == "system"
         assert MessageRole.USER.value == "user"
         assert MessageRole.ASSISTANT.value == "assistant"
+        assert MessageRole.TOOL.value == "tool"
 
 
 class TestChatMessage:

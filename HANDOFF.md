@@ -2,7 +2,7 @@
 
 ## Project Status
 
-The Python "brain" backend is **feature-complete**: 2533 tests passing, ruff clean, all 52 user stories implemented across 14 subpackages (llm, personality, memory, creature, conversation, cli, audio, environment, needs, behavior, gui, api, vision).
+The Python "brain" backend is **feature-complete**: 2573 tests passing, ruff clean, all 52 user stories implemented across 14 subpackages (llm, personality, memory, creature, conversation, cli, audio, environment, needs, behavior, gui, api, vision). LLM-initiated vision via tool-use/function-calling is wired end-to-end.
 
 - **Repo**: https://github.com/djbowles/seaman-reborn (private)
 - **Branch**: `ralph/ai-brain-core` (all work), `main` (base)
@@ -312,9 +312,6 @@ The `--gui` mode now launches `GameEngine` (was launching bare `GameWindow` with
 - Verify chat panel Send button click works end-to-end with ConversationManager
 - Chat panel input may need focus management (currently always captures keys when visible)
 - Action bar drain/fill button may need visual state indicator (drained vs filled)
-- No food selection submenu from ActionBar — Feed button auto-picks first available food type
-- HUD compact mode may be too small on high-DPI displays — may need scaling support
-- Lineage manager: rename bloodline not yet implemented (panel has list/new/load/delete only)
 - Lineage manager: switching bloodline does not yet reinitialize ConversationManager with new save path (callbacks are stubs that log + notify)
 - Device dropdowns: selecting a device updates config but doesn't reinitialize TTS/STT providers at runtime
 - Intermittent crash on settings exit — traceback logging now in place, needs reproduction to diagnose
@@ -486,6 +483,56 @@ Three-pronged throttle on autonomous verbal behaviors:
 - **Global verbal cooldown**: 120s lockout after ANY verbal behavior fires, blocking all COMPLAIN + OBSERVE
 - **Check interval tripled**: `_BEHAVIOR_CHECK_INTERVAL` 5s→15s in `game_loop.py`
 - 3 new tests validate cooldown blocking, expiry, and reset
+
+## GUI Gaps Closed + LLM-Initiated Vision (2026-02-28)
+
+Four features implemented, closing the remaining GUI gaps and adding LLM tool-use for autonomous vision. 2573 tests passing, ruff clean.
+
+### 1. HUD DPI Scaling
+- **File:** `gui/window.py` — `pygame.SCALED` flag added to `display.set_mode()` with `hasattr` guard for compatibility
+- Auto-scales entire window uniformly on high-DPI displays
+- 2 new tests: flag passed when available, graceful fallback when absent
+
+### 2. Food Selection Submenu
+- **File:** `gui/game_loop.py` — When Feed button clicked and multiple food types available, shows a popup overlay listing food names near the action bar
+- Single food type auto-feeds (preserves current behavior)
+- Click dispatches correct food type, outside click or ESC closes menu
+- Hover highlighting, semi-transparent background overlay
+- 6 new tests: single auto-feeds, multiple shows menu, click dispatches, outside click closes, ESC closes, no food notification
+
+### 3. Lineage Rename
+- **File:** `creature/persistence.py` — `StatePersistence.rename_bloodline(old, new)` with validation (empty names, path separators, underscore prefix, collision, source missing). Updates `_active.txt` if renaming active bloodline.
+- **File:** `gui/lineage_panel.py` — Rename button (4th button), inline text input mode (Enter commits, ESC cancels, full text editing). Buttons hidden during rename, text input box shown instead.
+- **File:** `gui/game_loop.py` — Key events forwarded to lineage panel in LINEAGE state (was consuming them)
+- 8 new persistence tests + 11 new panel tests
+
+### 4. LLM-Initiated Vision (Tool-Use / Function Calling)
+
+The creature can now autonomously decide to look at the user via webcam.
+
+**4a. TOOL message role** — `types.py`: Added `TOOL = "tool"` to `MessageRole` enum
+
+**4b. ToolCapableLLM protocol** — `llm/base.py`: New `@runtime_checkable` protocol with `chat_with_tools(messages, tools) -> dict` returning `{"content": str|None, "tool_calls": list|None}`. Separate from `LLMProvider` to avoid breaking other providers.
+
+**4c. OllamaProvider.chat_with_tools()** — `llm/ollama_provider.py`: Uses Ollama's native `tools` parameter on `AsyncClient.chat()`. Extracts `response.message.tool_calls` into normalized `[{"function": {"name", "arguments"}}]` format.
+
+**4d. Tool execution loop** — `conversation/manager.py`:
+- `_vision_bridge` field + `set_vision_bridge()` public method
+- `_LOOK_AT_USER_TOOL` Ollama function schema definition
+- `_tool_loop()`: calls `chat_with_tools`, executes returned tools, appends TOOL messages, re-calls (max 3 iterations)
+- `_execute_look_at_user()`: triggers `bridge.trigger_observation()`, polls for result (up to 30s), returns observation text
+- `process_input()` modified: when vision bridge set and LLM is `ToolCapableLLM`, uses `_tool_loop` instead of plain `chat()`
+
+**4e. System prompt hint** — `personality/prompt_builder.py`: When no observations present but `vision_tool_available=True`, adds "VISION CAPABILITY" section hinting about `look_at_user` tool. Omitted when observations already present.
+
+**4f. Bridge wiring** — `gui/game_loop.py`: After manager initialized and vision bridge exists, calls `manager.set_vision_bridge()` once.
+
+**Key design decisions:**
+- Tool-use is non-streaming (Ollama sends tool calls as complete responses)
+- Max 3 tool iterations prevents infinite loops
+- Only `process_input()` gets tool support (not `process_input_stream()`)
+
+**Tests:** 4 new OllamaProvider tests (protocol, content, tool_calls, error), 4 new manager tests (no tools, no calls, single call, max iterations), 2 bridge tests, 3 prompt builder tests.
 
 ## Minor Code Issues (non-blocking)
 

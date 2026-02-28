@@ -1713,3 +1713,104 @@ class TestDeadLoopFallback:
         from seaman_brain.gui.game_loop import _PENDING_TIMEOUT
 
         assert _PENDING_TIMEOUT == 60.0
+
+
+# ── Food Submenu Tests ──────────────────────────────────────────────
+
+
+def _make_collide_rect(x, y, w, h):
+    """Create a Rect mock with working collidepoint."""
+    r = MagicMock()
+    r.x = x
+    r.y = y
+    r.width = w
+    r.height = h
+    r.collidepoint = lambda mx, my: x <= mx < x + w and y <= my < y + h
+    return r
+
+
+class TestFoodSubmenu:
+    """Tests for food selection popup menu."""
+
+    def test_single_food_auto_feeds(self, engine: GameEngine):
+        """Single available food auto-feeds without showing menu."""
+        # Mushroomer only has NAUTILUS
+        engine._creature_state.stage = CreatureStage.MUSHROOMER
+        engine._on_action_bar("feed")
+        assert not engine._food_menu_visible
+
+    def test_multiple_foods_shows_menu(self, engine: GameEngine):
+        """Multiple available foods opens the submenu."""
+        engine._creature_state.stage = CreatureStage.PODFISH  # pellet, worm, insect
+        engine._on_action_bar("feed")
+        assert engine._food_menu_visible
+        assert len(engine._food_menu_items) == 3
+
+    def test_menu_click_feeds_correct_type(self, engine: GameEngine):
+        """Clicking a food menu item feeds the correct food type."""
+        engine._creature_state.stage = CreatureStage.PODFISH
+        engine._on_action_bar("feed")
+        assert engine._food_menu_visible
+
+        # Patch Rect to support collidepoint
+        items = []
+        for food, rect in engine._food_menu_items:
+            real_rect = _make_collide_rect(rect.x, rect.y, rect.width, rect.height)
+            items.append((food, real_rect))
+        engine._food_menu_items = items
+
+        # Click the first item
+        first_food, first_rect = items[0]
+        click_event = MagicMock()
+        click_event.type = _pygame_mock.MOUSEBUTTONDOWN
+        click_event.pos = (first_rect.x + 5, first_rect.y + 5)
+
+        with patch.object(engine, "_feed_creature") as mock_feed:
+            engine._on_mouse_click(click_event)
+            mock_feed.assert_called_once_with(first_food)
+        assert not engine._food_menu_visible
+
+    def test_outside_click_closes_menu(self, engine: GameEngine):
+        """Clicking outside the food menu closes it."""
+        engine._creature_state.stage = CreatureStage.PODFISH
+        engine._on_action_bar("feed")
+        assert engine._food_menu_visible
+
+        # Replace rects with working collidepoint
+        items = []
+        for food, rect in engine._food_menu_items:
+            real_rect = _make_collide_rect(rect.x, rect.y, rect.width, rect.height)
+            items.append((food, real_rect))
+        engine._food_menu_items = items
+
+        # Click far away from menu
+        click_event = MagicMock()
+        click_event.type = _pygame_mock.MOUSEBUTTONDOWN
+        click_event.pos = (0, 0)
+        engine._on_mouse_click(click_event)
+        assert not engine._food_menu_visible
+
+    def test_escape_closes_menu(self, engine: GameEngine):
+        """ESC key closes the food menu."""
+        engine._creature_state.stage = CreatureStage.PODFISH
+        engine.window.running = True
+        engine._on_action_bar("feed")
+        assert engine._food_menu_visible
+
+        esc_event = MagicMock()
+        esc_event.key = _pygame_mock.K_ESCAPE
+        engine._on_key_down(esc_event)
+        assert not engine._food_menu_visible
+        # Window should NOT quit (ESC was consumed by food menu)
+        assert engine.window.running is True
+
+    def test_no_food_shows_notification(self, engine: GameEngine):
+        """No available food shows notification."""
+        engine._creature_state.stage = CreatureStage.MUSHROOMER
+        # Mock feeding engine to return empty
+        engine._interaction_manager.feeding_engine.get_available_foods = MagicMock(
+            return_value=[]
+        )
+        engine._on_action_bar("feed")
+        assert not engine._food_menu_visible
+        assert any("No food" in t for t, _ in engine._notifications)

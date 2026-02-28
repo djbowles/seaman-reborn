@@ -7,6 +7,7 @@ for local inference via the Ollama API server.
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from typing import Any
 
 from ollama import AsyncClient
 
@@ -66,6 +67,54 @@ class OllamaProvider:
                 f"Failed to connect to Ollama at {self.base_url}: {exc}"
             ) from exc
         return response.message.content or ""
+
+    async def chat_with_tools(
+        self,
+        messages: list[ChatMessage],
+        tools: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Send messages with tool definitions via Ollama's tools parameter.
+
+        Args:
+            messages: Ordered conversation history.
+            tools: Tool definitions in Ollama function-calling format.
+
+        Returns:
+            Dict with "content" (str | None) and "tool_calls" (list | None).
+
+        Raises:
+            ConnectionError: If the Ollama server is unreachable.
+        """
+        try:
+            response = await self._client.chat(
+                model=self.model,
+                messages=self._format_messages(messages),
+                tools=tools,
+                options={
+                    "temperature": self.temperature,
+                    "num_ctx": self.num_ctx,
+                    "num_predict": self.num_predict,
+                },
+            )
+        except Exception as exc:
+            raise ConnectionError(
+                f"Failed to connect to Ollama at {self.base_url}: {exc}"
+            ) from exc
+
+        content = response.message.content or None
+        tool_calls = None
+        if hasattr(response.message, "tool_calls") and response.message.tool_calls:
+            tool_calls = [
+                {
+                    "function": {
+                        "name": tc.function.name,
+                        "arguments": tc.function.arguments,
+                    }
+                }
+                for tc in response.message.tool_calls
+            ]
+
+        return {"content": content, "tool_calls": tool_calls}
 
     async def stream(self, messages: list[ChatMessage]) -> AsyncIterator[str]:
         """Send messages to Ollama and stream response chunks.
