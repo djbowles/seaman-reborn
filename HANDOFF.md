@@ -416,6 +416,44 @@ Four-phase infrastructure upgrade addressing LLM token misconfiguration, VRAM sc
 - `tests/test_audio/test_stt.py` — Faster-Whisper provider tests (init, listen, factory, fallback)
 - `tests/test_conversation/test_manager.py` — Updated autonomous remark test for USER message pattern
 
+## Display Freeze Fix + Lineage Close Fix (2026-02-27)
+
+Resolved persistent display freeze where the game appeared alive (tank, creature, HUD drawn) but was completely unresponsive — nothing moved, buttons didn't work, chat was dead.
+
+### Root Causes Found
+
+1. **Blocking main thread on settings open** — `_toggle_settings()` called `refresh_device_lists()` synchronously. This probes webcams via `cv2.VideoCapture()` (1-5s each) and calls `pyttsx3.init()` (COM/SAPI5). With TTS already running on a background thread, `pyttsx3.init()` on the main thread caused a COM apartment deadlock.
+
+2. **Unprotected `_update()` sections** — ~15 unprotected calls in the main update loop. If ANY threw, the entire `_update()` callback was caught by `window.py` but ALL subsequent lines were skipped — animations, pending responses, STT, vision all dead. The renderer still drew the last state (frozen scene).
+
+3. **Lineage panel X button didn't restore game state** — `LineagePanel.close()` set `visible = False` but never told `GameEngine` to switch `_game_state` back from `LINEAGE` to `PLAYING`. The game loop's `_update()` kept early-returning on the LINEAGE guard, freezing gameplay with an invisible overlay.
+
+### Fixes Applied
+
+| Change | Files |
+|--------|-------|
+| **Diagnostic heartbeat** — logs game state, pending flags, frame count every 30s | `game_loop.py` |
+| **State transition logging** — `"Game state: PLAYING -> SETTINGS"` etc. on every toggle | `game_loop.py` |
+| **Async device refresh** — `refresh_device_lists()` dispatched to daemon thread; results queued via `_pending_refresh` and applied on main thread by `apply_pending_refresh()` | `game_loop.py`, `settings_panel.py` |
+| **`_update()` try-except hardening** — 6 granular blocks (tank, death, mood, behavior/events, animations, audio/vision, notifications/STT) | `game_loop.py` |
+| **Webcam capture timeout** — `ThreadPoolExecutor` with 5s timeout prevents blocking caller | `vision/capture.py` |
+| **Lineage `on_close` callback** — X button now fires `_on_lineage_close()` to restore `PLAYING` state (matching SettingsPanel pattern) | `lineage_panel.py`, `game_loop.py` |
+| **Overlay stacking guard** — F1 while lineage open closes lineage first (and vice versa) | `game_loop.py` |
+
+### Commits
+- `2ddcd88` — display freeze fix (async device refresh, update hardening, capture timeout)
+- `8734ea7` — lineage panel X button state restore
+
+---
+
+## Next Up
+
+1. **Better voice output** — pyttsx3 SAPI5 sounds robotic. Kokoro is implemented but needs evaluation. Explore other options: Piper, Coqui, edge-tts, or other neural TTS that runs locally on GPU. Goal: natural-sounding creature voice with low latency.
+
+2. **Reduce idle chatter by ~75%** — Creature makes too many autonomous remarks. The behavior engine checks every 5s (`_BEHAVIOR_CHECK_INTERVAL`). Need to either increase the interval, reduce the probability of verbal behaviors in `BehaviorEngine.get_idle_behavior()`, or add a cooldown between autonomous LLM remarks.
+
+---
+
 ## Minor Code Issues (non-blocking)
 
 - `callable` lowercase type hints in `needs/feeding.py:93`, `needs/care.py:90`, `gui/chat_panel.py:77`
