@@ -548,6 +548,23 @@ class TestKokoroTTSProviderSynthesize:
             )
 
 
+    @pytest.mark.asyncio
+    async def test_invalid_voice_falls_back_to_default(self):
+        """Invalid voice name (e.g. pyttsx3 placeholder) falls back to af_heart."""
+        config = AudioConfig(tts_voice="Some Voice")
+        mock_kokoro, mock_pipeline = _mock_kokoro()
+        mock_sf = _mock_soundfile()
+        with patch.dict(sys.modules, {
+            "kokoro": mock_kokoro,
+            "soundfile": mock_sf,
+        }):
+            provider = KokoroTTSProvider(config)
+            await provider.synthesize("Test")
+            mock_pipeline.assert_called_once_with(
+                "Test", voice="af_heart", speed=1.0
+            )
+
+
 class TestKokoroTTSProviderSpeak:
     """Test speak with mocked kokoro + sounddevice."""
 

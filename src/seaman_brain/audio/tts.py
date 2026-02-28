@@ -314,6 +314,12 @@ class KokoroTTSProvider:
             import soundfile as sf
 
             voice = self._config.tts_voice or "af_heart"
+            # Kokoro voices follow xx_name pattern (e.g. am_michael).
+            # Reject anything else (stale pyttsx3 names, placeholders)
+            # to avoid 404s downloading non-existent .pt files.
+            if not re.match(r"^[a-z]{2}_[a-z]+$", voice):
+                logger.warning("Invalid Kokoro voice %r, falling back to af_heart", voice)
+                voice = "af_heart"
             speed = max(0.5, min(2.0, self._config.tts_speed))
             text = self._clean_for_tts(text)
 
