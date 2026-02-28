@@ -293,6 +293,7 @@ class GameEngine:
             on_switch=self._switch_bloodline,
             on_new=self._new_bloodline,
             on_delete=self._delete_bloodline,
+            on_close=self._on_lineage_close,
         )
 
         # Register event handlers
@@ -1124,6 +1125,9 @@ class GameEngine:
             self._game_state = GameState.PLAYING
             self._settings_panel.close()
         else:
+            # Close lineage overlay first if open
+            if self._game_state == GameState.LINEAGE and self._lineage_panel is not None:
+                self._lineage_panel.close()
             logger.info("Game state: %s -> SETTINGS", self._game_state.value)
             self._game_state = GameState.SETTINGS
             self._settings_panel.open()
@@ -1139,6 +1143,11 @@ class GameEngine:
     def _on_settings_close(self) -> None:
         """Callback when settings panel X button is clicked."""
         logger.info("Game state: SETTINGS -> PLAYING (panel closed)")
+        self._game_state = GameState.PLAYING
+
+    def _on_lineage_close(self) -> None:
+        """Callback when lineage panel X button is clicked."""
+        logger.info("Game state: LINEAGE -> PLAYING (panel closed)")
         self._game_state = GameState.PLAYING
 
     def _load_model_list_async(self) -> None:
@@ -1553,12 +1562,16 @@ class GameEngine:
             logger.info("Game state: LINEAGE -> PLAYING")
             self._game_state = GameState.PLAYING
         else:
+            # Close settings overlay first if open
+            if self._game_state == GameState.SETTINGS and self._settings_panel is not None:
+                self._settings_panel.close()
             try:
                 self._lineage_panel.open()
                 logger.info("Game state: %s -> LINEAGE", self._game_state.value)
                 self._game_state = GameState.LINEAGE
             except Exception as exc:
                 logger.error("Lineage panel open failed: %s", exc, exc_info=True)
+                self._game_state = GameState.PLAYING
                 self._add_notification("Failed to open lineage panel")
 
     def _toggle_mic(self) -> None:

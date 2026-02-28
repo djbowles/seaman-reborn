@@ -400,3 +400,34 @@ class TestClickHandling:
         panel.open()
         panel.render(_surface_mock)
         panel.handle_mouse_move(500, 400)
+
+
+class TestCloseCallback:
+    """Tests for the on_close callback when X button is clicked."""
+
+    def test_close_button_fires_on_close(self, save_dir: Path):
+        """Clicking the X button fires the on_close callback."""
+        cb = MagicMock()
+        p = LineagePanel(save_base_dir=str(save_dir), on_close=cb)
+        p.open()
+        p.render(_surface_mock)  # Build widgets
+
+        # Invoke the close button's callback directly
+        p._close()
+        assert p.visible is False
+        cb.assert_called_once()
+
+    def test_close_without_callback_no_crash(self, panel: LineagePanel):
+        """_close works even when on_close is None."""
+        panel.open()
+        panel.render(_surface_mock)
+        panel._close()  # Should not raise
+        assert panel.visible is False
+
+    def test_programmatic_close_does_not_fire_callback(self, save_dir: Path):
+        """close() (not _close) does not fire on_close."""
+        cb = MagicMock()
+        p = LineagePanel(save_base_dir=str(save_dir), on_close=cb)
+        p.open()
+        p.close()
+        cb.assert_not_called()

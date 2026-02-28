@@ -64,6 +64,7 @@ class LineagePanel:
         on_switch: Callable[[str], Any] | None = None,
         on_new: Callable[[str], Any] | None = None,
         on_delete: Callable[[str], Any] | None = None,
+        on_close: Callable[[], Any] | None = None,
     ) -> None:
         self._screen_w = screen_width
         self._screen_h = screen_height
@@ -71,6 +72,7 @@ class LineagePanel:
         self.on_switch = on_switch
         self.on_new = on_new
         self.on_delete = on_delete
+        self.on_close = on_close
 
         self.visible = False
 
@@ -129,7 +131,7 @@ class LineagePanel:
 
         self._close_button = Button(
             px + _PANEL_WIDTH - 36, py + 4, 28, 28, "X",
-            on_click=self.close,
+            on_click=self._close,
         )
 
         self._new_button = Button(
@@ -425,6 +427,12 @@ class LineagePanel:
             self._hovered_index = -1
 
     # ── Callbacks ─────────────────────────────────────────────────────
+
+    def _close(self) -> None:
+        """Close the panel and notify the owner to restore game state."""
+        self.close()
+        if self.on_close is not None:
+            self.on_close()
 
     def _on_new_click(self) -> None:
         """Handle New button click — create a bloodline."""
