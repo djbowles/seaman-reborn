@@ -81,7 +81,7 @@ stimulation_decay_rate = 0.015
 critical_hunger_threshold = 0.8
 critical_health_threshold = 0.2
 starvation_time_hours = 1.0
-feeding_cooldown_seconds = 30
+feeding_cooldown_seconds = 8
 
 [vision]
 enabled = false

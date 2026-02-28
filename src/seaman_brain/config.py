@@ -144,7 +144,7 @@ class NeedsConfig(BaseModel):
     critical_hunger_threshold: float = 0.8
     critical_health_threshold: float = 0.2
     starvation_time_hours: float = 1.0
-    feeding_cooldown_seconds: int = 30
+    feeding_cooldown_seconds: int = 8
 
 
 class VisionConfig(BaseModel):

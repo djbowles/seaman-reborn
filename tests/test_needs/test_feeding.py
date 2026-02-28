@@ -174,7 +174,7 @@ class TestFeedingEngineInit:
 
     def test_default_config(self) -> None:
         engine = FeedingEngine()
-        assert engine.config.feeding_cooldown_seconds == 30
+        assert engine.config.feeding_cooldown_seconds == 8
 
     def test_custom_config(self, config: NeedsConfig) -> None:
         engine = FeedingEngine(config=config)

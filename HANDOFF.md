@@ -539,6 +539,10 @@ The creature can now autonomously decide to look at the user via webcam.
 - **Fix:** `audio/tts.py` — `_synthesize_sync()` now validates voice IDs against `^[a-z]{2}_[a-z]+$` regex (Kokoro naming convention like `am_michael`). Invalid names log a warning and fall back to `af_heart`.
 - 1 new test: `test_invalid_voice_falls_back_to_default`
 
+### Feeding Cooldown Reduced 75%
+- **Files:** `config.py`, `config/default.toml`
+- `feeding_cooldown_seconds` lowered from 30s to 8s for more responsive gameplay
+
 ## Minor Code Issues (non-blocking)
 
 - `callable` lowercase type hints in `needs/feeding.py:93`, `needs/care.py:90`, `gui/chat_panel.py:77`
