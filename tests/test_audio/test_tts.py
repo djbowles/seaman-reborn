@@ -796,10 +796,8 @@ class TestKokoroPerSentenceFallback:
 class TestEmptyWAVDetection:
     """Tests for header-only WAV detection in pyttsx3."""
 
-    def test_header_only_wav_logged(self, caplog):
-        """Header-only WAV output logs a warning."""
-        import logging
-
+    def test_header_only_wav_raises(self):
+        """Header-only WAV output raises RuntimeError."""
         mock_pyttsx3, mock_engine = _mock_pyttsx3()
         with patch.dict(sys.modules, {"pyttsx3": mock_pyttsx3}):
             provider = Pyttsx3TTSProvider()
@@ -826,7 +824,7 @@ class TestEmptyWAVDetection:
                         mock_stat.return_value.st_size = 44
                         with patch.object(Path, "read_bytes", return_value=header_only):
                             with patch.object(Path, "unlink"):
-                                with caplog.at_level(logging.WARNING):
+                                with pytest.raises(
+                                    RuntimeError, match="TTS produced empty audio"
+                                ):
                                     provider._synthesize_sync("test")
-
-            assert "header-only" in caplog.text

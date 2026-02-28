@@ -34,7 +34,7 @@ from seaman_brain.creature.state import CreatureState
 from seaman_brain.environment.clock import GameClock
 from seaman_brain.environment.tank import EnvironmentType, TankEnvironment
 from seaman_brain.gui.action_bar import ActionBar
-from seaman_brain.gui.audio_integration import PygameAudioBridge
+from seaman_brain.gui.audio_integration import AudioChannel, PygameAudioBridge
 from seaman_brain.gui.chat_panel import ChatPanel
 from seaman_brain.gui.hud import HUD
 from seaman_brain.gui.interactions import InteractionManager, InteractionType
@@ -1252,10 +1252,13 @@ class GameEngine:
                         self._audio_manager.sfx_enabled = value
                 elif key == "tts_volume":
                     self._audio_bridge._config.tts_volume = value
+                    self._audio_bridge.set_volume(AudioChannel.VOICE, value)
                 elif key == "sfx_volume":
                     self._audio_bridge._config.sfx_volume = value
+                    self._audio_bridge.set_volume(AudioChannel.SFX, value)
                 elif key == "ambient_volume":
                     self._audio_bridge._config.ambient_volume = value
+                    self._audio_bridge.set_volume(AudioChannel.AMBIENT, value)
                 elif key == "stt_enabled":
                     self._audio_bridge._config.stt_enabled = value
                     if self._audio_manager is not None:
@@ -1288,12 +1291,7 @@ class GameEngine:
                 elif key == "audio_input_device":
                     device_name = str(value)
                     if self._audio_manager is not None:
-                        stt = self._audio_manager._stt
-                        from seaman_brain.audio.stt import SpeechRecognitionSTTProvider
-                        if isinstance(stt, SpeechRecognitionSTTProvider):
-                            stt.set_input_device(device_name)
-                        elif hasattr(stt, "_config"):
-                            stt._config.audio_input_device = device_name
+                        self._audio_manager.set_input_device(device_name)
                     self._add_notification(f"Mic: {device_name}")
             save_user_settings(self._config)
         except Exception as exc:

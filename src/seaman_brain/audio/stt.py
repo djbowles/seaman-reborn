@@ -39,6 +39,14 @@ class STTProvider(Protocol):
         """
         ...
 
+    def set_input_device(self, device_name: str) -> None:
+        """Change the microphone device at runtime.
+
+        Args:
+            device_name: Device name from settings.
+        """
+        ...
+
 
 class NoopSTTProvider:
     """Silent STT provider used as fallback when no microphone is available."""
@@ -47,6 +55,9 @@ class NoopSTTProvider:
         """Return empty string — no microphone available."""
         logger.debug("NoopSTT: listen() called, returning empty")
         return ""
+
+    def set_input_device(self, device_name: str) -> None:
+        """No-op — no microphone to configure."""
 
 
 class SpeechRecognitionSTTProvider:
@@ -251,6 +262,18 @@ class FasterWhisperSTTProvider:
     def available(self) -> bool:
         """Whether the STT engine is operational."""
         return self._available
+
+    def set_input_device(self, device_name: str) -> None:
+        """Change the microphone device at runtime.
+
+        Args:
+            device_name: Device name from settings. "System Default" or empty
+                resets to the default device.
+        """
+        self._config.audio_input_device = device_name
+        logger.info(
+            "Faster-Whisper input device set to: %s", device_name
+        )
 
     def _listen_sync(self) -> str:
         """Synchronous listen with RMS-based silence detection.

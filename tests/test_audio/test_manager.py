@@ -522,6 +522,19 @@ class TestUpdateTTSVoice:
         assert manager._config.tts_voice == "Any Voice"
 
 
+# ─── set_input_device wrapper ─────────────────────────────────────
+
+
+class TestSetInputDevice:
+    """Test AudioManager.set_input_device delegates to STT provider."""
+
+    def test_delegates_to_stt_provider(self, manager, mock_stt):
+        """set_input_device calls through to STT provider."""
+        mock_stt.set_input_device = MagicMock()
+        manager.set_input_device("Test Mic")
+        mock_stt.set_input_device.assert_called_once_with("Test Mic")
+
+
 # ── Fix #10: STT upgrade returns bool and resets on failure ──────────
 
 
@@ -593,3 +606,96 @@ class TestSTTUpgradeReturnsBool:
             manager.stt_enabled = True
         # Should have reverted because upgrade failed
         assert manager.stt_enabled is False
+
+
+# ── Fix #6: Kokoro auto-fallback to pyttsx3 ──────────────────────────
+
+
+class TestTTSAutoFallback:
+    """Test TTS failure tracking and auto-fallback from Kokoro to pyttsx3."""
+
+    async def test_fallback_after_consecutive_failures(self, mock_stt, sounds_dir):
+        """AudioManager switches from Kokoro to pyttsx3 after 3 failures."""
+        from seaman_brain.audio.tts import KokoroTTSProvider, Pyttsx3TTSProvider
+
+        mock_kokoro = MagicMock(spec=KokoroTTSProvider)
+        mock_kokoro.speak = AsyncMock(side_effect=RuntimeError("synth error"))
+
+        config = AudioConfig()
+        mgr = AudioManager(
+            config=config,
+            tts_provider=mock_kokoro,
+            stt_provider=mock_stt,
+            sounds_dir=sounds_dir,
+        )
+        mgr._tts_enabled = True
+
+        mock_pyttsx3 = MagicMock(spec=Pyttsx3TTSProvider)
+        mock_pyttsx3.available = True
+
+        with patch(
+            "seaman_brain.audio.tts.Pyttsx3TTSProvider",
+            return_value=mock_pyttsx3,
+        ):
+            # First two failures — no fallback yet
+            await mgr.speak("test1")
+            await mgr.speak("test2")
+            assert isinstance(mgr._tts, KokoroTTSProvider)
+
+            # Third failure triggers fallback
+            await mgr.speak("test3")
+            assert mgr._tts is mock_pyttsx3
+            assert mgr._tts_fail_count == 0
+
+    async def test_no_fallback_for_non_kokoro(self, mock_stt, sounds_dir):
+        """Fallback does not trigger for non-Kokoro providers."""
+        mock_tts = AsyncMock()
+        mock_tts.speak = AsyncMock(side_effect=RuntimeError("error"))
+
+        config = AudioConfig()
+        mgr = AudioManager(
+            config=config,
+            tts_provider=mock_tts,
+            stt_provider=mock_stt,
+            sounds_dir=sounds_dir,
+        )
+        mgr._tts_enabled = True
+
+        for _ in range(5):
+            await mgr.speak("test")
+
+        # Still the original provider (not Kokoro, so no fallback)
+        assert mgr._tts is mock_tts
+
+    async def test_success_resets_fail_count(self, mock_stt, sounds_dir):
+        """Successful TTS call resets failure counter."""
+        from seaman_brain.audio.tts import KokoroTTSProvider
+
+        mock_kokoro = MagicMock(spec=KokoroTTSProvider)
+        call_count = 0
+
+        async def flaky_speak(text):
+            nonlocal call_count
+            call_count += 1
+            if call_count <= 2:
+                raise RuntimeError("transient error")
+
+        mock_kokoro.speak = flaky_speak
+
+        config = AudioConfig()
+        mgr = AudioManager(
+            config=config,
+            tts_provider=mock_kokoro,
+            stt_provider=mock_stt,
+            sounds_dir=sounds_dir,
+        )
+        mgr._tts_enabled = True
+
+        # Two failures
+        await mgr.speak("fail1")
+        await mgr.speak("fail2")
+        assert mgr._tts_fail_count == 2
+
+        # Success resets counter
+        await mgr.speak("success")
+        assert mgr._tts_fail_count == 0

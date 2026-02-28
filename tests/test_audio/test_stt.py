@@ -536,3 +536,47 @@ class TestFasterWhisperSTTFactory:
         }):
             provider = create_stt_provider(config)
             assert isinstance(provider, NoopSTTProvider)
+
+
+# ─── set_input_device ─────────────────────────────────────────────
+
+
+class TestSetInputDevice:
+    """Test set_input_device on all STT providers."""
+
+    def test_noop_set_input_device_no_error(self):
+        """NoopSTTProvider.set_input_device is a silent no-op."""
+        provider = NoopSTTProvider()
+        provider.set_input_device("Some Mic")  # Should not raise
+
+    def test_speech_recognition_set_input_device(self):
+        """SpeechRecognitionSTTProvider stores resolved mic index."""
+        mock_mod, _ = _mock_sr()
+        with patch.dict(sys.modules, {"speech_recognition": mock_mod}):
+            provider = SpeechRecognitionSTTProvider()
+            # Mock _resolve_mic_index to return a known index
+            with patch.object(provider, "_resolve_mic_index", return_value=3):
+                provider.set_input_device("Portacapture X6")
+            assert provider._mic_index == 3
+
+    def test_speech_recognition_set_input_device_default(self):
+        """System Default resets mic index to None."""
+        mock_mod, _ = _mock_sr()
+        with patch.dict(sys.modules, {"speech_recognition": mock_mod}):
+            provider = SpeechRecognitionSTTProvider()
+            provider.set_input_device("System Default")
+            assert provider._mic_index is None
+
+    def test_faster_whisper_set_input_device(self):
+        """FasterWhisperSTTProvider stores device name in config."""
+        config = AudioConfig()
+        provider = FasterWhisperSTTProvider(config)
+        provider.set_input_device("Test Microphone")
+        assert provider._config.audio_input_device == "Test Microphone"
+
+    def test_faster_whisper_set_input_device_default(self):
+        """System Default stored as-is in config."""
+        config = AudioConfig()
+        provider = FasterWhisperSTTProvider(config)
+        provider.set_input_device("System Default")
+        assert provider._config.audio_input_device == "System Default"

@@ -20,6 +20,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+_TTS_FALLBACK_THRESHOLD = 3
+
 
 class AudioManager:
     """Unified audio manager coordinating TTS, STT, and sound effects.
@@ -39,6 +41,9 @@ class AudioManager:
         self._tts: TTSProvider = tts_provider or create_tts_provider(self._config)
         self._stt: STTProvider = stt_provider or create_stt_provider(self._config)
         self._sounds_dir = Path(sounds_dir) if sounds_dir else Path("assets/sounds")
+
+        # TTS failure tracking for auto-fallback
+        self._tts_fail_count: int = 0
 
         # Per-channel enable/disable (runtime toggle)
         self._tts_enabled: bool = self._config.tts_enabled
@@ -106,6 +111,36 @@ class AudioManager:
         logger.info("STT provider upgraded to %s", type(provider).__name__)
         return True
 
+    def _try_fallback_tts(self) -> None:
+        """Switch from Kokoro to pyttsx3 after repeated TTS failures."""
+        if self._tts_fail_count < _TTS_FALLBACK_THRESHOLD:
+            return
+        from seaman_brain.audio.tts import KokoroTTSProvider, Pyttsx3TTSProvider
+        if not isinstance(self._tts, KokoroTTSProvider):
+            return
+        logger.warning(
+            "Kokoro TTS failed %d times, falling back to pyttsx3",
+            self._tts_fail_count,
+        )
+        try:
+            fallback = Pyttsx3TTSProvider(self._config)
+            if fallback.available:
+                self._tts = fallback
+                self._tts_fail_count = 0
+                logger.info("TTS provider switched to pyttsx3 (fallback)")
+            else:
+                logger.warning("pyttsx3 fallback also unavailable")
+        except Exception as exc:
+            logger.warning("pyttsx3 fallback creation failed: %s", exc)
+
+    def set_input_device(self, device_name: str) -> None:
+        """Change the STT microphone device at runtime.
+
+        Args:
+            device_name: Device name from settings.
+        """
+        self._stt.set_input_device(device_name)
+
     def update_tts_voice(self, voice_name: str) -> None:
         """Update the TTS voice at runtime.
 
@@ -158,8 +193,11 @@ class AudioManager:
             return
         try:
             await self._tts.speak(text)
+            self._tts_fail_count = 0
         except Exception as exc:
             logger.warning("TTS speak failed: %s", exc)
+            self._tts_fail_count += 1
+            self._try_fallback_tts()
 
     async def synthesize(self, text: str) -> bytes:
         """Synthesize text to audio bytes via the TTS provider.
@@ -178,9 +216,13 @@ class AudioManager:
         if not text or not text.strip():
             return b""
         try:
-            return await self._tts.synthesize(text)
+            result = await self._tts.synthesize(text)
+            self._tts_fail_count = 0
+            return result
         except Exception as exc:
             logger.warning("TTS synthesize failed: %s", exc)
+            self._tts_fail_count += 1
+            self._try_fallback_tts()
             return b""
 
     async def listen(self) -> str:

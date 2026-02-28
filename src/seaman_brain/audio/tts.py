@@ -153,6 +153,7 @@ class Pyttsx3TTSProvider:
                 path.unlink(missing_ok=True)
                 if len(data) <= 44:
                     logger.warning("TTS produced header-only WAV (no audio data)")
+                    raise RuntimeError("TTS produced empty audio")
                 return data
 
             # File missing or empty — engine may have failed silently
@@ -363,10 +364,13 @@ class KokoroTTSProvider:
         if not text or not text.strip():
             return
 
+        # Synthesis — let failures propagate to AudioManager for fallback tracking
+        wav_bytes = self._synthesize_sync(text)
+
+        # Playback — catch errors here (not a TTS failure)
         try:
             import soundfile as sf
 
-            wav_bytes = self._synthesize_sync(text)
             buf = io.BytesIO(wav_bytes)
             data, samplerate = sf.read(buf)
 
@@ -375,7 +379,7 @@ class KokoroTTSProvider:
             sd.play(data, samplerate)
             sd.wait()
         except Exception as exc:
-            logger.warning("Kokoro speak failed: %s", exc, exc_info=True)
+            logger.warning("Kokoro playback failed: %s", exc, exc_info=True)
 
     @staticmethod
     def _empty_wav() -> bytes:
