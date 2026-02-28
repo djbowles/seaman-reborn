@@ -2,7 +2,7 @@
 
 ## Project Status
 
-The Python "brain" backend is **feature-complete**: 2573 tests passing, ruff clean, all 52 user stories implemented across 14 subpackages (llm, personality, memory, creature, conversation, cli, audio, environment, needs, behavior, gui, api, vision). LLM-initiated vision via tool-use/function-calling is wired end-to-end.
+The Python "brain" backend is **feature-complete**: 2574 tests passing, ruff clean, all 52 user stories implemented across 14 subpackages (llm, personality, memory, creature, conversation, cli, audio, environment, needs, behavior, gui, api, vision). LLM-initiated vision via tool-use/function-calling is wired end-to-end.
 
 - **Repo**: https://github.com/djbowles/seaman-reborn (private)
 - **Branch**: `ralph/ai-brain-core` (all work), `main` (base)
@@ -486,7 +486,7 @@ Three-pronged throttle on autonomous verbal behaviors:
 
 ## GUI Gaps Closed + LLM-Initiated Vision (2026-02-28)
 
-Four features implemented, closing the remaining GUI gaps and adding LLM tool-use for autonomous vision. 2573 tests passing, ruff clean.
+Four features implemented, closing the remaining GUI gaps and adding LLM tool-use for autonomous vision. 2574 tests passing, ruff clean.
 
 ### 1. HUD DPI Scaling
 - **File:** `gui/window.py` — `pygame.SCALED` flag added to `display.set_mode()` with `hasattr` guard for compatibility
@@ -533,6 +533,11 @@ The creature can now autonomously decide to look at the user via webcam.
 - Only `process_input()` gets tool support (not `process_input_stream()`)
 
 **Tests:** 4 new OllamaProvider tests (protocol, content, tool_calls, error), 4 new manager tests (no tools, no calls, single call, max iterations), 2 bridge tests, 3 prompt builder tests.
+
+### Kokoro Voice ID Validation Fix (c781fec)
+- **Bug:** `tts_voice = "Some Voice"` (stale pyttsx3 placeholder) persisted in `data/user_settings.toml` after switching to Kokoro TTS. Kokoro tried to download `voices/Some Voice.pt` from HuggingFace, hitting a 404.
+- **Fix:** `audio/tts.py` — `_synthesize_sync()` now validates voice IDs against `^[a-z]{2}_[a-z]+$` regex (Kokoro naming convention like `am_michael`). Invalid names log a warning and fall back to `af_heart`.
+- 1 new test: `test_invalid_voice_falls_back_to_default`
 
 ## Minor Code Issues (non-blocking)
 
