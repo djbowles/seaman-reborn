@@ -584,11 +584,26 @@ class ConversationManager:
         self._creature_state = new_state
         self._traits = get_default_profile(new_state.stage)
 
+        # Clear episodic memory — new creature starts fresh conversation
+        if self._episodic is not None:
+            self._episodic.clear()
+
         # Rebuild prompt builder state for new stage
         if self._prompt_builder is not None:
             logger.info(
                 "Switched bloodline to %s (stage=%s)", name, new_state.stage.value
             )
+
+    def update_personality_traits(self, traits: dict[str, float]) -> None:
+        """Hot-swap personality traits on the live manager.
+
+        Args:
+            traits: Dict of trait names to float values (0.0–1.0).
+        """
+        self._traits = TraitProfile(**{
+            k: v for k, v in traits.items() if k in TraitProfile.__dataclass_fields__
+        })
+        logger.info("Personality traits updated: %s", self._traits)
 
     async def shutdown(self) -> None:
         """Cleanly shut down: save state and release resources."""

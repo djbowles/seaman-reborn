@@ -1438,18 +1438,14 @@ class TestPersonalityPropagation:
     """Tests for runtime personality trait propagation to manager."""
 
     def test_traits_propagated_to_manager(self, engine: GameEngine):
-        """Personality change propagates TraitProfile to manager."""
-        from seaman_brain.personality.traits import TraitProfile
-
+        """Personality change calls update_personality_traits on manager."""
         mock_manager = MagicMock()
-        mock_manager._traits = TraitProfile()
         engine.window._manager = mock_manager
 
         new_traits = {"cynicism": 0.9, "wit": 0.5, "patience": 0.1}
         engine._on_personality_change(new_traits)
 
-        assert mock_manager._traits.cynicism == pytest.approx(0.9)
-        assert mock_manager._traits.wit == pytest.approx(0.5)
+        mock_manager.update_personality_traits.assert_called_once_with(new_traits)
 
     def test_traits_no_crash_without_manager(self, engine: GameEngine):
         """Personality change doesn't crash when no manager."""

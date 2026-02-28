@@ -1205,12 +1205,9 @@ class GameEngine:
         """Callback when personality settings change."""
         try:
             logger.info("Personality traits updated: %s", traits)
-            # Propagate to live ConversationManager
             manager = self.window.manager
-            if manager is not None and hasattr(manager, "_traits"):
-                manager._traits = TraitProfile(**{
-                    k: v for k, v in traits.items() if hasattr(TraitProfile, k)
-                })
+            if manager is not None:
+                manager.update_personality_traits(traits)
             save_user_settings(self._config)
         except Exception as exc:
             logger.error("Personality change error: %s", exc)

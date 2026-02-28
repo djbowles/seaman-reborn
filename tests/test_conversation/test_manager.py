@@ -1142,3 +1142,57 @@ class TestSwitchBloodline:
 
         # Verify old state was saved
         assert (save_base / "default" / "creature.json").exists()
+
+    async def test_switch_clears_episodic_memory(self, tmp_path):
+        """switch_bloodline clears episodic memory so new creature starts fresh."""
+        cfg = _make_config(save_path=str(tmp_path / "saves"))
+        mgr = ConversationManager(config=cfg, llm=MockLLM(), creature_state=CreatureState())
+        await mgr.initialize()
+
+        # Add some messages to episodic memory
+        mgr._episodic.add(ChatMessage(role=MessageRole.USER, content="Hello old creature"))
+        mgr._episodic.add(ChatMessage(role=MessageRole.ASSISTANT, content="Go away."))
+        assert len(mgr._episodic) == 2
+
+        new_state = CreatureState(stage=CreatureStage.GILLMAN)
+        mgr.switch_bloodline("fresh", new_state)
+
+        assert len(mgr._episodic) == 0
+
+
+class TestUpdatePersonalityTraits:
+    """Tests for update_personality_traits() — live trait hot-swap."""
+
+    async def test_updates_traits(self, tmp_path):
+        """update_personality_traits sets a new TraitProfile from dict."""
+        cfg = _make_config(save_path=str(tmp_path / "saves"))
+        mgr = ConversationManager(config=cfg, llm=MockLLM(), creature_state=CreatureState())
+        await mgr.initialize()
+
+        mgr.update_personality_traits({"cynicism": 0.9, "wit": 0.1, "patience": 0.3})
+
+        assert mgr.traits.cynicism == pytest.approx(0.9)
+        assert mgr.traits.wit == pytest.approx(0.1)
+        assert mgr.traits.patience == pytest.approx(0.3)
+
+    async def test_ignores_unknown_keys(self, tmp_path):
+        """update_personality_traits silently ignores keys not in TraitProfile."""
+        cfg = _make_config(save_path=str(tmp_path / "saves"))
+        mgr = ConversationManager(config=cfg, llm=MockLLM(), creature_state=CreatureState())
+        await mgr.initialize()
+
+        mgr.update_personality_traits({"cynicism": 0.8, "bogus_key": 999.0})
+
+        assert mgr.traits.cynicism == pytest.approx(0.8)
+
+    async def test_defaults_unset_fields(self, tmp_path):
+        """Fields not in the dict get TraitProfile defaults."""
+        cfg = _make_config(save_path=str(tmp_path / "saves"))
+        mgr = ConversationManager(config=cfg, llm=MockLLM(), creature_state=CreatureState())
+        await mgr.initialize()
+
+        mgr.update_personality_traits({"cynicism": 0.1})
+
+        assert mgr.traits.cynicism == pytest.approx(0.1)
+        # wit should be the default (0.5)
+        assert mgr.traits.wit == pytest.approx(0.5)
