@@ -9,6 +9,7 @@ from seaman_brain.personality.constraints import (
     _clean_whitespace,
     _max_length_for_verbosity,
     _strip_forbidden,
+    _strip_think_blocks,
     _truncate,
     apply_constraints,
 )
@@ -206,3 +207,50 @@ class TestHelpers:
         assert _max_length_for_verbosity(0.0) == 10
         assert _max_length_for_verbosity(0.5) == 255
         assert _max_length_for_verbosity(1.0) == 500
+
+
+# ---------------------------------------------------------------------------
+# Think block stripping (Qwen3-style <think>...</think>)
+# ---------------------------------------------------------------------------
+
+
+class TestThinkBlockStripping:
+    """Tests for stripping <think> reasoning blocks from LLM output."""
+
+    def test_strip_simple_think_block(self) -> None:
+        text = "<think>\nI should be sarcastic.\n</think>\nUgh, whatever."
+        result = _strip_think_blocks(text)
+        assert "<think>" not in result
+        assert "sarcastic" not in result
+        assert "Ugh, whatever." in result
+
+    def test_strip_think_block_inline(self) -> None:
+        text = "<think>reasoning</think>Hello there."
+        result = _strip_think_blocks(text)
+        assert result == "Hello there."
+
+    def test_strip_multiline_think_block(self) -> None:
+        text = (
+            "<think>\nLine 1\nLine 2\nLine 3\n</think>\n"
+            "The actual response."
+        )
+        result = _strip_think_blocks(text)
+        assert "Line 1" not in result
+        assert "The actual response." in result
+
+    def test_no_think_block_unchanged(self) -> None:
+        text = "Just a normal response."
+        assert _strip_think_blocks(text) == text
+
+    def test_case_insensitive(self) -> None:
+        text = "<THINK>reasoning</THINK>Result."
+        result = _strip_think_blocks(text)
+        assert result == "Result."
+
+    def test_apply_constraints_strips_think(
+        self, default_profile: TraitProfile,
+    ) -> None:
+        text = "<think>\nI am a podfish.\n</think>\nLeave me alone."
+        result = apply_constraints(text, default_profile)
+        assert "podfish" not in result
+        assert "Leave me alone." in result

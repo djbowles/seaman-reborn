@@ -691,6 +691,107 @@ class TestKokoroRetryCooldown:
 # ── Fix #25: Empty WAV detection ─────────────────────────────────────
 
 
+class TestKokoroCleanForTTS:
+    """Test _clean_for_tts markup stripping for Kokoro G2P safety."""
+
+    def test_strips_think_block(self):
+        text = "<think>\nReasoning here.\n</think>\nHello."
+        result = KokoroTTSProvider._clean_for_tts(text)
+        assert "<think>" not in result
+        assert "Reasoning" not in result
+        assert "Hello." in result
+
+    def test_strips_remaining_tags(self):
+        text = "Hello <b>world</b>."
+        result = KokoroTTSProvider._clean_for_tts(text)
+        assert "<b>" not in result
+        assert result == "Hello world."
+
+    def test_strips_action_markers(self):
+        text = "*sighs deeply* Whatever."
+        result = KokoroTTSProvider._clean_for_tts(text)
+        assert "*sighs" not in result
+        assert "Whatever." in result
+
+    def test_collapses_whitespace(self):
+        text = "Hello    world."
+        result = KokoroTTSProvider._clean_for_tts(text)
+        assert "  " not in result
+        assert result == "Hello world."
+
+    def test_strips_complex_qwen3_output(self):
+        text = (
+            "<think>\nI should keep it short - 1-2 sentences.\n</think>\n"
+            "Oh wonderful, another day."
+        )
+        result = KokoroTTSProvider._clean_for_tts(text)
+        assert "1-2 sentences" not in result
+        assert "Oh wonderful, another day." in result
+
+    def test_empty_after_stripping_returns_empty(self):
+        text = "<think>only reasoning</think>"
+        result = KokoroTTSProvider._clean_for_tts(text)
+        assert result == ""
+
+    def test_plain_text_unchanged(self):
+        text = "The water is cold."
+        result = KokoroTTSProvider._clean_for_tts(text)
+        assert result == "The water is cold."
+
+
+class TestKokoroPerSentenceFallback:
+    """Test that per-sentence processing skips G2P failures gracefully."""
+
+    @pytest.mark.asyncio
+    async def test_synthesize_skips_bad_sentences(self):
+        """Synthesize produces audio even when some sentences fail G2P."""
+        import numpy as np
+
+        mock_kokoro, mock_pipeline = _mock_kokoro()
+        mock_sf = _mock_soundfile()
+
+        # Use 100 samples to fit _mock_soundfile's fake_write limit
+        sample_audio = np.zeros(100, dtype=np.float32)
+
+        def fake_pipeline(text, voice=None, speed=None):
+            if "podfish" in text.lower():
+                raise TypeError(
+                    "unsupported operand type(s) for +: 'NoneType' and 'str'"
+                )
+            return iter([(None, None, sample_audio)])
+
+        mock_pipeline.side_effect = fake_pipeline
+
+        with patch.dict(sys.modules, {
+            "kokoro": mock_kokoro,
+            "soundfile": mock_sf,
+        }):
+            provider = KokoroTTSProvider()
+            data = await provider.synthesize(
+                "A podfish sat there. The water was cold."
+            )
+            assert isinstance(data, bytes)
+            assert len(data) > 0
+
+    @pytest.mark.asyncio
+    async def test_synthesize_all_sentences_fail(self):
+        """Synthesize returns empty WAV when all sentences fail G2P."""
+        mock_kokoro, mock_pipeline = _mock_kokoro()
+
+        def always_fail(text, voice=None, speed=None):
+            raise TypeError("NoneType + str")
+
+        mock_pipeline.side_effect = always_fail
+
+        with patch.dict(sys.modules, {"kokoro": mock_kokoro}):
+            provider = KokoroTTSProvider()
+            data = await provider.synthesize("podfish. xyzfoo.")
+            assert isinstance(data, bytes)
+            buf = io.BytesIO(data)
+            with wave.open(buf, "rb") as wf:
+                assert wf.getnframes() == 0
+
+
 class TestEmptyWAVDetection:
     """Tests for header-only WAV detection in pyttsx3."""
 

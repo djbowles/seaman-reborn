@@ -112,13 +112,19 @@ def _truncate(text: str, max_len: int) -> str:
     return truncated
 
 
+def _strip_think_blocks(text: str) -> str:
+    """Remove ``<think>...</think>`` reasoning blocks emitted by Qwen3 and similar models."""
+    return re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL | re.IGNORECASE)
+
+
 def apply_constraints(response: str, profile: TraitProfile) -> str:
     """Filter LLM output through personality constraints.
 
-    1. Strips forbidden AI-assistant phrases.
-    2. Cleans up leftover whitespace artifacts.
-    3. Enforces max response length based on verbosity trait.
-    4. Returns empty string for empty/whitespace-only input.
+    1. Strips ``<think>`` reasoning blocks from Qwen3-style models.
+    2. Strips forbidden AI-assistant phrases.
+    3. Cleans up leftover whitespace artifacts.
+    4. Enforces max response length based on verbosity trait.
+    5. Returns empty string for empty/whitespace-only input.
 
     Args:
         response: Raw LLM response text.
@@ -130,7 +136,8 @@ def apply_constraints(response: str, profile: TraitProfile) -> str:
     if not response or not response.strip():
         return ""
 
-    text = _strip_forbidden(response)
+    text = _strip_think_blocks(response)
+    text = _strip_forbidden(text)
     text = _clean_whitespace(text)
 
     if not text:

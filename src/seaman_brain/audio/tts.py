@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import io
 import logging
+import re
 import tempfile
 import wave
 from collections.abc import Callable
@@ -278,6 +279,25 @@ class KokoroTTSProvider:
         """Whether the TTS engine is operational."""
         return self._available
 
+    @staticmethod
+    def _clean_for_tts(text: str) -> str:
+        """Strip markup that crashes Kokoro's G2P (misaki).
+
+        The G2P tokenizer produces tokens with ``phonemes=None`` for certain
+        input patterns, which causes a ``TypeError`` inside ``misaki/en.py``.
+        Remove ``<think>…</think>`` reasoning blocks (Qwen3), remaining
+        ``<…>`` tags, and ``*action*`` markers so only speakable text
+        reaches the pipeline.
+        """
+        # Strip full <think>...</think> blocks first (Qwen3 reasoning)
+        text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL | re.IGNORECASE)
+        # Strip any remaining <...> tags
+        text = re.sub(r"<[^>]*>", "", text)
+        # Strip *action* markers (not spoken aloud)
+        text = re.sub(r"\*[^*]+\*", "", text)
+        text = re.sub(r"\s{2,}", " ", text).strip()
+        return text
+
     def _synthesize_sync(self, text: str) -> bytes:
         """Synchronous synthesis — runs in thread pool."""
         self._initialize()
@@ -292,13 +312,29 @@ class KokoroTTSProvider:
 
             voice = self._config.tts_voice or "af_heart"
             speed = max(0.5, min(2.0, self._config.tts_speed))
+            text = self._clean_for_tts(text)
 
-            # Collect audio from generator
+            if not text:
+                return self._empty_wav()
+
+            # Split into sentences and process each individually.
+            # Kokoro's G2P (misaki) crashes with TypeError on unknown words
+            # and certain punctuation patterns (e.g. "word - word").
+            # Per-sentence processing lets us skip failures while still
+            # producing audio for the sentences that succeed.
+            sentences = re.split(r"(?<=[.!?])\s+", text)
             audio_chunks: list = []
-            for _gs, _ps, audio in self._pipeline(
-                text.strip(), voice=voice, speed=speed
-            ):
-                audio_chunks.append(audio)
+            for sentence in sentences:
+                sentence = sentence.strip()
+                if not sentence:
+                    continue
+                try:
+                    for _gs, _ps, audio in self._pipeline(
+                        sentence, voice=voice, speed=speed
+                    ):
+                        audio_chunks.append(audio)
+                except TypeError:
+                    logger.debug("Kokoro G2P skipped sentence: %r", sentence[:60])
 
             if not audio_chunks:
                 return self._empty_wav()
@@ -311,7 +347,8 @@ class KokoroTTSProvider:
             buf = io.BytesIO()
             sf.write(buf, full_audio, 24000, format="WAV", subtype="PCM_16")
             return buf.getvalue()
-        except Exception:
+        except Exception as exc:
+            logger.warning("Kokoro synthesize failed: %s", exc, exc_info=True)
             raise
 
     def _speak_sync(self, text: str) -> None:
@@ -336,7 +373,7 @@ class KokoroTTSProvider:
             sd.play(data, samplerate)
             sd.wait()
         except Exception as exc:
-            logger.warning("Kokoro speak failed: %s", exc)
+            logger.warning("Kokoro speak failed: %s", exc, exc_info=True)
 
     @staticmethod
     def _empty_wav() -> bytes:
