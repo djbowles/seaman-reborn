@@ -31,6 +31,8 @@ _SLIDER_FILL = (60, 140, 220)
 _SLIDER_KNOB = (200, 220, 240)
 _DROPDOWN_BG = (20, 30, 50)
 _DROPDOWN_ITEM_HOVER = (40, 60, 90)
+_SCROLLBAR_TRACK = (30, 40, 60)
+_SCROLLBAR_THUMB = (80, 100, 130)
 
 _FONT_SIZE = 14
 _FONT: pygame.font.Font | None = None
@@ -402,6 +404,9 @@ class Dropdown:
         visible_count = min(len(self.items), self._max_visible)
         list_h = visible_count * item_h
         list_y = self.rect.y + self.rect.height
+        scrollable = len(self.items) > self._max_visible
+        scrollbar_w = 6 if scrollable else 0
+        text_area_w = box_w - scrollbar_w
 
         # Background
         pygame.draw.rect(surface, _DROPDOWN_BG, (box_x, list_y, box_w, list_h))
@@ -416,7 +421,9 @@ class Dropdown:
 
             # Hover highlight
             if idx == self._hovered_index:
-                pygame.draw.rect(surface, _DROPDOWN_ITEM_HOVER, (box_x + 1, iy, box_w - 2, item_h))
+                pygame.draw.rect(
+                    surface, _DROPDOWN_ITEM_HOVER, (box_x + 1, iy, text_area_w - 2, item_h)
+                )
 
             # Selection indicator
             if idx == self.selected_index:
@@ -424,6 +431,19 @@ class Dropdown:
 
             text_surf = font.render(self.items[idx], True, _TEXT_COLOR)
             surface.blit(text_surf, (box_x + 8, iy + (item_h - text_surf.get_height()) // 2))
+
+        # Scrollbar
+        if scrollable and list_h > 0:
+            sb_x = box_x + box_w - scrollbar_w
+            # Track
+            pygame.draw.rect(surface, _SCROLLBAR_TRACK, (sb_x, list_y, scrollbar_w, list_h))
+            # Thumb
+            max_offset = len(self.items) - self._max_visible
+            thumb_h = max(8, int(list_h * self._max_visible / len(self.items)))
+            thumb_travel = list_h - thumb_h
+            ratio = self._scroll_offset / max_offset if max_offset > 0 else 0
+            thumb_y = list_y + int(thumb_travel * ratio)
+            pygame.draw.rect(surface, _SCROLLBAR_THUMB, (sb_x, thumb_y, scrollbar_w, thumb_h))
 
     def handle_click(self, mx: int, my: int) -> bool:
         """Handle click: toggle expanded, or select item."""
@@ -478,6 +498,23 @@ class Dropdown:
                 return
 
         self._hovered_index = -1
+
+    def handle_scroll(self, direction: int) -> bool:
+        """Scroll the dropdown list. Returns True if consumed.
+
+        Args:
+            direction: Positive = scroll up (show earlier items),
+                       negative = scroll down (show later items).
+                       Matches pygame MOUSEWHEEL event.y sign.
+        """
+        if not self.expanded or len(self.items) <= self._max_visible:
+            return False
+        max_offset = len(self.items) - self._max_visible
+        if direction > 0:
+            self._scroll_offset = max(0, self._scroll_offset - 1)
+        elif direction < 0:
+            self._scroll_offset = min(max_offset, self._scroll_offset + 1)
+        return True
 
     def handle_mouse_up(self) -> None:
         """No-op for dropdown."""

@@ -688,6 +688,23 @@ class SettingsPanel:
             if self._vision_interval_slider is not None:
                 self._vision_interval_slider.handle_mouse_up()
 
+    def handle_scroll(self, direction: int) -> bool:
+        """Forward mouse wheel to any expanded dropdown. Returns True if consumed."""
+        if not self.visible:
+            return False
+        if self.active_tab == SettingsTab.LLM:
+            if self._model_dropdown is not None and self._model_dropdown.handle_scroll(direction):
+                return True
+        elif self.active_tab == SettingsTab.AUDIO:
+            for widget in self._audio_widgets:
+                if hasattr(widget, "handle_scroll") and widget.handle_scroll(direction):
+                    return True
+        elif self.active_tab == SettingsTab.VISION:
+            for widget in self._vision_widgets:
+                if hasattr(widget, "handle_scroll") and widget.handle_scroll(direction):
+                    return True
+        return False
+
     # ── Callbacks ─────────────────────────────────────────────────────
 
     def _close(self) -> None:

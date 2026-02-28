@@ -300,6 +300,7 @@ class GameEngine:
         self.window.register_event_handler(pygame.MOUSEBUTTONDOWN, self._on_mouse_click)
         self.window.register_event_handler(pygame.MOUSEMOTION, self._on_mouse_move)
         self.window.register_event_handler(pygame.MOUSEBUTTONUP, self._on_mouse_up)
+        self.window.register_event_handler(pygame.MOUSEWHEEL, self._on_mouse_scroll)
         self.window.register_event_handler(pygame.KEYDOWN, self._on_key_down)
 
         # Register update and render callbacks
@@ -1062,6 +1063,14 @@ class GameEngine:
                 self._settings_panel.handle_mouse_up()
             except Exception as exc:
                 logger.error("Settings mouse up error: %s", exc, exc_info=True)
+
+    def _on_mouse_scroll(self, event: pygame.event.Event) -> None:
+        """Handle mouse wheel for dropdown scrolling."""
+        if self._game_state == GameState.SETTINGS and self._settings_panel is not None:
+            try:
+                self._settings_panel.handle_scroll(event.y)
+            except Exception as exc:
+                logger.error("Settings scroll error: %s", exc, exc_info=True)
 
     def _on_key_down(self, event: pygame.event.Event) -> None:
         """Handle key press events."""

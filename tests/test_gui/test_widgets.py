@@ -424,3 +424,80 @@ class TestDropdown:
         dd.expanded = False
         result = dd.handle_click(500, 500)
         assert result is False
+
+    def test_scroll_down_advances_offset(self):
+        """Scrolling down in an expanded dropdown with overflow advances scroll offset."""
+        items = [f"Item {i}" for i in range(10)]
+        dd = Dropdown(10, 20, 300, 24, "Model", items=items)
+        dd.expanded = True
+        assert dd._scroll_offset == 0
+        consumed = dd.handle_scroll(-1)  # scroll down
+        assert consumed is True
+        assert dd._scroll_offset == 1
+
+    def test_scroll_up_retreats_offset(self):
+        """Scrolling up decreases scroll offset (clamped at 0)."""
+        items = [f"Item {i}" for i in range(10)]
+        dd = Dropdown(10, 20, 300, 24, "Model", items=items)
+        dd.expanded = True
+        dd._scroll_offset = 3
+        dd.handle_scroll(1)  # scroll up
+        assert dd._scroll_offset == 2
+
+    def test_scroll_clamped_at_zero(self):
+        """Cannot scroll above the first item."""
+        items = [f"Item {i}" for i in range(10)]
+        dd = Dropdown(10, 20, 300, 24, "Model", items=items)
+        dd.expanded = True
+        dd._scroll_offset = 0
+        dd.handle_scroll(1)  # scroll up
+        assert dd._scroll_offset == 0
+
+    def test_scroll_clamped_at_max(self):
+        """Cannot scroll past the last page of items."""
+        items = [f"Item {i}" for i in range(10)]
+        dd = Dropdown(10, 20, 300, 24, "Model", items=items)
+        dd.expanded = True
+        max_offset = len(items) - dd._max_visible  # 10 - 6 = 4
+        dd._scroll_offset = max_offset
+        dd.handle_scroll(-1)  # scroll down
+        assert dd._scroll_offset == max_offset
+
+    def test_scroll_ignored_when_collapsed(self):
+        """Scroll events are ignored when dropdown is collapsed."""
+        items = [f"Item {i}" for i in range(10)]
+        dd = Dropdown(10, 20, 300, 24, "Model", items=items)
+        dd.expanded = False
+        consumed = dd.handle_scroll(-1)
+        assert consumed is False
+        assert dd._scroll_offset == 0
+
+    def test_scroll_ignored_when_few_items(self):
+        """Scroll events are ignored when all items fit without scrolling."""
+        dd = Dropdown(10, 20, 300, 24, "Model", items=["A", "B", "C"])
+        dd.expanded = True
+        consumed = dd.handle_scroll(-1)
+        assert consumed is False
+
+    def test_click_item_with_scroll_offset(self):
+        """Clicking an item accounts for scroll offset."""
+        cb = MagicMock()
+        items = [f"Item {i}" for i in range(10)]
+        dd = Dropdown(10, 20, 300, 24, "Model", items=items, on_change=cb)
+        dd.expanded = True
+        dd._scroll_offset = 3
+        # Click first visible row (y=44, which is list_y=44, item 0 in view = index 3)
+        dd.handle_click(150, 56)
+        assert dd.selected_index == 3
+        cb.assert_called_once_with(3, "Item 3")
+
+    def test_render_scrollbar_when_overflow(self):
+        """Expanded dropdown with >6 items renders scrollbar rects."""
+        items = [f"Item {i}" for i in range(10)]
+        dd = Dropdown(10, 20, 300, 24, "Model", items=items)
+        dd.expanded = True
+        dd.render(_surface_mock)
+        # Should have extra draw.rect calls for scrollbar track + thumb
+        rect_calls = _pygame_mock.draw.rect.call_count
+        # Minimum: bg + border (collapsed) + bg + border (list) + scrollbar track + thumb = 6
+        assert rect_calls >= 6
