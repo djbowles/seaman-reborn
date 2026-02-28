@@ -48,12 +48,12 @@ frogman = { interactions = 200, trust = 0.8 }
 tts_enabled = true
 stt_enabled = false
 sfx_enabled = true
-tts_provider = "pyttsx3"
+tts_provider = "kokoro"
 stt_provider = "speech_recognition"
-tts_voice = ""
+tts_voice = "am_michael"
 tts_rate = 150
 tts_volume = 0.8
-tts_speed = 1.0
+tts_speed = 0.9
 sfx_volume = 0.5
 ambient_volume = 0.3
 audio_output_device = ""
