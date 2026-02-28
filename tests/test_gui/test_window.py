@@ -428,17 +428,22 @@ class TestAsyncBridge:
             win._loop.call_soon_threadsafe(win._loop.stop)
             win._async_thread.join(timeout=2.0)
 
-    def test_submit_async_without_bridge_raises(self):
-        """submit_async() raises RuntimeError when bridge not started."""
+    def test_submit_async_without_bridge_auto_restarts(self):
+        """submit_async() auto-starts bridge when not yet started."""
         from seaman_brain.gui.window import GameWindow
 
         win = GameWindow()
-        with pytest.raises(RuntimeError, match="Async bridge not running"):
 
-            async def _noop() -> None:
-                pass
+        async def _get_val() -> int:
+            return 7
 
-            win.submit_async(_noop())
+        try:
+            future = win.submit_async(_get_val())
+            assert future.result(timeout=3.0) == 7
+            assert win._loop is not None
+            assert win._loop_alive is True
+        finally:
+            win.shutdown()
 
 
 # ── Shutdown ─────────────────────────────────────────────────────────
@@ -724,15 +729,18 @@ class TestLoopCrashSafety:
         win._async_thread.join(timeout=2.0)
         assert win._loop_alive is False
 
-    def test_submit_async_raises_when_loop_dead(self):
-        """submit_async() raises RuntimeError when loop is not alive."""
-        from seaman_brain.gui.window import GameWindow
+    def test_submit_async_raises_when_loop_dead_and_restarts_exhausted(self):
+        """submit_async() raises RuntimeError when loop dies and restarts are exhausted."""
+        from seaman_brain.gui.window import _LOOP_MAX_RESTARTS, GameWindow
 
         win = GameWindow()
         win._start_async_bridge()
         # Stop the loop to simulate crash
         win._loop.call_soon_threadsafe(win._loop.stop)
         win._async_thread.join(timeout=2.0)
+
+        # Exhaust restart limit
+        win._loop_restart_count = _LOOP_MAX_RESTARTS
 
         with pytest.raises(RuntimeError, match="not running"):
 
@@ -781,3 +789,123 @@ class TestShutdownDrainTimeout:
         # Shutdown should complete within a few seconds, not hang
         win.shutdown()
         assert win._loop is None
+
+
+# ── Async Bridge Auto-Restart (Phase 1) ──────────────────────────────
+
+
+class TestAsyncBridgeRestart:
+    """Tests for async bridge crash -> auto-restart mechanism."""
+
+    def test_restart_after_crash(self):
+        """Dead loop is restarted on next submit_async call."""
+        from seaman_brain.gui.window import GameWindow
+
+        win = GameWindow()
+        win._start_async_bridge()
+        # Kill the loop to simulate crash
+        win._loop.call_soon_threadsafe(win._loop.stop)
+        win._async_thread.join(timeout=2.0)
+        assert win._loop_alive is False
+
+        # submit_async should auto-restart the bridge
+        async def _get_val() -> int:
+            return 99
+
+        try:
+            future = win.submit_async(_get_val())
+            assert future.result(timeout=3.0) == 99
+            assert win._loop_alive is True
+            assert win._loop_restart_count == 1
+        finally:
+            win.shutdown()
+
+    def test_max_restarts_enforced(self):
+        """After _LOOP_MAX_RESTARTS, restart attempts are refused."""
+        from seaman_brain.gui.window import _LOOP_MAX_RESTARTS, GameWindow
+
+        win = GameWindow()
+        win._start_async_bridge()
+        win._loop.call_soon_threadsafe(win._loop.stop)
+        win._async_thread.join(timeout=2.0)
+
+        # Exhaust the restart budget
+        win._loop_restart_count = _LOOP_MAX_RESTARTS
+
+        result = win._try_restart_bridge()
+        assert result is False
+
+    def test_restart_cooldown_enforced(self):
+        """Restart is refused if cooldown has not elapsed."""
+        import time
+
+        from seaman_brain.gui.window import GameWindow
+
+        win = GameWindow()
+        win._start_async_bridge()
+        win._loop.call_soon_threadsafe(win._loop.stop)
+        win._async_thread.join(timeout=2.0)
+
+        # Simulate a very recent restart
+        win._loop_last_restart = time.monotonic()
+        win._loop_restart_count = 0
+
+        result = win._try_restart_bridge()
+        assert result is False
+
+    def test_submit_async_detects_dead_thread(self):
+        """submit_async restarts when async thread has died."""
+        from seaman_brain.gui.window import GameWindow
+
+        win = GameWindow()
+        win._start_async_bridge()
+        # Kill the loop — thread will exit
+        win._loop.call_soon_threadsafe(win._loop.stop)
+        win._async_thread.join(timeout=2.0)
+        assert not win._async_thread.is_alive()
+
+        async def _val() -> str:
+            return "ok"
+
+        try:
+            future = win.submit_async(_val())
+            assert future.result(timeout=3.0) == "ok"
+        finally:
+            win.shutdown()
+
+    def test_restart_reinits_manager_if_needed(self):
+        """Restart re-triggers _init_manager_async if manager not initialized."""
+        from seaman_brain.gui.window import GameWindow
+
+        win = GameWindow()
+        win._start_async_bridge()
+        win._loop.call_soon_threadsafe(win._loop.stop)
+        win._async_thread.join(timeout=2.0)
+
+        assert win._manager_initialized is False
+
+        with patch.object(win, "_init_manager_async") as mock_init:
+            win._try_restart_bridge()
+            mock_init.assert_called_once()
+
+        win.shutdown()
+
+    def test_start_async_bridge_cleans_dead_loop(self):
+        """_start_async_bridge cleans up a dead loop before creating new one."""
+        from seaman_brain.gui.window import GameWindow
+
+        win = GameWindow()
+        win._start_async_bridge()
+        old_loop = win._loop
+        # Kill it
+        win._loop.call_soon_threadsafe(win._loop.stop)
+        win._async_thread.join(timeout=2.0)
+        assert win._loop_alive is False
+
+        # Starting bridge again should create a new loop
+        win._start_async_bridge()
+        try:
+            assert win._loop is not old_loop
+            assert win._loop_alive is True
+        finally:
+            win.shutdown()

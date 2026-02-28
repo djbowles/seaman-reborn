@@ -11,7 +11,6 @@ render chat -> flip display.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import threading
 import time
@@ -79,7 +78,7 @@ _BEHAVIOR_CHECK_INTERVAL = 15.0  # seconds between behavior checks
 _EVENT_CHECK_INTERVAL = 3.0  # seconds between event checks
 _VISION_LOOK_TIMEOUT = 30.0  # seconds before Look Now gives up
 _STT_DEBOUNCE_SECONDS = 1.5  # wait for speech to settle before submitting
-_PENDING_TIMEOUT = 180.0  # seconds before a stuck pending future is force-cancelled
+_PENDING_TIMEOUT = 60.0  # seconds before a stuck pending future is force-cancelled
 
 # Situation prompts for interaction reactions via LLM
 _INTERACTION_SITUATIONS: dict[str, str] = {
@@ -564,8 +563,7 @@ class GameEngine:
             return
 
         manager = self.window.manager
-        loop = self.window._loop
-        if manager is None or loop is None or not manager.is_initialized:
+        if manager is None or not manager.is_initialized:
             logger.debug("Autonomous LLM: manager not ready, using canned")
             self._apply_behavior(behavior)
             return
@@ -590,10 +588,14 @@ class GameEngine:
         async def _generate() -> str | None:
             return await manager.generate_autonomous_remark(situation)
 
-        self._pending_autonomous = asyncio.run_coroutine_threadsafe(
-            _generate(), loop
-        )
-        self._pending_autonomous_time = time.monotonic()
+        try:
+            self._pending_autonomous = self.window.submit_async(_generate())
+            self._pending_autonomous_time = time.monotonic()
+        except RuntimeError:
+            logger.warning("Async bridge dead — falling back to canned behavior")
+            self._scheduler.release("chat")
+            self._pending_autonomous_behavior = None
+            self._apply_behavior(behavior)
 
     def _check_pending_autonomous(self) -> None:
         """Check if a pending autonomous LLM remark is ready."""
@@ -663,8 +665,7 @@ class GameEngine:
             return
 
         manager = self.window.manager
-        loop = self.window._loop
-        if manager is None or loop is None or not manager.is_initialized:
+        if manager is None or not manager.is_initialized:
             return
 
         situation = _INTERACTION_SITUATIONS.get(action_key)
@@ -677,10 +678,12 @@ class GameEngine:
         async def _generate() -> str | None:
             return await manager.generate_autonomous_remark(situation)
 
-        self._pending_autonomous = asyncio.run_coroutine_threadsafe(
-            _generate(), loop
-        )
-        self._pending_autonomous_behavior = None  # No fallback for interactions
+        try:
+            self._pending_autonomous = self.window.submit_async(_generate())
+            self._pending_autonomous_behavior = None  # No fallback for interactions
+        except RuntimeError:
+            logger.warning("Async bridge dead — skipping interaction reaction")
+            self._scheduler.release("chat")
 
     def _check_events(self, time_context: dict) -> None:
         """Check for game events and apply them."""
@@ -870,21 +873,25 @@ class GameEngine:
         self._interaction_count_delta += 1
 
         manager = self.window.manager
-        if (
-            manager is not None
-            and self.window._loop is not None
-            and manager.is_initialized
-        ):
+        if manager is not None and manager.is_initialized:
             self._chat_panel.start_streaming()
             self._scheduler.acquire("chat")
 
             async def _process() -> str:
                 return await manager.process_input(text)
 
-            self._pending_response = asyncio.run_coroutine_threadsafe(
-                _process(), self.window._loop
-            )
-            self._pending_response_time = time.monotonic()
+            try:
+                self._pending_response = self.window.submit_async(_process())
+                self._pending_response_time = time.monotonic()
+            except RuntimeError:
+                logger.warning("Async bridge dead — cannot submit chat")
+                self._chat_panel.finish_streaming()
+                self._chat_panel.add_message(
+                    MessageRole.ASSISTANT,
+                    "*yawns* Brain not ready yet... try again.",
+                )
+                self._creature_renderer.set_animation(AnimationState.IDLE)
+                self._scheduler.release("chat")
         else:
             self._chat_panel.add_message(
                 MessageRole.ASSISTANT,
@@ -1161,7 +1168,7 @@ class GameEngine:
 
     def _load_model_list_async(self) -> None:
         """Fetch available Ollama models in the background."""
-        if self.window._loop is None or self._settings_panel is None:
+        if self._settings_panel is None:
             return
 
         async def _fetch_models() -> list[str]:
@@ -1183,8 +1190,12 @@ class GameEngine:
                 logger.error("Failed to load Ollama model list: %s", exc)
                 self._pending_model_list = [self._config.llm.model + " (offline)"]
 
-        future = asyncio.run_coroutine_threadsafe(_fetch_models(), self.window._loop)
-        future.add_done_callback(_on_done)
+        try:
+            future = self.window.submit_async(_fetch_models())
+            future.add_done_callback(_on_done)
+        except RuntimeError:
+            logger.warning("Async bridge dead — cannot fetch model list")
+            self._pending_model_list = [self._config.llm.model + " (offline)"]
 
     def _on_personality_change(self, traits: dict[str, float]) -> None:
         """Callback when personality settings change."""

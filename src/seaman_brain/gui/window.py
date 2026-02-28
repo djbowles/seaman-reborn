@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
+import time
 from collections.abc import Callable
 from typing import Any
 
@@ -18,6 +19,10 @@ import pygame
 from seaman_brain.config import GUIConfig, SeamanConfig
 
 logger = logging.getLogger(__name__)
+
+# Async bridge restart limits
+_LOOP_MAX_RESTARTS = 3
+_LOOP_RESTART_COOLDOWN = 2.0  # seconds between restart attempts
 
 # Default colors
 _BG_COLOR = (10, 20, 40)
@@ -65,6 +70,8 @@ class GameWindow:
         self._async_thread: threading.Thread | None = None
         self._manager: Any | None = None
         self._manager_initialized = False
+        self._loop_restart_count = 0
+        self._loop_last_restart = 0.0
 
         # Event handlers: pygame event type -> list of callbacks
         self._event_handlers: dict[int, list[Callable[[pygame.event.Event], None]]] = {}
@@ -181,10 +188,22 @@ class GameWindow:
     def _start_async_bridge(self) -> None:
         """Start the background asyncio loop for ConversationManager.
 
-        Idempotent — safe to call multiple times.
+        Cleans up any dead loop/thread before creating a new one.
         """
+        # Clean up dead loop before creating a new one
         if self._loop is not None:
-            return
+            if self._loop_alive:
+                return  # Already running — nothing to do
+            # Dead loop — close it and join the thread
+            try:
+                if not self._loop.is_closed():
+                    self._loop.close()
+            except Exception:
+                pass
+            if self._async_thread is not None:
+                self._async_thread.join(timeout=2.0)
+            self._loop = None
+            self._async_thread = None
 
         self._loop = asyncio.new_event_loop()
 
@@ -203,6 +222,44 @@ class GameWindow:
             target=_run_loop, daemon=True, name="seaman-async"
         )
         self._async_thread.start()
+
+    def _try_restart_bridge(self) -> bool:
+        """Attempt to restart the async bridge after a crash.
+
+        Enforces max restart count and cooldown between attempts.
+
+        Returns:
+            True if the bridge was successfully restarted.
+        """
+        if self._loop_restart_count >= _LOOP_MAX_RESTARTS:
+            logger.error(
+                "Async bridge restart limit reached (%d/%d)",
+                self._loop_restart_count, _LOOP_MAX_RESTARTS,
+            )
+            return False
+
+        now = time.monotonic()
+        elapsed = now - self._loop_last_restart
+        if elapsed < _LOOP_RESTART_COOLDOWN:
+            logger.warning(
+                "Async bridge restart cooldown (%.1fs remaining)",
+                _LOOP_RESTART_COOLDOWN - elapsed,
+            )
+            return False
+
+        self._loop_restart_count += 1
+        self._loop_last_restart = now
+        logger.warning(
+            "Restarting async bridge (attempt %d/%d)",
+            self._loop_restart_count, _LOOP_MAX_RESTARTS,
+        )
+
+        self._start_async_bridge()
+
+        if not self._manager_initialized:
+            self._init_manager_async()
+
+        return self._loop is not None and self._loop_alive
 
     def _init_manager_async(self) -> None:
         """Schedule ConversationManager initialization on the async thread."""
@@ -229,6 +286,10 @@ class GameWindow:
     def submit_async(self, coro: Any) -> Any:
         """Submit a coroutine to the background async loop.
 
+        If the loop is dead, attempts a restart before raising. On a
+        ``RuntimeError`` from ``run_coroutine_threadsafe`` (e.g. loop
+        closed mid-call), also attempts one restart.
+
         Args:
             coro: An awaitable coroutine.
 
@@ -236,11 +297,27 @@ class GameWindow:
             A concurrent.futures.Future for the result.
 
         Raises:
-            RuntimeError: If the async bridge is not running.
+            RuntimeError: If the async bridge is not running and cannot
+                be restarted.
         """
-        if self._loop is None or not self._loop_alive:
+        # Detect dead loop / dead thread
+        loop_dead = (
+            self._loop is None
+            or not self._loop_alive
+            or (self._async_thread is not None and not self._async_thread.is_alive())
+        )
+
+        if loop_dead:
+            if not self._try_restart_bridge():
+                raise RuntimeError("Async bridge not running")
+
+        try:
+            return asyncio.run_coroutine_threadsafe(coro, self._loop)
+        except RuntimeError:
+            # Loop may have closed between the alive-check and the submit
+            if self._try_restart_bridge():
+                return asyncio.run_coroutine_threadsafe(coro, self._loop)
             raise RuntimeError("Async bridge not running")
-        return asyncio.run_coroutine_threadsafe(coro, self._loop)
 
     def handle_events(self) -> None:
         """Process all pending Pygame events.

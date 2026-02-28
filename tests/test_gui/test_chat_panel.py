@@ -934,3 +934,89 @@ class TestCharacterLevelBreaking:
         panel._font = None
         result = panel._wrap_text("hello world", max_width=100)
         assert result == ["hello world"]
+
+
+# ── Thinking Indicator Tests (Phase 1) ────────────────────────────────
+
+
+class TestThinkingIndicator:
+    """Tests for the animated thinking dots when LLM is processing."""
+
+    def test_thinking_timer_advances_while_streaming(self):
+        """_thinking_timer advances when streaming is active."""
+        panel = ChatPanel()
+        panel.start_streaming()
+        panel.update(0.5)
+        assert panel._thinking_timer == pytest.approx(0.5)
+
+    def test_thinking_timer_resets_when_not_streaming(self):
+        """_thinking_timer resets to 0 when streaming stops."""
+        panel = ChatPanel()
+        panel.start_streaming()
+        panel.update(1.0)
+        assert panel._thinking_timer > 0
+        panel.finish_streaming()
+        panel.update(0.1)
+        assert panel._thinking_timer == pytest.approx(0.0)
+
+    def test_thinking_dots_rendered_during_empty_stream(self):
+        """Thinking dots are rendered when streaming but no text yet."""
+        panel = ChatPanel()
+        panel.start_streaming()
+        panel.update(0.5)  # Advance timer so dots show
+        panel.render(_surface_mock)
+        # Font should render dot text (., .., or ...)
+        rendered_texts = [str(call.args[0]) for call in _font_mock.render.call_args_list]
+        dot_renders = [t for t in rendered_texts if t in (".", "..", "...")]
+        assert len(dot_renders) > 0, f"Expected dot renders, got: {rendered_texts}"
+
+    def test_thinking_dots_cycle_animation(self):
+        """Dots cycle through ., .., ... based on timer."""
+        from seaman_brain.gui.chat_panel import _THINKING_DOT_INTERVAL
+
+        panel = ChatPanel()
+        panel.start_streaming()
+
+        # At time 0 -> 1 dot
+        panel._thinking_timer = 0.0
+        dot_count_0 = int(panel._thinking_timer / _THINKING_DOT_INTERVAL) % 3 + 1
+        assert dot_count_0 == 1
+
+        # At time 0.4 -> 2 dots
+        panel._thinking_timer = _THINKING_DOT_INTERVAL
+        dot_count_1 = int(panel._thinking_timer / _THINKING_DOT_INTERVAL) % 3 + 1
+        assert dot_count_1 == 2
+
+        # At time 0.8 -> 3 dots
+        panel._thinking_timer = _THINKING_DOT_INTERVAL * 2
+        dot_count_2 = int(panel._thinking_timer / _THINKING_DOT_INTERVAL) % 3 + 1
+        assert dot_count_2 == 3
+
+        # At time 1.2 -> wraps back to 1 dot
+        panel._thinking_timer = _THINKING_DOT_INTERVAL * 3
+        dot_count_3 = int(panel._thinking_timer / _THINKING_DOT_INTERVAL) % 3 + 1
+        assert dot_count_3 == 1
+
+    def test_thinking_not_shown_when_stream_has_text(self):
+        """Thinking dots are NOT shown when streaming already has text."""
+        panel = ChatPanel()
+        panel.start_streaming()
+        panel.append_stream("Hello")
+        panel.update(0.5)
+        panel.render(_surface_mock)
+        # The rendered text should include "Hello", not dots
+        rendered_texts = [str(call.args[0]) for call in _font_mock.render.call_args_list]
+        # "Hello" should be rendered, not dots
+        hello_renders = [t for t in rendered_texts if "Hello" in t]
+        assert len(hello_renders) > 0
+
+    def test_thinking_not_shown_when_not_streaming(self):
+        """No thinking dots when not streaming."""
+        panel = ChatPanel()
+        panel.update(0.5)
+        panel.render(_surface_mock)
+        rendered_texts = [str(call.args[0]) for call in _font_mock.render.call_args_list]
+        dot_only_renders = [
+            t for t in rendered_texts if t in (".", "..", "...")
+        ]
+        assert len(dot_only_renders) == 0

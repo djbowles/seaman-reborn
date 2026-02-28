@@ -102,6 +102,7 @@ sys.modules["pygame.font"] = _pygame_mock.font
 from seaman_brain.behavior.autonomous import BehaviorType, IdleBehavior  # noqa: E402
 from seaman_brain.config import SeamanConfig  # noqa: E402
 from seaman_brain.gui.game_loop import GameEngine, GameState  # noqa: E402
+from seaman_brain.gui.sprites import AnimationState  # noqa: E402
 from seaman_brain.needs.death import DeathCause  # noqa: E402
 from seaman_brain.types import CreatureStage  # noqa: E402
 
@@ -282,13 +283,11 @@ class TestAsyncConversationBridge:
         """Chat submit with manager starts async processing."""
         mock_manager = MagicMock()
         engine.window._manager = mock_manager
-        engine.window._loop = MagicMock()
 
-        # Mock run_coroutine_threadsafe to return a Future
+        # Mock submit_async to return a Future
         future = Future()
-        with patch("seaman_brain.gui.game_loop.asyncio.run_coroutine_threadsafe",
-                    return_value=future):
-            engine._on_chat_submit("Hello creature")
+        engine.window.submit_async = MagicMock(return_value=future)
+        engine._on_chat_submit("Hello creature")
 
         assert engine._pending_response is future
         assert engine._chat_panel.is_streaming
@@ -336,12 +335,10 @@ class TestAsyncConversationBridge:
 
         mock_manager = MagicMock()
         engine.window._manager = mock_manager
-        engine.window._loop = MagicMock()
 
         new_future = Future()
-        with patch("seaman_brain.gui.game_loop.asyncio.run_coroutine_threadsafe",
-                    return_value=new_future):
-            engine._on_chat_submit("New message")
+        engine.window.submit_async = MagicMock(return_value=new_future)
+        engine._on_chat_submit("New message")
 
         assert old_future.cancelled()
         assert engine._pending_response is new_future
@@ -890,11 +887,9 @@ class TestSTTCallback:
 
         engine.window._manager = MagicMock()
         engine.window._manager.is_initialized = True
-        engine.window._loop = MagicMock()
 
-        with patch("seaman_brain.gui.game_loop.asyncio.run_coroutine_threadsafe",
-                    return_value=Future()):
-            engine._check_stt_queue()
+        engine.window.submit_async = MagicMock(return_value=Future())
+        engine._check_stt_queue()
 
         assert engine._stt_queued_text is None
         assert engine._pending_response is not None
@@ -947,11 +942,9 @@ class TestSTTCallback:
 
         engine.window._manager = MagicMock()
         engine.window._manager.is_initialized = True
-        engine.window._loop = MagicMock()
 
-        with patch("seaman_brain.gui.game_loop.asyncio.run_coroutine_threadsafe",
-                    return_value=Future()):
-            engine._check_stt_queue()
+        engine.window.submit_async = MagicMock(return_value=Future())
+        engine._check_stt_queue()
 
         assert engine._pending_autonomous is None
         assert engine._pending_autonomous_behavior is None
@@ -990,12 +983,11 @@ class TestAutonomousLLMRemarks:
     def test_verbal_behavior_routes_to_llm(self, engine: GameEngine):
         """Verbal behavior with needs_llm=True attempts LLM remark."""
 
-        # Set up manager and loop
+        # Set up manager
         mock_manager = MagicMock()
         mock_manager.is_initialized = True
         mock_manager.generate_autonomous_remark = MagicMock()
         engine.window._manager = mock_manager
-        engine.window._loop = MagicMock()
 
         behavior = IdleBehavior(
             action_type=BehaviorType.COMPLAIN,
@@ -1004,11 +996,10 @@ class TestAutonomousLLMRemarks:
             needs_llm=True,
         )
 
-        with patch("seaman_brain.gui.game_loop.asyncio.run_coroutine_threadsafe",
-                    return_value=Future()):
-            with patch("seaman_brain.gui.game_loop.get_behavior_situation",
-                        return_value="You are hungry."):
-                engine._request_autonomous_remark(behavior)
+        engine.window.submit_async = MagicMock(return_value=Future())
+        with patch("seaman_brain.gui.game_loop.get_behavior_situation",
+                    return_value="You are hungry."):
+            engine._request_autonomous_remark(behavior)
 
         assert engine._pending_autonomous is not None
         assert engine._pending_autonomous_behavior is behavior
@@ -1153,11 +1144,9 @@ class TestInteractionReactions:
         mock_manager = MagicMock()
         mock_manager.is_initialized = True
         engine.window._manager = mock_manager
-        engine.window._loop = MagicMock()
 
-        with patch("seaman_brain.gui.game_loop.asyncio.run_coroutine_threadsafe",
-                    return_value=Future()):
-            engine._on_action_bar("clean")
+        engine.window.submit_async = MagicMock(return_value=Future())
+        engine._on_action_bar("clean")
 
         assert engine._pending_autonomous is not None
 
@@ -1166,11 +1155,9 @@ class TestInteractionReactions:
         mock_manager = MagicMock()
         mock_manager.is_initialized = True
         engine.window._manager = mock_manager
-        engine.window._loop = MagicMock()
 
-        with patch("seaman_brain.gui.game_loop.asyncio.run_coroutine_threadsafe",
-                    return_value=Future()):
-            engine._on_action_bar("tap_glass")
+        engine.window.submit_async = MagicMock(return_value=Future())
+        engine._on_action_bar("tap_glass")
 
         assert engine._pending_autonomous is not None
 
@@ -1181,7 +1168,6 @@ class TestInteractionReactions:
         mock_manager = MagicMock()
         mock_manager.is_initialized = True
         engine.window._manager = mock_manager
-        engine.window._loop = MagicMock()
 
         engine._request_interaction_reaction("feed")
         # Should NOT have set _pending_autonomous
@@ -1204,11 +1190,9 @@ class TestInteractionReactions:
         mock_manager = MagicMock()
         mock_manager.is_initialized = True
         engine.window._manager = mock_manager
-        engine.window._loop = MagicMock()
 
-        with patch("seaman_brain.gui.game_loop.asyncio.run_coroutine_threadsafe",
-                    return_value=Future()):
-            engine._request_interaction_reaction("feed")
+        engine.window.submit_async = MagicMock(return_value=Future())
+        engine._request_interaction_reaction("feed")
 
         assert engine._pending_autonomous_behavior is None
 
@@ -1223,7 +1207,6 @@ class TestInteractionReactions:
         mock_manager = MagicMock()
         mock_manager.is_initialized = True
         engine.window._manager = mock_manager
-        engine.window._loop = MagicMock()
 
         engine._request_interaction_reaction("unknown_action")
         assert engine._pending_autonomous is None
@@ -1240,7 +1223,6 @@ class TestChatSubmitInitGuard:
         mock_manager = MagicMock()
         mock_manager.is_initialized = False
         engine.window._manager = mock_manager
-        engine.window._loop = MagicMock()
 
         engine._submit_chat("hello")
         # Should NOT start streaming (manager not initialized)
@@ -1251,13 +1233,9 @@ class TestChatSubmitInitGuard:
         mock_manager = MagicMock()
         mock_manager.is_initialized = True
         engine.window._manager = mock_manager
-        engine.window._loop = MagicMock()
 
-        with patch(
-            "seaman_brain.gui.game_loop.asyncio.run_coroutine_threadsafe",
-            return_value=Future(),
-        ):
-            engine._submit_chat("hello")
+        engine.window.submit_async = MagicMock(return_value=Future())
+        engine._submit_chat("hello")
         assert engine._pending_response is not None
 
 
@@ -1612,3 +1590,94 @@ class TestUpdateHardening:
         engine._settings_panel.apply_pending_refresh = MagicMock()
         engine._update(0.016)
         engine._settings_panel.apply_pending_refresh.assert_called_once()
+
+
+# ── Dead-Loop Fallback Tests (Phase 1) ───────────────────────────────
+
+
+class TestDeadLoopFallback:
+    """Tests for graceful fallback when async bridge is dead."""
+
+    def test_submit_chat_dead_loop_shows_fallback(self, engine: GameEngine):
+        """_submit_chat shows fallback message when async bridge is dead."""
+        # Mock window.submit_async to raise RuntimeError (dead loop)
+        engine.window.submit_async = MagicMock(
+            side_effect=RuntimeError("Async bridge not running")
+        )
+        engine.window._manager = MagicMock()
+        engine.window._manager.is_initialized = True
+
+        engine._submit_chat("hello")
+
+        # Should show fallback message, not crash
+        msgs = list(engine._chat_panel._messages)
+        assert any("Brain not ready" in m.text for m in msgs)
+
+    def test_submit_chat_dead_loop_resets_animation(self, engine: GameEngine):
+        """_submit_chat resets animation to IDLE on dead loop."""
+        engine.window.submit_async = MagicMock(
+            side_effect=RuntimeError("Async bridge not running")
+        )
+        engine.window._manager = MagicMock()
+        engine.window._manager.is_initialized = True
+        engine._creature_renderer.set_animation = MagicMock()
+
+        engine._submit_chat("hello")
+        engine._creature_renderer.set_animation.assert_called_with(
+            AnimationState.IDLE
+        )
+
+    def test_submit_chat_dead_loop_releases_scheduler(self, engine: GameEngine):
+        """_submit_chat releases scheduler lock on dead loop."""
+        engine.window.submit_async = MagicMock(
+            side_effect=RuntimeError("Async bridge not running")
+        )
+        engine.window._manager = MagicMock()
+        engine.window._manager.is_initialized = True
+        engine._scheduler = MagicMock()
+
+        engine._submit_chat("hello")
+        engine._scheduler.release.assert_called_with("chat")
+
+    def test_autonomous_remark_dead_loop_falls_back(self, engine: GameEngine):
+        """_request_autonomous_remark falls back to canned on dead loop."""
+        engine.window.submit_async = MagicMock(
+            side_effect=RuntimeError("Async bridge not running")
+        )
+        engine.window._manager = MagicMock()
+        engine.window._manager.is_initialized = True
+        engine._scheduler = MagicMock()
+
+        behavior = IdleBehavior(
+            action_type=BehaviorType.COMPLAIN,
+            message="Test remark",
+            animation_hint="talking",
+            needs_llm=True,
+        )
+        engine._apply_behavior = MagicMock()
+        with patch("seaman_brain.gui.game_loop.get_behavior_situation",
+                    return_value="You feel hungry."):
+            engine._request_autonomous_remark(behavior)
+
+        # Should fall back to canned behavior
+        engine._apply_behavior.assert_called_once_with(behavior)
+
+    def test_interaction_reaction_dead_loop_silent(self, engine: GameEngine):
+        """_request_interaction_reaction silently skips on dead loop."""
+        engine.window.submit_async = MagicMock(
+            side_effect=RuntimeError("Async bridge not running")
+        )
+        engine.window._manager = MagicMock()
+        engine.window._manager.is_initialized = True
+        engine._scheduler = MagicMock()
+
+        engine._request_interaction_reaction("feed")
+
+        # Should not crash; scheduler released
+        engine._scheduler.release.assert_called_with("chat")
+
+    def test_pending_timeout_reduced(self):
+        """_PENDING_TIMEOUT is 60 seconds (reduced from 180)."""
+        from seaman_brain.gui.game_loop import _PENDING_TIMEOUT
+
+        assert _PENDING_TIMEOUT == 60.0

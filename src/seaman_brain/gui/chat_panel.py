@@ -46,6 +46,7 @@ _MAX_HISTORY = 200
 _MAX_MESSAGE_LENGTH = 2000
 _FONT_SIZE = 15
 _CURSOR_BLINK_RATE = 0.53  # seconds
+_THINKING_DOT_INTERVAL = 0.4  # seconds per dot-cycle step
 _HEADER_HEIGHT = 24
 _HEADER_BG = (15, 25, 45, 240)
 _HEADER_TEXT_COLOR = (180, 200, 220)
@@ -106,6 +107,7 @@ class ChatPanel:
         # Streaming state
         self._streaming = False
         self._stream_text = ""
+        self._thinking_timer = 0.0
 
         # Scroll state
         self._scroll_offset = 0  # 0 = bottom (newest), positive = scrolled up
@@ -376,6 +378,12 @@ class ChatPanel:
             self._cursor_timer -= _CURSOR_BLINK_RATE
             self._cursor_visible = not self._cursor_visible
 
+        # Thinking dot animation
+        if self._streaming:
+            self._thinking_timer += dt
+        else:
+            self._thinking_timer = 0.0
+
     def handle_click(self, mx: int, my: int) -> bool:
         """Handle a mouse click on the chat panel.
 
@@ -489,12 +497,21 @@ class ChatPanel:
             rendered.append((msg, lines, h))
             total_h += h
 
-        # Streaming message
+        # Streaming message (with text) or thinking indicator (no text yet)
         if self._streaming and self._stream_text:
             stream_msg = ChatMessage(role=MessageRole.ASSISTANT, text=self._stream_text)
             lines = self._wrap_text(self._stream_text, max_bubble_w - 2 * _MSG_PADDING)
             h = len(lines) * self._font_height + 2 * _MSG_PADDING + _MSG_MARGIN
             rendered.append((stream_msg, lines, h))
+            total_h += h
+        elif self._streaming:
+            # Animated thinking dots: cycles through ".", "..", "..."
+            dot_count = int(self._thinking_timer / _THINKING_DOT_INTERVAL) % 3 + 1
+            dots = "." * dot_count
+            thinking_msg = ChatMessage(role=MessageRole.ASSISTANT, text=dots)
+            lines = [dots]
+            h = self._font_height + 2 * _MSG_PADDING + _MSG_MARGIN
+            rendered.append((thinking_msg, lines, h))
             total_h += h
 
         self._total_content_height = total_h
