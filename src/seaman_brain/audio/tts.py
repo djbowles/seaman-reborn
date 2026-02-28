@@ -293,8 +293,8 @@ class KokoroTTSProvider:
         text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL | re.IGNORECASE)
         # Strip any remaining <...> tags
         text = re.sub(r"<[^>]*>", "", text)
-        # Strip *action* markers (not spoken aloud)
-        text = re.sub(r"\*[^*]+\*", "", text)
+        # Strip asterisks (LLM emphasis/action markers)
+        text = text.replace("*", "")
         text = re.sub(r"\s{2,}", " ", text).strip()
         return text
 

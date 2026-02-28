@@ -137,6 +137,7 @@ def apply_constraints(response: str, profile: TraitProfile) -> str:
         return ""
 
     text = _strip_think_blocks(response)
+    text = text.replace("*", "")
     text = _strip_forbidden(text)
     text = _clean_whitespace(text)
 

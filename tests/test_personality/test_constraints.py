@@ -254,3 +254,25 @@ class TestThinkBlockStripping:
         result = apply_constraints(text, default_profile)
         assert "podfish" not in result
         assert "Leave me alone." in result
+
+
+class TestAsteriskStripping:
+    """Tests for stripping * characters from LLM output."""
+
+    def test_strips_action_markers(self, default_profile: TraitProfile) -> None:
+        text = "*sighs deeply* Whatever."
+        result = apply_constraints(text, default_profile)
+        assert "*" not in result
+        assert "sighs deeply" in result
+        assert "Whatever." in result
+
+    def test_strips_emphasis(self, default_profile: TraitProfile) -> None:
+        text = "I am *very* annoyed."
+        result = apply_constraints(text, default_profile)
+        assert "*" not in result
+        assert "very" in result
+
+    def test_no_asterisks_unchanged(self, default_profile: TraitProfile) -> None:
+        text = "Just a normal sentence."
+        result = apply_constraints(text, default_profile)
+        assert result == text

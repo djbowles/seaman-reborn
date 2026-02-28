@@ -707,10 +707,11 @@ class TestKokoroCleanForTTS:
         assert "<b>" not in result
         assert result == "Hello world."
 
-    def test_strips_action_markers(self):
+    def test_strips_asterisks(self):
         text = "*sighs deeply* Whatever."
         result = KokoroTTSProvider._clean_for_tts(text)
-        assert "*sighs" not in result
+        assert "*" not in result
+        assert "sighs deeply" in result
         assert "Whatever." in result
 
     def test_collapses_whitespace(self):
