@@ -501,3 +501,52 @@ class TestDropdown:
         rect_calls = _pygame_mock.draw.rect.call_count
         # Minimum: bg + border (collapsed) + bg + border (list) + scrollbar track + thumb = 6
         assert rect_calls >= 6
+
+    def test_scrollbar_click_does_not_close(self):
+        """Clicking the scrollbar area scrolls without closing the dropdown."""
+        items = [f"Item {i}" for i in range(10)]
+        # Dropdown at x=10, w=300, label_width=100 → box_x=110, box_w=200
+        # Scrollbar is rightmost 6px: x=304..310
+        dd = Dropdown(10, 20, 300, 24, "Model", items=items)
+        dd.expanded = True
+        dd._scroll_offset = 0
+        # Click on scrollbar area (x=305), below the thumb
+        # list_y=44, list_h=144, thumb_h=86 (6/10 ratio), thumb starts at y=44
+        # so thumb_bottom=130, click at 160 is below thumb
+        result = dd.handle_click(305, 160)  # below thumb → page down
+        assert result is True
+        assert dd.expanded is True  # stays open!
+        assert dd._scroll_offset > 0  # scrolled
+
+    def test_scrollbar_click_above_thumb_pages_up(self):
+        """Clicking above the scrollbar thumb pages up."""
+        items = [f"Item {i}" for i in range(10)]
+        dd = Dropdown(10, 20, 300, 24, "Model", items=items)
+        dd.expanded = True
+        dd._scroll_offset = 4  # scrolled to bottom
+        # Thumb is near bottom; click near top of scrollbar (y=45)
+        dd.handle_click(305, 45)
+        assert dd.expanded is True
+        assert dd._scroll_offset < 4
+
+    def test_scrollbar_click_below_thumb_pages_down(self):
+        """Clicking below the scrollbar thumb pages down."""
+        items = [f"Item {i}" for i in range(10)]
+        dd = Dropdown(10, 20, 300, 24, "Model", items=items)
+        dd.expanded = True
+        dd._scroll_offset = 0
+        # Click near bottom of scrollbar (last item row)
+        list_y = 20 + 24  # 44
+        list_bottom = list_y + 6 * 24  # 188
+        dd.handle_click(305, list_bottom - 5)
+        assert dd.expanded is True
+        assert dd._scroll_offset > 0
+
+    def test_hover_ignores_scrollbar_zone(self):
+        """Mouse hovering over scrollbar area does not highlight items."""
+        items = [f"Item {i}" for i in range(10)]
+        dd = Dropdown(10, 20, 300, 24, "Model", items=items)
+        dd.expanded = True
+        # Hover over scrollbar zone (x=305)
+        dd.handle_mouse_move(305, 56)
+        assert dd._hovered_index == -1

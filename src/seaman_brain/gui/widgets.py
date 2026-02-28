@@ -446,18 +446,26 @@ class Dropdown:
             pygame.draw.rect(surface, _SCROLLBAR_THUMB, (sb_x, thumb_y, scrollbar_w, thumb_h))
 
     def handle_click(self, mx: int, my: int) -> bool:
-        """Handle click: toggle expanded, or select item."""
+        """Handle click: toggle expanded, select item, or scroll via scrollbar."""
         box_x = self.rect.x + self._label_width
         box_w = self.rect.width - self._label_width
 
         if self.expanded and self.items:
-            # Check if click is on an item
             item_h = self.rect.height
             list_y = self.rect.y + self.rect.height
             visible_count = min(len(self.items), self._max_visible)
             list_bottom = list_y + visible_count * item_h
+            scrollable = len(self.items) > self._max_visible
+            scrollbar_w = 6 if scrollable else 0
+            sb_x = box_x + box_w - scrollbar_w
 
             if box_x <= mx <= box_x + box_w and list_y <= my <= list_bottom:
+                # Click on scrollbar track — scroll without closing
+                if scrollable and mx >= sb_x:
+                    self._scrollbar_click(my, list_y, list_bottom)
+                    return True
+
+                # Click on an item
                 clicked_i = (my - list_y) // item_h
                 idx = clicked_i + self._scroll_offset
                 if 0 <= idx < len(self.items):
@@ -480,6 +488,25 @@ class Dropdown:
 
         return False
 
+    def _scrollbar_click(
+        self, my: int, list_y: int, list_bottom: int
+    ) -> None:
+        """Handle a click on the scrollbar track — page toward click."""
+        max_offset = len(self.items) - self._max_visible
+        list_h = list_bottom - list_y
+        thumb_h = max(8, int(list_h * self._max_visible / len(self.items)))
+        thumb_travel = list_h - thumb_h
+        ratio = self._scroll_offset / max_offset if max_offset > 0 else 0
+        thumb_y = list_y + int(thumb_travel * ratio)
+        thumb_bottom = thumb_y + thumb_h
+
+        if my < thumb_y:
+            # Clicked above thumb — page up
+            self._scroll_offset = max(0, self._scroll_offset - self._max_visible)
+        elif my > thumb_bottom:
+            # Clicked below thumb — page down
+            self._scroll_offset = min(max_offset, self._scroll_offset + self._max_visible)
+
     def handle_mouse_move(self, mx: int, my: int) -> None:
         """Update hovered item index."""
         if not self.expanded:
@@ -490,8 +517,10 @@ class Dropdown:
         box_w = self.rect.width - self._label_width
         item_h = self.rect.height
         list_y = self.rect.y + self.rect.height
+        scrollable = len(self.items) > self._max_visible
+        scrollbar_w = 6 if scrollable else 0
 
-        if box_x <= mx <= box_x + box_w and my >= list_y:
+        if box_x <= mx < box_x + box_w - scrollbar_w and my >= list_y:
             i = (my - list_y) // item_h + self._scroll_offset
             if 0 <= i < len(self.items):
                 self._hovered_index = i
