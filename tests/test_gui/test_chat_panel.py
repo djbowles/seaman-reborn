@@ -1020,3 +1020,81 @@ class TestThinkingIndicator:
             t for t in rendered_texts if t in (".", "..", "...")
         ]
         assert len(dot_only_renders) == 0
+
+
+class TestStreamingLengthLimit:
+    """Tests for streaming text length limit (#18)."""
+
+    def test_stream_text_capped_at_max_length(self):
+        """Streaming text stops accumulating past _MAX_STREAM_LENGTH."""
+        from seaman_brain.gui.chat_panel import _MAX_STREAM_LENGTH
+
+        panel = ChatPanel()
+        panel.start_streaming()
+        # Send more text than the limit
+        chunk = "x" * 500
+        for _ in range(20):
+            panel.append_stream(chunk)
+        assert len(panel._stream_text) <= _MAX_STREAM_LENGTH + len(chunk)
+
+    def test_stream_text_accepts_under_limit(self):
+        """Streaming text accumulates normally under the limit."""
+        panel = ChatPanel()
+        panel.start_streaming()
+        panel.append_stream("hello ")
+        panel.append_stream("world")
+        assert panel._stream_text == "hello world"
+
+    def test_finish_streaming_truncates_via_add_message(self):
+        """finish_streaming() goes through add_message() which truncates."""
+        from seaman_brain.gui.chat_panel import _MAX_MESSAGE_LENGTH
+
+        panel = ChatPanel()
+        panel.start_streaming()
+        panel._stream_text = "x" * 5000
+        panel.finish_streaming()
+        assert len(list(panel._messages)[-1].text) <= _MAX_MESSAGE_LENGTH + 3
+
+
+class TestSurfaceDimensionValidation:
+    """Tests for surface dimension clamping (#19)."""
+
+    def test_render_with_tiny_window(self):
+        """Rendering with very small window doesn't crash."""
+        tiny_surface = MagicMock()
+        tiny_surface.get_width.return_value = 10
+        tiny_surface.get_height.return_value = 10
+
+        panel = ChatPanel()
+        panel.render(tiny_surface)  # No exception
+
+    def test_render_with_huge_window(self):
+        """Rendering with very large window doesn't crash."""
+        huge_surface = MagicMock()
+        huge_surface.get_width.return_value = 16384
+        huge_surface.get_height.return_value = 16384
+
+        panel = ChatPanel()
+        panel.render(huge_surface)  # No exception
+
+
+class TestFontFallbackChain:
+    """Tests for font fallback chain (#20)."""
+
+    def test_font_initialized_after_render(self):
+        """Font is initialized after first render."""
+        panel = ChatPanel()
+        panel.render(_surface_mock)
+        assert panel._font is not None
+
+    def test_font_fallback_when_sysfont_fails(self):
+        """Falls back to Font(None) when all SysFont calls fail."""
+        _pygame_mock.font.SysFont.side_effect = RuntimeError("no font")
+        try:
+            panel = ChatPanel()
+            panel._font = None  # Reset
+            panel._ensure_font()
+            assert panel._font is not None
+        finally:
+            _pygame_mock.font.SysFont.side_effect = None
+            _pygame_mock.font.SysFont.return_value = _font_mock

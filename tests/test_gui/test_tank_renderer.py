@@ -562,3 +562,27 @@ class TestEdgeCases:
         renderer._init_decorations()
         assert len(renderer._gravel_points) == gravel_count
         assert len(renderer._rocks) == rocks_count
+
+
+class TestSurfaceDimensionValidation:
+    """Tests for overlay surface dimension clamping (#19)."""
+
+    def test_cleanliness_overlay_with_huge_dimensions(self):
+        """Cleanliness overlay clamps dimensions to _MAX_SURFACE_DIM."""
+        from seaman_brain.environment.tank import TankEnvironment
+        from seaman_brain.gui.tank_renderer import TankRenderer
+
+        renderer = TankRenderer()
+        renderer.set_render_area(0, 0, 20000, 20000)
+        tank = TankEnvironment(cleanliness=0.2)  # Dirty enough for overlay
+        renderer.render(_surface_mock, tank)  # No exception
+
+    def test_temperature_overlay_with_huge_dimensions(self):
+        """Temperature overlay clamps dimensions to _MAX_SURFACE_DIM."""
+        from seaman_brain.environment.tank import TankEnvironment
+        from seaman_brain.gui.tank_renderer import TankRenderer
+
+        renderer = TankRenderer()
+        renderer.set_render_area(0, 0, 20000, 20000)
+        tank = TankEnvironment(temperature=5.0)  # Cold enough for overlay
+        renderer.render(_surface_mock, tank)  # No exception

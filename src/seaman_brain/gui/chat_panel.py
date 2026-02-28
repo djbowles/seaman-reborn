@@ -42,8 +42,10 @@ _MSG_PADDING = 6
 _MSG_MARGIN = 4
 _BUBBLE_RADIUS = 6
 _SCROLLBAR_WIDTH = 8
+_MAX_SURFACE_DIM = 8192  # Max pixel dimension for any Surface allocation
 _MAX_HISTORY = 200
 _MAX_MESSAGE_LENGTH = 2000
+_MAX_STREAM_LENGTH = 4000  # Streaming text limit (larger than message; truncated on finish)
 _FONT_SIZE = 15
 _CURSOR_BLINK_RATE = 0.53  # seconds
 _THINKING_DOT_INTERVAL = 0.4  # seconds per dot-cycle step
@@ -144,12 +146,15 @@ class ChatPanel:
     def _ensure_font(self) -> None:
         """Initialize the font if not yet done."""
         if self._font is None:
-            try:
-                self._font = pygame.font.SysFont("consolas", _FONT_SIZE)
-                self._font_height = self._font.get_linesize()
-            except Exception:
+            for name in ("consolas", "couriernew", "courier"):
+                try:
+                    self._font = pygame.font.SysFont(name, _FONT_SIZE)
+                    break
+                except Exception:
+                    continue
+            if self._font is None:
                 self._font = pygame.font.Font(None, _FONT_SIZE)
-                self._font_height = self._font.get_linesize()
+            self._font_height = self._font.get_linesize()
 
     def _calculate_layout(self, surface_width: int, surface_height: int) -> None:
         """Calculate panel dimensions based on window size."""
@@ -241,10 +246,13 @@ class ChatPanel:
     def append_stream(self, chunk: str) -> None:
         """Append a chunk to the current streaming response.
 
+        Stops accumulating after _MAX_STREAM_LENGTH to prevent memory/CPU
+        issues from very long LLM outputs.
+
         Args:
             chunk: Text chunk to append.
         """
-        if self._streaming:
+        if self._streaming and len(self._stream_text) < _MAX_STREAM_LENGTH:
             self._stream_text += chunk
 
     def finish_streaming(self) -> None:
@@ -445,6 +453,8 @@ class ChatPanel:
     def _render_panel_bg(self, surface: pygame.Surface) -> None:
         """Draw the semi-transparent panel background."""
         px, py, pw, ph = self._panel_rect
+        pw = max(1, min(pw, _MAX_SURFACE_DIM))
+        ph = max(1, min(ph, _MAX_SURFACE_DIM))
         bg_surface = pygame.Surface((pw, ph), pygame.SRCALPHA)
         bg_surface.fill(_PANEL_BG)
         surface.blit(bg_surface, (px, py))
@@ -454,6 +464,7 @@ class ChatPanel:
         if self._font is None:
             return
         px, py, pw, _ = self._panel_rect
+        pw = max(1, min(pw, _MAX_SURFACE_DIM))
         header_surf = pygame.Surface((pw, _HEADER_HEIGHT), pygame.SRCALPHA)
         header_surf.fill(_HEADER_BG)
         surface.blit(header_surf, (px, py))
@@ -517,8 +528,8 @@ class ChatPanel:
         self._total_content_height = total_h
 
         # Clamp surface dimensions to valid range
-        mw = max(1, min(mw, 8192))
-        mh = max(1, min(mh, 8192))
+        mw = max(1, min(mw, _MAX_SURFACE_DIM))
+        mh = max(1, min(mh, _MAX_SURFACE_DIM))
 
         # Create a clipping surface for the message area
         clip_surface = pygame.Surface((mw, mh), pygame.SRCALPHA)

@@ -42,9 +42,13 @@ def _ensure_font() -> pygame.font.Font:
     """Lazy-initialize and return the shared widget font."""
     global _FONT  # noqa: PLW0603
     if _FONT is None:
-        try:
-            _FONT = pygame.font.SysFont("consolas", _FONT_SIZE)
-        except Exception:
+        for name in ("consolas", "couriernew", "courier"):
+            try:
+                _FONT = pygame.font.SysFont(name, _FONT_SIZE)
+                break
+            except Exception:
+                continue
+        if _FONT is None:
             _FONT = pygame.font.Font(None, _FONT_SIZE)
     return _FONT
 

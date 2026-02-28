@@ -224,10 +224,14 @@ class GameEngine:
     def _ensure_overlay_fonts(self) -> None:
         """Initialize overlay fonts if not yet done."""
         if self._overlay_font is None:
-            try:
-                self._overlay_font = pygame.font.SysFont("consolas", 16)
-                self._overlay_title_font = pygame.font.SysFont("consolas", 28, bold=True)
-            except Exception:
+            for name in ("consolas", "couriernew", "courier"):
+                try:
+                    self._overlay_font = pygame.font.SysFont(name, 16)
+                    self._overlay_title_font = pygame.font.SysFont(name, 28, bold=True)
+                    break
+                except Exception:
+                    continue
+            if self._overlay_font is None:
                 self._overlay_font = pygame.font.Font(None, 16)
                 self._overlay_title_font = pygame.font.Font(None, 28)
 

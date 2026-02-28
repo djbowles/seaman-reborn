@@ -281,9 +281,13 @@ class InteractionManager:
     def _ensure_font(self) -> None:
         """Initialize font if not yet done."""
         if self._font is None:
-            try:
-                self._font = pygame.font.SysFont("consolas", 12)
-            except Exception:
+            for name in ("consolas", "couriernew", "courier"):
+                try:
+                    self._font = pygame.font.SysFont(name, 12)
+                    break
+                except Exception:
+                    continue
+            if self._font is None:
                 self._font = pygame.font.Font(None, 12)
 
     def _build_buttons(self) -> None:

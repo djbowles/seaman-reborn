@@ -167,10 +167,16 @@ class GameWindow:
         self._clock = pygame.time.Clock()
 
         pygame.font.init()
-        try:
-            self._font = pygame.font.SysFont("consolas", 16)
-            self._title_font = pygame.font.SysFont("consolas", 24, bold=True)
-        except Exception:
+        self._font = None
+        self._title_font = None
+        for name in ("consolas", "couriernew", "courier"):
+            try:
+                self._font = pygame.font.SysFont(name, 16)
+                self._title_font = pygame.font.SysFont(name, 24, bold=True)
+                break
+            except Exception:
+                continue
+        if self._font is None:
             self._font = pygame.font.Font(None, 16)
             self._title_font = pygame.font.Font(None, 24)
 

@@ -34,6 +34,7 @@ _WATER_SURFACE_COLOR = (100, 180, 220)
 _ROCK_COLOR = (90, 85, 75)
 _ROCK_HIGHLIGHT = (120, 115, 105)
 _MOISTURE_COLOR = (150, 200, 160, 80)
+_MAX_SURFACE_DIM = 8192  # Max pixel dimension for any Surface allocation
 
 
 @dataclass
@@ -480,9 +481,9 @@ class TankRenderer:
         g = int(_lerp(50, 35, transition))
         b = int(_lerp(15, 10, transition))
 
-        overlay = pygame.Surface(
-            (self._render_w, self._render_h), pygame.SRCALPHA
-        )
+        ow = max(1, min(self._render_w, _MAX_SURFACE_DIM))
+        oh = max(1, min(self._render_h, _MAX_SURFACE_DIM))
+        overlay = pygame.Surface((ow, oh), pygame.SRCALPHA)
         overlay.fill((r, g, b, overlay_alpha))
         surface.blit(overlay, (self._render_x, self._render_y))
 
@@ -516,9 +517,9 @@ class TankRenderer:
         if alpha < 2:
             return
 
-        overlay = pygame.Surface(
-            (self._render_w, self._render_h), pygame.SRCALPHA
-        )
+        ow = max(1, min(self._render_w, _MAX_SURFACE_DIM))
+        oh = max(1, min(self._render_h, _MAX_SURFACE_DIM))
+        overlay = pygame.Surface((ow, oh), pygame.SRCALPHA)
         overlay.fill((r, g, b, alpha))
         surface.blit(overlay, (self._render_x, self._render_y))
 

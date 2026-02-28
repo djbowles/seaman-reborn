@@ -190,10 +190,14 @@ class HUD:
     def _ensure_fonts(self) -> None:
         """Initialize fonts if not yet done."""
         if self._font is None:
-            try:
-                self._font = pygame.font.SysFont("consolas", _FONT_SIZE)
-                self._title_font = pygame.font.SysFont("consolas", _TITLE_FONT_SIZE, bold=True)
-            except Exception:
+            for name in ("consolas", "couriernew", "courier"):
+                try:
+                    self._font = pygame.font.SysFont(name, _FONT_SIZE)
+                    self._title_font = pygame.font.SysFont(name, _TITLE_FONT_SIZE, bold=True)
+                    break
+                except Exception:
+                    continue
+            if self._font is None:
                 self._font = pygame.font.Font(None, _FONT_SIZE)
                 self._title_font = pygame.font.Font(None, _TITLE_FONT_SIZE)
             self._font_height = self._font.get_linesize()
