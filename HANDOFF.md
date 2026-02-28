@@ -2,7 +2,7 @@
 
 ## Project Status
 
-The Python "brain" backend is **feature-complete**: 2278 tests passing, ruff clean, all 52 user stories implemented across 14 subpackages (llm, personality, memory, creature, conversation, cli, audio, environment, needs, behavior, gui, api, vision).
+The Python "brain" backend is **feature-complete**: 2533 tests passing, ruff clean, all 52 user stories implemented across 14 subpackages (llm, personality, memory, creature, conversation, cli, audio, environment, needs, behavior, gui, api, vision).
 
 - **Repo**: https://github.com/djbowles/seaman-reborn (private)
 - **Branch**: `ralph/ai-brain-core` (all work), `main` (base)
@@ -446,13 +446,46 @@ Resolved persistent display freeze where the game appeared alive (tank, creature
 
 ---
 
-## Next Up
+## Stage 4 — Game State Safety (2026-02-28)
 
-1. **Better voice output** — pyttsx3 SAPI5 sounds robotic. Kokoro is implemented but needs evaluation. Explore other options: Piper, Coqui, edge-tts, or other neural TTS that runs locally on GPU. Goal: natural-sounding creature voice with low latency.
+All 6 issues resolved. 4 were already fixed in prior sessions; 2 remaining gaps closed:
 
-2. **Reduce idle chatter by ~75%** — Creature makes too many autonomous remarks. The behavior engine checks every 5s (`_BEHAVIOR_CHECK_INTERVAL`). Need to either increase the interval, reduce the probability of verbal behaviors in `BehaviorEngine.get_idle_behavior()`, or add a cooldown between autonomous LLM remarks.
+### Issue #22 — Bloodline switch clears episodic memory
+- **File:** `conversation/manager.py` — `switch_bloodline()` now calls `self._episodic.clear()` after updating creature state and traits
+- **Problem:** After switching bloodlines, the new creature inherited the old creature's conversation history (episodic buffer), causing context pollution
+- **Fix:** Clear the rolling episodic buffer on switch. Semantic memory (long-term LanceDB vectors) is intentionally shared across bloodlines.
+
+### Issue #27 — Personality traits: public update method
+- **File:** `conversation/manager.py` — new `update_personality_traits(traits: dict[str, float])` method constructs a `TraitProfile` from dict, filtering to valid dataclass fields only
+- **File:** `gui/game_loop.py` — `_on_personality_change()` now calls `manager.update_personality_traits(traits)` instead of reaching into private `manager._traits`
+- **Problem:** Settings panel personality changes directly assigned a private attribute via `hasattr` check — fragile and violated encapsulation
+
+### Previously Fixed (confirmed by code inspection)
+- **#13** Death halt — `game_loop.py:744-756` death handler + restart; death screen at lines 1402-1437
+- **#16** Interaction fallback — `game_loop.py:649-690` `_INTERACTION_FALLBACKS` dict with canned emotes
+- **#17** Needs exception — `game_loop.py:386-394` try-except around `_update_needs()`, continues with stale state
+- **#23** Evolution cancels autonomous — `game_loop.py:713-720` cancels `_pending_autonomous` + releases scheduler
 
 ---
+
+## Completed Since Phase 1
+
+### Kokoro Neural TTS as Default (commits 58e31d9, fe81194, 8f854fb, acc49a9, 47a49c4)
+
+Kokoro replaced pyttsx3 as the default TTS provider. Key changes:
+- **Default config**: `tts_provider = "kokoro"`, voice `am_michael` (sardonic male), speed `0.9x`
+- **CPU execution**: Forced to CPU (`device="cpu"`) to avoid VRAM contention with Ollama's 30B LLM — 82M params runs fine on CPU at ~5.8x realtime
+- **G2P robustness**: Sentence-level processing skips unknown words instead of crashing the whole utterance; `<think>` blocks, HTML-like tags, and asterisks stripped before synthesis
+- **Automatic fallback**: After 3 consecutive Kokoro failures, falls back to pyttsx3 with notification
+- **24kHz output**: Higher quality than pyttsx3's 22050Hz; 24-voice palette with runtime selection and persistence
+
+### Idle Chatter Reduced ~75% (commit c4ee655)
+
+Three-pronged throttle on autonomous verbal behaviors:
+- **Per-type cooldowns raised**: COMPLAIN 45s→120s, OBSERVE 40s→120s
+- **Global verbal cooldown**: 120s lockout after ANY verbal behavior fires, blocking all COMPLAIN + OBSERVE
+- **Check interval tripled**: `_BEHAVIOR_CHECK_INTERVAL` 5s→15s in `game_loop.py`
+- 3 new tests validate cooldown blocking, expiry, and reset
 
 ## Minor Code Issues (non-blocking)
 
@@ -544,10 +577,9 @@ Systematic 5-agent audit traced **all user flows where audio or visual output pe
 - **Root cause:** Only handles `SpeechRecognitionSTTProvider`, `isinstance()` fails for others
 - **Fix:** Protocol method `set_input_device()` on all STT providers
 
-**13. Creature death → complete audio/visual halt**
-- **Files:** `game_loop.py:360-366, 667-679`
-- **Root cause:** `game_over=True` stops all updates; only death screen renders
-- **Note:** This is intentional but needs polish (death screen interactivity)
+**13. Creature death → complete audio/visual halt** ✅ FIXED
+- **Files:** `game_loop.py:744-756, 1402-1437`
+- **Fix:** Death handler with restart option + death screen overlay
 
 **14. Unguarded render sub-calls in `_render()`**
 - **Files:** `game_loop.py:1168-1211`
@@ -559,15 +591,13 @@ Systematic 5-agent audit traced **all user flows where audio or visual output pe
 - **Root cause:** If LLM future never completes, flags block all subsequent chat/behavior
 - **Fix:** Timeout guard that force-clears stuck flags after N seconds
 
-**16. Interaction reactions silently skipped when LLM busy**
-- **Files:** `game_loop.py:592-620`
-- **Root cause:** `if _pending_response is not None: return` — no canned fallback
-- **Fix:** Queue reaction or use canned fallback
+**16. Interaction reactions silently skipped when LLM busy** ✅ FIXED
+- **Files:** `game_loop.py:649-690`
+- **Fix:** `_INTERACTION_FALLBACKS` dict provides canned emote responses when LLM is busy
 
-**17. NeedsEngine exception cascades**
-- **Files:** `game_loop.py:354-358`
-- **Root cause:** No try-except around `_update_needs()`. Exception kills mood/behavior/event updates.
-- **Fix:** Wrap in try-except, log error, continue with stale state
+**17. NeedsEngine exception cascades** ✅ FIXED
+- **Files:** `game_loop.py:386-394`
+- **Fix:** try-except around `_update_needs()`, logs error and continues with stale state
 
 ### TIER 3 — Lower Impact / Edge Cases (10 issues)
 
@@ -591,15 +621,14 @@ Systematic 5-agent audit traced **all user flows where audio or visual output pe
 - **Trigger:** Concurrent writes from rapid toggles
 - **Fix:** File locking or debounced save
 
-**22. Bloodline switch → creature state None**
-- **Files:** `game_loop.py:1407-1414`
-- **Root cause:** Switch doesn't reload creature state (incomplete implementation)
-- **Fix:** Full bloodline switch with ConversationManager reinitialization
+**22. Bloodline switch → episodic memory pollution** ✅ FIXED
+- **Files:** `conversation/manager.py`
+- **Root cause:** `switch_bloodline()` didn't clear episodic buffer — new creature inherited old conversation
+- **Fix:** Added `self._episodic.clear()` in `switch_bloodline()` after state/traits update
 
-**23. Evolution during active behavior → stage/audio mismatch**
-- **Files:** `game_loop.py:641-642`
-- **Root cause:** Pending LLM call was built with old stage context
-- **Fix:** Cancel pending autonomous on evolution trigger
+**23. Evolution during active behavior → stage/audio mismatch** ✅ FIXED
+- **Files:** `game_loop.py:713-720`
+- **Fix:** Evolution trigger cancels `_pending_autonomous` and releases scheduler slot
 
 **24. `_cancel_and_stop()` hangs in `gather()` on shutdown**
 - **Files:** `window.py:387-412`
@@ -616,10 +645,10 @@ Systematic 5-agent audit traced **all user flows where audio or visual output pe
 - **Trigger:** Camera unplugged while settings panel open
 - **Fix:** Rebuild device list on panel open, validate indices
 
-**27. Personality trait changes not applied at runtime**
-- **Files:** `game_loop.py:1072-1078`
-- **Root cause:** Config saved but ConversationManager still uses old TraitProfile
-- **Fix:** Add `update_personality_traits()` to ConversationManager
+**27. Personality trait changes not applied at runtime** ✅ FIXED
+- **Files:** `conversation/manager.py`, `gui/game_loop.py`
+- **Root cause:** Settings panel directly assigned private `manager._traits` via `hasattr` check
+- **Fix:** Added `update_personality_traits()` public method on ConversationManager; game_loop calls it
 
 ### Cross-Cutting Patterns
 
@@ -634,27 +663,27 @@ Systematic 5-agent audit traced **all user flows where audio or visual output pe
 
 ### Suggested Fix Stages (for superplan)
 
-**Stage 1 — Async Safety Net** (highest ROI, prevents total system death)
-- Issues: #1, #2, #7, #8, #15
+**Stage 1 — Async Safety Net** ✅ COMPLETE
+- Issues: #1, #2, #7, #8, #15 — all resolved
 - Files: `window.py`, `manager.py`, `game_loop.py`
-- Core: exception-proof the event loop, add timeouts to all LLM calls, add `is_initialized` guard, add `is_running()` check, add stuck-flag timeout
+- Core: event loop try/except + auto-restart (max 3), `asyncio.wait_for()` on all LLM calls (120s chat, 60s warmup, 30s stream token), `is_initialized` guard, `loop.is_running()` + dead-loop restart, 60s stuck-flag timeout with forced clear
 
-**Stage 2 — Audio Pipeline Resilience**
-- Issues: #3, #4, #5, #6, #9, #10, #11, #12, #25
+**Stage 2 — Audio Pipeline Resilience** ✅ COMPLETE
+- Issues: #3, #4, #5, #6, #9, #10, #11, #12, #25 — all resolved
 - Files: `audio/tts.py`, `audio/manager.py`, `audio_integration.py`, `game_loop.py`
-- Core: TTS executor timeout, AudioManager retry/lazy-recreate, mixer health check, device propagation, STT provider upgrade feedback, config sync
+- Core: 30s TTS executor timeout, lazy AudioManager re-creation on settings change, mixer `get_init()` health check in `update()`, Kokoro 60s retry + auto-fallback to pyttsx3 after 3 failures, mixer reinit on output device change, STT upgrade failure notification, dual config sync (bridge + manager), `set_input_device()` protocol method on all STT providers, empty WAV detection with RuntimeError
 
-**Stage 3 — Render Pipeline Hardening**
-- Issues: #14, #18, #19, #20
+**Stage 3 — Render Pipeline Hardening** ✅ COMPLETE
+- Issues: #14, #18, #19, #20 — all resolved
 - Files: `game_loop.py`, `chat_panel.py`, `tank_renderer.py`, multiple font sites
-- Core: try-except per sub-render, text length limits, surface dimension validation, font fallback chain
+- Core: individual try-except per sub-render (10 blocks), message length caps (2000 chat / 4000 stream), surface dimension clamping (max 8192), font fallback chain (consolas → couriernew → courier → pygame default) across all 9 GUI modules
 
-**Stage 4 — Game State Safety**
-- Issues: #13, #16, #17, #22, #23, #27
-- Files: `game_loop.py`, `creature/persistence.py`, `conversation/manager.py`
-- Core: needs exception handling, interaction fallbacks, bloodline switch completion, evolution cancellation, personality hot-swap
+**Stage 4 — Game State Safety** ✅ COMPLETE
+- Issues: #13, #16, #17, #22, #23, #27 — all resolved
+- Files: `game_loop.py`, `conversation/manager.py`
+- Core: death handler + restart (#13), interaction fallbacks (#16), needs exception handling (#17), bloodline switch clears episodic memory (#22), evolution cancels pending autonomous (#23), `update_personality_traits()` public API (#27)
 
-**Stage 5 — Config & Settings Robustness**
-- Issues: #21, #24, #26
+**Stage 5 — Config & Settings Robustness** ✅ COMPLETE
+- Issues: #21, #24, #26 — all resolved
 - Files: `config.py`, `settings_panel.py`, `window.py`
-- Core: debounced TOML save, device list refresh, shutdown drain timeout
+- Core: debounced TOML save (0.5s coalesce via threading.Timer), `asyncio.wait()` with 3s timeout in `_drain()`, device list rebuild on settings panel open (background thread)
