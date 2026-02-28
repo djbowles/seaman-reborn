@@ -260,7 +260,9 @@ class KokoroTTSProvider:
             from kokoro import KPipeline
 
             lang = "a"  # American English
-            self._pipeline = KPipeline(lang_code=lang)
+            # Force CPU to avoid VRAM contention with Ollama's LLM.
+            # Kokoro is only 82M params (~300MB) — fast enough on CPU.
+            self._pipeline = KPipeline(lang_code=lang, device="cpu")
             self._available = True
         except ImportError as exc:
             self._available = False
