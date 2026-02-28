@@ -8,7 +8,7 @@ is queued thread-safely.
 from __future__ import annotations
 
 import sys
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -141,9 +141,17 @@ def _reset_mocks():
 
 @pytest.fixture()
 def engine() -> GameEngine:
-    """Create an initialized engine."""
-    eng = GameEngine(config=SeamanConfig())
-    eng.initialize()
+    """Create an initialized engine (TTS/STT mocked to prevent real audio)."""
+    mock_tts = MagicMock()
+    mock_tts.available = True
+    mock_stt = MagicMock()
+    mock_stt.available = False
+    with (
+        patch("seaman_brain.audio.manager.create_tts_provider", return_value=mock_tts),
+        patch("seaman_brain.audio.manager.create_stt_provider", return_value=mock_stt),
+    ):
+        eng = GameEngine(config=SeamanConfig())
+        eng.initialize()
     return eng
 
 

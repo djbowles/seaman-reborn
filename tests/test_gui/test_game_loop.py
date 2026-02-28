@@ -184,9 +184,21 @@ def config() -> SeamanConfig:
 
 @pytest.fixture()
 def engine(config: SeamanConfig) -> GameEngine:
-    """Create and initialize a GameEngine without starting the loop."""
-    eng = GameEngine(config=config)
-    eng.initialize()
+    """Create and initialize a GameEngine without starting the loop.
+
+    Mocks TTS/STT provider factories to prevent real pyttsx3 from
+    initializing (SAPI5 produces audible output on Windows).
+    """
+    mock_tts = MagicMock()
+    mock_tts.available = True
+    mock_stt = MagicMock()
+    mock_stt.available = False
+    with (
+        patch("seaman_brain.audio.manager.create_tts_provider", return_value=mock_tts),
+        patch("seaman_brain.audio.manager.create_stt_provider", return_value=mock_stt),
+    ):
+        eng = GameEngine(config=config)
+        eng.initialize()
     return eng
 
 
@@ -594,8 +606,16 @@ class TestVisionBridgeIntegration:
     def test_vision_bridge_created_when_enabled(self, config: SeamanConfig):
         """Vision bridge is created when vision.enabled is True."""
         config.vision.enabled = True
-        eng = GameEngine(config=config)
-        eng.initialize()
+        mock_tts = MagicMock()
+        mock_tts.available = True
+        mock_stt = MagicMock()
+        mock_stt.available = False
+        with (
+            patch("seaman_brain.audio.manager.create_tts_provider", return_value=mock_tts),
+            patch("seaman_brain.audio.manager.create_stt_provider", return_value=mock_stt),
+        ):
+            eng = GameEngine(config=config)
+            eng.initialize()
         assert eng._vision_bridge is not None
 
     def test_v_key_without_bridge_is_noop(self, engine: GameEngine):
@@ -613,8 +633,16 @@ class TestVisionBridgeIntegration:
     def test_v_key_with_bridge_triggers_observation(self, config: SeamanConfig):
         """Pressing V with vision bridge triggers observation and notification."""
         config.vision.enabled = True
-        eng = GameEngine(config=config)
-        eng.initialize()
+        mock_tts = MagicMock()
+        mock_tts.available = True
+        mock_stt = MagicMock()
+        mock_stt.available = False
+        with (
+            patch("seaman_brain.audio.manager.create_tts_provider", return_value=mock_tts),
+            patch("seaman_brain.audio.manager.create_stt_provider", return_value=mock_stt),
+        ):
+            eng = GameEngine(config=config)
+            eng.initialize()
 
         import seaman_brain.gui.game_loop as gl_mod
         gl_mod.pygame = _pygame_mock
@@ -633,8 +661,16 @@ class TestVisionBridgeIntegration:
     def test_shutdown_with_vision_bridge(self, config: SeamanConfig):
         """Shutdown cleans up vision bridge."""
         config.vision.enabled = True
-        eng = GameEngine(config=config)
-        eng.initialize()
+        mock_tts = MagicMock()
+        mock_tts.available = True
+        mock_stt = MagicMock()
+        mock_stt.available = False
+        with (
+            patch("seaman_brain.audio.manager.create_tts_provider", return_value=mock_tts),
+            patch("seaman_brain.audio.manager.create_stt_provider", return_value=mock_stt),
+        ):
+            eng = GameEngine(config=config)
+            eng.initialize()
         eng._vision_bridge = MagicMock()
         eng.shutdown()
         eng._vision_bridge.shutdown.assert_called_once()
