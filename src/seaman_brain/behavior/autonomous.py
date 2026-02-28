@@ -213,13 +213,14 @@ class BehaviorEngine:
         base_cooldown: float = 30.0,
         behavior_cooldowns: dict[BehaviorType, float] | None = None,
         now_func: Any = None,
+        verbal_cooldown: float = 120.0,
     ) -> None:
         self._base_cooldown = max(0.0, base_cooldown)
         self._cooldowns: dict[BehaviorType, float] = {
             BehaviorType.IDLE_SWIM: 15.0,
             BehaviorType.TAP_GLASS: 60.0,
-            BehaviorType.COMPLAIN: 45.0,
-            BehaviorType.OBSERVE: 40.0,
+            BehaviorType.COMPLAIN: 120.0,
+            BehaviorType.OBSERVE: 120.0,
             BehaviorType.SLEEP: 120.0,
             BehaviorType.EAT: 90.0,
         }
@@ -228,6 +229,9 @@ class BehaviorEngine:
         self._now_func = now_func or (lambda: datetime.now(UTC))
         self._last_triggered: dict[BehaviorType, datetime] = {}
         self._message_index: dict[BehaviorType, int] = {}
+        # Global cooldown across all verbal behaviors (COMPLAIN + OBSERVE)
+        self._verbal_cooldown = max(0.0, verbal_cooldown)
+        self._last_verbal_time: datetime | None = None
 
     def get_idle_behavior(
         self,
@@ -254,10 +258,14 @@ class BehaviorEngine:
             The selected IdleBehavior, or None if nothing is available.
         """
         now = self._now_func()
+        verbal_on_cooldown = self._is_verbal_on_cooldown(now)
         candidates: list[tuple[float, BehaviorType]] = []
 
         for btype in BehaviorType:
             if not self._is_off_cooldown(btype, now):
+                continue
+            # Global verbal cooldown: skip all verbal behaviors if one spoke recently
+            if verbal_on_cooldown and btype in VERBAL_BEHAVIORS:
                 continue
             priority = self._score_behavior(btype, needs, mood, time_context, traits)
             if priority > 0.0:
@@ -277,6 +285,8 @@ class BehaviorEngine:
 
         # Record trigger time
         self._last_triggered[best_type] = now
+        if best_type in VERBAL_BEHAVIORS:
+            self._last_verbal_time = now
 
         return IdleBehavior(
             action_type=best_type,
@@ -322,6 +332,7 @@ class BehaviorEngine:
     def reset_cooldowns(self) -> None:
         """Clear all cooldown timers."""
         self._last_triggered.clear()
+        self._last_verbal_time = None
 
     def get_cooldown_remaining(self, behavior_type: BehaviorType) -> float:
         """Get remaining cooldown seconds for a behavior type.
@@ -345,6 +356,12 @@ class BehaviorEngine:
             return True
         cd = self._cooldowns.get(behavior_type, self._base_cooldown)
         return (now - last).total_seconds() >= cd
+
+    def _is_verbal_on_cooldown(self, now: datetime) -> bool:
+        """Check if the global verbal cooldown is still active."""
+        if self._last_verbal_time is None:
+            return False
+        return (now - self._last_verbal_time).total_seconds() < self._verbal_cooldown
 
     def _score_behavior(
         self,

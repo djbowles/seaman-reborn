@@ -75,7 +75,7 @@ class GameState(Enum):
 
 
 _NEEDS_UPDATE_INTERVAL = 1.0  # seconds between needs ticks
-_BEHAVIOR_CHECK_INTERVAL = 5.0  # seconds between behavior checks
+_BEHAVIOR_CHECK_INTERVAL = 15.0  # seconds between behavior checks
 _EVENT_CHECK_INTERVAL = 3.0  # seconds between event checks
 _VISION_LOOK_TIMEOUT = 30.0  # seconds before Look Now gives up
 _STT_DEBOUNCE_SECONDS = 1.5  # wait for speech to settle before submitting

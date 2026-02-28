@@ -357,6 +357,63 @@ class TestCooldownSystem:
         # Other defaults remain
         assert engine._cooldowns[BehaviorType.TAP_GLASS] == 60.0
 
+    def test_verbal_cooldown_blocks_all_verbal_types(
+        self, creature_state, base_time_context
+    ) -> None:
+        """After a verbal behavior, all verbal behaviors are blocked globally."""
+        # Force COMPLAIN to win by making creature very hungry + irritated
+        hungry = CreatureNeeds(hunger=0.95, comfort=0.3, health=0.5, stimulation=0.2)
+        now = datetime(2026, 2, 25, 14, 0, 0, tzinfo=UTC)
+        engine = BehaviorEngine(
+            verbal_cooldown=120.0,
+            now_func=lambda: now,
+        )
+        result1 = engine.get_idle_behavior(
+            creature_state, hungry, CreatureMood.HOSTILE, base_time_context
+        )
+        assert result1 is not None
+        assert result1.action_type in VERBAL_BEHAVIORS
+        # Now verbal cooldown should be active — next call shouldn't pick verbal
+        result2 = engine.get_idle_behavior(
+            creature_state, hungry, CreatureMood.HOSTILE, base_time_context
+        )
+        if result2 is not None:
+            assert result2.action_type not in VERBAL_BEHAVIORS
+
+    def test_verbal_cooldown_expires(
+        self, creature_state, base_time_context
+    ) -> None:
+        """Verbal behaviors become available again after verbal cooldown expires."""
+        # High hunger + high stimulation so COMPLAIN wins over TAP_GLASS/EAT
+        hungry = CreatureNeeds(hunger=0.95, comfort=0.3, health=0.5, stimulation=0.8)
+        times = [
+            datetime(2026, 2, 25, 14, 0, 0, tzinfo=UTC),   # first call
+            datetime(2026, 2, 25, 14, 5, 0, tzinfo=UTC),   # 5 min later - expired
+        ]
+        time_iter = iter(times)
+        engine = BehaviorEngine(
+            verbal_cooldown=120.0,
+            now_func=lambda: next(time_iter),
+        )
+        result1 = engine.get_idle_behavior(
+            creature_state, hungry, CreatureMood.HOSTILE, base_time_context
+        )
+        assert result1 is not None
+        assert result1.action_type in VERBAL_BEHAVIORS
+        # 5 minutes later, verbal should be available again
+        result2 = engine.get_idle_behavior(
+            creature_state, hungry, CreatureMood.HOSTILE, base_time_context
+        )
+        assert result2 is not None
+        assert result2.action_type in VERBAL_BEHAVIORS
+
+    def test_reset_cooldowns_clears_verbal(self) -> None:
+        """reset_cooldowns() also clears the global verbal cooldown."""
+        engine = _make_engine()
+        engine._last_verbal_time = datetime(2026, 2, 25, 14, 0, 0, tzinfo=UTC)
+        engine.reset_cooldowns()
+        assert engine._last_verbal_time is None
+
 
 # ---------------------------------------------------------------------------
 # BehaviorEngine - need-driven priority tests
