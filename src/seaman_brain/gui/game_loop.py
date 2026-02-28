@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 import time
 from enum import Enum
 from typing import Any
@@ -203,6 +204,10 @@ class GameEngine:
         # Thread-safe queue for model list updates from async callback
         self._pending_model_list: list[str] | None = None
 
+        # Diagnostic heartbeat
+        self._heartbeat_timer: float = 0.0
+        self._frame_count: int = 0
+
         # Font for overlays (lazy)
         self._overlay_font: pygame.font.Font | None = None
         self._overlay_title_font: pygame.font.Font | None = None
@@ -313,6 +318,22 @@ class GameEngine:
         Args:
             dt: Delta time in seconds since last frame.
         """
+        # Diagnostic heartbeat — log game loop health every 30s
+        self._frame_count += 1
+        self._heartbeat_timer += dt
+        if self._heartbeat_timer >= 30.0:
+            logger.info(
+                "Heartbeat: state=%s game_over=%s evolution=%s "
+                "pending_response=%s pending_autonomous=%s frames=%d",
+                self._game_state.value,
+                self.game_over,
+                self._evolution_active,
+                self._pending_response is not None,
+                self._pending_autonomous is not None,
+                self._frame_count,
+            )
+            self._heartbeat_timer = 0.0
+
         # Apply pending model list from async thread (thread-safe)
         if self._pending_model_list is not None and self._settings_panel is not None:
             try:
@@ -326,6 +347,7 @@ class GameEngine:
             if self._settings_panel is not None:
                 try:
                     self._settings_panel.update(dt)
+                    self._settings_panel.apply_pending_refresh()
                 except Exception as exc:
                     logger.error("Settings panel update error: %s", exc, exc_info=True)
             # Still process pending vision results so "Look Now" works
@@ -345,8 +367,11 @@ class GameEngine:
             self._update_evolution_celebration(dt)
             return
 
-        # Update tank environment degradation
-        self._tank.update(dt, self._config.environment)
+        # ── Tank + needs + death ──────────────────────────────────────
+        try:
+            self._tank.update(dt, self._config.environment)
+        except Exception as exc:
+            logger.error("Tank update error: %s", exc, exc_info=True)
 
         # Accumulate timers
         self._needs_timer += dt
@@ -363,94 +388,102 @@ class GameEngine:
             except Exception as exc:
                 logger.error("Needs update error (continuing with stale state): %s", exc)
 
-        # Check death
-        cause = self._death_engine.check_death(
-            self._creature_state, self._needs, self._tank
-        )
-        if cause is not None:
-            self._handle_death(cause)
-            return
+        try:
+            cause = self._death_engine.check_death(
+                self._creature_state, self._needs, self._tank
+            )
+            if cause is not None:
+                self._handle_death(cause)
+                return
+        except Exception as exc:
+            logger.error("Death check error: %s", exc, exc_info=True)
 
-        # Update mood — use traits from ConversationManager if available
-        time_context = self._clock.get_time_context()
-        traits = self._get_traits()
-        mood = self._mood_engine.calculate_mood(
-            needs=self._needs,
-            trust=self._creature_state.trust_level,
-            time_context=time_context,
-            recent_interactions=self._creature_state.interaction_count,
-            traits=traits,
-        )
-        self._creature_state.mood = mood.value
+        # ── Mood + behavior + events + evolution ─────────────────────
+        try:
+            time_context = self._clock.get_time_context()
+            traits = self._get_traits()
+            mood = self._mood_engine.calculate_mood(
+                needs=self._needs,
+                trust=self._creature_state.trust_level,
+                time_context=time_context,
+                recent_interactions=self._creature_state.interaction_count,
+                traits=traits,
+            )
+            self._creature_state.mood = mood.value
+        except Exception as exc:
+            logger.error("Mood update error: %s", exc, exc_info=True)
+            time_context = {}
 
-        # Periodic behavior check
-        if self._behavior_timer >= _BEHAVIOR_CHECK_INTERVAL:
-            self._behavior_timer = 0.0
-            self._check_behaviors(time_context)
+        try:
+            if self._behavior_timer >= _BEHAVIOR_CHECK_INTERVAL:
+                self._behavior_timer = 0.0
+                self._check_behaviors(time_context)
 
-        # Periodic event check
-        if self._event_timer >= _EVENT_CHECK_INTERVAL:
-            self._event_timer = 0.0
-            self._check_events(time_context)
+            if self._event_timer >= _EVENT_CHECK_INTERVAL:
+                self._event_timer = 0.0
+                self._check_events(time_context)
 
-        # Check evolution
-        self._check_evolution()
+            self._check_evolution()
+        except Exception as exc:
+            logger.error("Behavior/event/evolution error: %s", exc, exc_info=True)
 
-        # Update animations
-        self._tank_renderer.update(dt, self._tank)
-        self._creature_renderer.update(dt)
-        self._chat_panel.update(dt)
-        self._hud.update(dt)
-        self._interaction_manager.update(dt)
+        # ── Animations + action bar ──────────────────────────────────
+        try:
+            self._tank_renderer.update(dt, self._tank)
+            self._creature_renderer.update(dt)
+            self._chat_panel.update(dt)
+            self._hud.update(dt)
+            self._interaction_manager.update(dt)
 
-        # Update action bar cooldowns
-        im = self._interaction_manager
-        self._action_bar.update_cooldowns(
-            feed_remaining=im.feeding_engine.cooldown_remaining(self._creature_state),
-            feed_max=self._config.needs.feeding_cooldown_seconds,
-            clean_remaining=im.care_engine.cleaning_cooldown_remaining(),
-            clean_max=CLEANING_DURATION_SECONDS,
-            aerate_remaining=im.care_engine.aerating_cooldown_remaining(),
-            aerate_max=AERATOR_COOLDOWN_SECONDS,
-        )
-        if self._audio_bridge is not None:
-            self._audio_bridge.update(dt)
-            # Sync HUD audio indicators from bridge state
-            self._hud.mic_active = self._audio_bridge.mic_active
-        self._hud.tts_active = (
-            self._audio_manager is not None and self._audio_manager.tts_enabled
-        )
+            im = self._interaction_manager
+            self._action_bar.update_cooldowns(
+                feed_remaining=im.feeding_engine.cooldown_remaining(self._creature_state),
+                feed_max=self._config.needs.feeding_cooldown_seconds,
+                clean_remaining=im.care_engine.cleaning_cooldown_remaining(),
+                clean_max=CLEANING_DURATION_SECONDS,
+                aerate_remaining=im.care_engine.aerating_cooldown_remaining(),
+                aerate_max=AERATOR_COOLDOWN_SECONDS,
+            )
+        except Exception as exc:
+            logger.error("Animation/action bar error: %s", exc, exc_info=True)
 
-        # Update vision pipeline
-        if self._vision_bridge is not None:
-            self._vision_bridge.update(dt, self.window.screen)
-            self._check_vision_look_result()
-            manager = self.window.manager
-            if manager is not None:
-                manager.set_vision_observations(
-                    self._vision_bridge.get_recent_observations()
-                )
+        # ── Audio + vision bridges ───────────────────────────────────
+        try:
+            if self._audio_bridge is not None:
+                self._audio_bridge.update(dt)
+                self._hud.mic_active = self._audio_bridge.mic_active
+            self._hud.tts_active = (
+                self._audio_manager is not None and self._audio_manager.tts_enabled
+            )
 
-        # Update notifications
-        alive: list[tuple[str, float]] = []
-        for text, remaining in self._notifications:
-            remaining -= dt
-            if remaining > 0:
-                alive.append((text, remaining))
-        self._notifications = alive
+            if self._vision_bridge is not None:
+                self._vision_bridge.update(dt, self.window.screen)
+                self._check_vision_look_result()
+                manager = self.window.manager
+                if manager is not None:
+                    manager.set_vision_observations(
+                        self._vision_bridge.get_recent_observations()
+                    )
+        except Exception as exc:
+            logger.error("Audio/vision bridge error: %s", exc, exc_info=True)
 
-        # Process queued STT input (debounced, non-cancelling)
-        self._check_stt_queue()
+        # ── Notifications + STT + pending responses + stage sync ─────
+        try:
+            alive: list[tuple[str, float]] = []
+            for text, remaining in self._notifications:
+                remaining -= dt
+                if remaining > 0:
+                    alive.append((text, remaining))
+            self._notifications = alive
 
-        # Check for pending conversation response
-        self._check_pending_response()
+            self._check_stt_queue()
+            self._check_pending_response()
+            self._check_pending_autonomous()
 
-        # Check for pending autonomous LLM remark
-        self._check_pending_autonomous()
-
-        # Sync creature stage to renderer
-        if self._creature_renderer.stage != self._creature_state.stage:
-            self._creature_renderer.set_stage(self._creature_state.stage)
+            if self._creature_renderer.stage != self._creature_state.stage:
+                self._creature_renderer.set_stage(self._creature_state.stage)
+        except Exception as exc:
+            logger.error("Notification/STT/response error: %s", exc, exc_info=True)
 
     def _update_needs(self, elapsed: float) -> None:
         """Update creature needs based on elapsed time."""
@@ -1087,17 +1120,25 @@ class GameEngine:
             return
 
         if self._game_state == GameState.SETTINGS:
+            logger.info("Game state: SETTINGS -> PLAYING")
             self._game_state = GameState.PLAYING
             self._settings_panel.close()
         else:
+            logger.info("Game state: %s -> SETTINGS", self._game_state.value)
             self._game_state = GameState.SETTINGS
             self._settings_panel.open()
-            self._settings_panel.refresh_device_lists()
+            # Refresh device lists on a background thread to avoid blocking
+            # the main Pygame loop (pyttsx3.init + cv2.VideoCapture can block)
+            threading.Thread(
+                target=self._settings_panel.refresh_device_lists,
+                daemon=True,
+            ).start()
             # Async-load Ollama model list when opening settings
             self._load_model_list_async()
 
     def _on_settings_close(self) -> None:
         """Callback when settings panel X button is clicked."""
+        logger.info("Game state: SETTINGS -> PLAYING (panel closed)")
         self._game_state = GameState.PLAYING
 
     def _load_model_list_async(self) -> None:
@@ -1509,10 +1550,12 @@ class GameEngine:
                 self._lineage_panel.close()
             except Exception as exc:
                 logger.error("Lineage panel close failed: %s", exc, exc_info=True)
+            logger.info("Game state: LINEAGE -> PLAYING")
             self._game_state = GameState.PLAYING
         else:
             try:
                 self._lineage_panel.open()
+                logger.info("Game state: %s -> LINEAGE", self._game_state.value)
                 self._game_state = GameState.LINEAGE
             except Exception as exc:
                 logger.error("Lineage panel open failed: %s", exc, exc_info=True)

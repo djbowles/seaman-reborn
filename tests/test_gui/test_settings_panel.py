@@ -565,6 +565,7 @@ class TestRefreshDeviceLists:
             return_value=[(0, "Camera 0")],
         ):
             panel.refresh_device_lists()
+            panel.apply_pending_refresh()
 
         if panel._output_device_dropdown is not None:
             assert panel._output_device_dropdown.items == ["Speaker A", "Speaker B"]
@@ -590,6 +591,7 @@ class TestRefreshDeviceLists:
             return_value=[(0, "Camera 0")],
         ):
             panel.refresh_device_lists()
+            panel.apply_pending_refresh()
 
         if panel._input_device_dropdown is not None:
             assert panel._input_device_dropdown.items == ["Mic X", "Mic Y", "Mic Z"]
@@ -621,7 +623,92 @@ class TestRefreshDeviceLists:
             return_value=[(0, "Cam Front"), (2, "Cam Rear")],
         ):
             panel.refresh_device_lists()
+            panel.apply_pending_refresh()
 
         if panel._vision_cam_dropdown is not None:
             assert panel._vision_cam_dropdown.items == ["Cam Front", "Cam Rear"]
             assert panel._cam_device_indices == [0, 2]
+
+    def test_refresh_updates_output_after_apply(self, panel: SettingsPanel):
+        """refresh_device_lists queues results, apply_pending_refresh applies them."""
+        panel.open()
+        panel.render(_surface_mock)
+
+        with patch(
+            "seaman_brain.gui.settings_panel.list_audio_output_devices",
+            return_value=[(0, "Speaker X"), (1, "Speaker Y")],
+        ), patch(
+            "seaman_brain.gui.settings_panel.list_audio_input_devices",
+            return_value=[(0, "Mic A")],
+        ), patch(
+            "seaman_brain.gui.settings_panel.list_tts_voices",
+            return_value=[("v1", "Voice One")],
+        ), patch(
+            "seaman_brain.gui.settings_panel.list_webcams",
+            return_value=[(0, "Camera 0")],
+        ):
+            panel.refresh_device_lists()
+
+        # Before apply, pending_refresh should be set
+        assert panel._pending_refresh is not None
+
+        panel.apply_pending_refresh()
+        assert panel._pending_refresh is None
+        if panel._output_device_dropdown is not None:
+            assert panel._output_device_dropdown.items == ["Speaker X", "Speaker Y"]
+
+
+# ── Pending Refresh Thread Safety ─────────────────────────────────────
+
+
+class TestPendingRefreshPattern:
+    """Tests for the thread-safe pending refresh pattern."""
+
+    def test_apply_pending_refresh_noop_when_none(self, panel: SettingsPanel):
+        """apply_pending_refresh does nothing when no pending data."""
+        panel._pending_refresh = None
+        panel.apply_pending_refresh()  # Should not raise
+
+    def test_apply_clears_pending(self, panel: SettingsPanel):
+        """apply_pending_refresh clears _pending_refresh after applying."""
+        panel.open()
+        panel.render(_surface_mock)
+        panel._pending_refresh = {"output": (["A", "B"], 0)}
+        panel.apply_pending_refresh()
+        assert panel._pending_refresh is None
+
+    def test_refreshing_flag_prevents_concurrent(self, panel: SettingsPanel):
+        """Second refresh call while first is running is skipped."""
+        panel.open()
+        panel.render(_surface_mock)
+
+        # Simulate _refreshing being True (as if another thread is running)
+        with panel._refresh_lock:
+            panel._refreshing = True
+
+        with patch(
+            "seaman_brain.gui.settings_panel.list_audio_output_devices",
+        ) as mock_list:
+            panel.refresh_device_lists()
+        # Should not have been called since _refreshing was True
+        mock_list.assert_not_called()
+
+    def test_refresh_error_clears_refreshing_flag(self, panel: SettingsPanel):
+        """Refresh errors still clear the _refreshing flag."""
+        panel.open()
+        panel.render(_surface_mock)
+        with patch(
+            "seaman_brain.gui.settings_panel.list_audio_output_devices",
+            side_effect=RuntimeError("device error"),
+        ), patch(
+            "seaman_brain.gui.settings_panel.list_audio_input_devices",
+            return_value=[],
+        ), patch(
+            "seaman_brain.gui.settings_panel.list_tts_voices",
+            return_value=[],
+        ), patch(
+            "seaman_brain.gui.settings_panel.list_webcams",
+            return_value=[],
+        ):
+            panel.refresh_device_lists()
+        assert panel._refreshing is False

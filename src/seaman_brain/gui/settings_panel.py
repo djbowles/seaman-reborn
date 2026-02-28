@@ -9,6 +9,7 @@ Session-scoped: changes live in memory only, not persisted to TOML.
 from __future__ import annotations
 
 import logging
+import threading
 from collections.abc import Callable
 from enum import Enum
 from typing import Any
@@ -167,6 +168,11 @@ class SettingsPanel:
         self._tts_voice_dropdown: Dropdown | None = None
 
         self._widgets_built = False
+
+        # Thread-safe device refresh (populated by background thread)
+        self._pending_refresh: dict[str, Any] | None = None
+        self._refreshing = False
+        self._refresh_lock = threading.Lock()
 
     def _ensure_fonts(self) -> None:
         """Initialize fonts if not yet done."""
@@ -783,39 +789,91 @@ class SettingsPanel:
             self.on_vision_change("look_now", True)
 
     def refresh_device_lists(self) -> None:
-        """Re-enumerate audio/video devices and update dropdown options."""
+        """Re-enumerate audio/video devices and queue results for main thread.
+
+        This method is safe to call from a background thread. It collects
+        device lists into ``_pending_refresh`` which is applied on the main
+        thread via ``apply_pending_refresh()``.
+        """
         if not self._widgets_built:
             return
 
-        if self._output_device_dropdown is not None:
-            out_devs = list_audio_output_devices()
-            out_names = [name for _, name in out_devs]
-            out_idx = _find_saved_index(out_names, self._config.audio.audio_output_device)
-            self._output_device_dropdown.set_items(out_names, selected_index=out_idx)
+        with self._refresh_lock:
+            if self._refreshing:
+                return
+            self._refreshing = True
 
-        if self._input_device_dropdown is not None:
-            in_devs = list_audio_input_devices()
-            in_names = [name for _, name in in_devs]
-            in_idx = _find_saved_index(in_names, self._config.audio.audio_input_device)
-            self._input_device_dropdown.set_items(in_names, selected_index=in_idx)
+        try:
+            result: dict[str, Any] = {}
 
-        if self._tts_voice_dropdown is not None:
-            voices = list_tts_voices(self._config.audio.tts_provider)
-            voice_names = [name for _, name in voices]
-            voice_idx = _find_saved_index(voice_names, self._config.audio.tts_voice)
-            self._tts_voice_dropdown.set_items(voice_names, selected_index=voice_idx)
+            if self._output_device_dropdown is not None:
+                out_devs = list_audio_output_devices()
+                out_names = [name for _, name in out_devs]
+                out_idx = _find_saved_index(
+                    out_names, self._config.audio.audio_output_device
+                )
+                result["output"] = (out_names, out_idx)
 
-        if self._vision_cam_dropdown is not None:
-            cams = list_webcams()
-            cam_names = [name for _, name in cams]
-            self._cam_device_indices = [dev_idx for dev_idx, _ in cams]
-            cam_idx = 0
-            saved_cam = self._config.vision.webcam_index
-            for i, dev_idx in enumerate(self._cam_device_indices):
-                if dev_idx == saved_cam:
-                    cam_idx = i
-                    break
-            self._vision_cam_dropdown.set_items(cam_names, selected_index=cam_idx)
+            if self._input_device_dropdown is not None:
+                in_devs = list_audio_input_devices()
+                in_names = [name for _, name in in_devs]
+                in_idx = _find_saved_index(
+                    in_names, self._config.audio.audio_input_device
+                )
+                result["input"] = (in_names, in_idx)
+
+            if self._tts_voice_dropdown is not None:
+                voices = list_tts_voices(self._config.audio.tts_provider)
+                voice_names = [name for _, name in voices]
+                voice_idx = _find_saved_index(voice_names, self._config.audio.tts_voice)
+                result["tts_voice"] = (voice_names, voice_idx)
+
+            if self._vision_cam_dropdown is not None:
+                cams = list_webcams()
+                cam_names = [name for _, name in cams]
+                cam_indices = [dev_idx for dev_idx, _ in cams]
+                cam_idx = 0
+                saved_cam = self._config.vision.webcam_index
+                for i, dev_idx in enumerate(cam_indices):
+                    if dev_idx == saved_cam:
+                        cam_idx = i
+                        break
+                result["camera"] = (cam_names, cam_indices, cam_idx)
+
+            self._pending_refresh = result
+        except Exception as exc:
+            logger.error("Device refresh failed: %s", exc, exc_info=True)
+        finally:
+            with self._refresh_lock:
+                self._refreshing = False
+
+    def apply_pending_refresh(self) -> None:
+        """Apply queued device list results to dropdowns (main thread only).
+
+        Called from the game loop's ``_update()`` to ensure pygame widget
+        updates happen on the main thread.
+        """
+        pending = self._pending_refresh
+        if pending is None:
+            return
+        self._pending_refresh = None
+
+        if "output" in pending and self._output_device_dropdown is not None:
+            names, idx = pending["output"]
+            self._output_device_dropdown.set_items(names, selected_index=idx)
+
+        if "input" in pending and self._input_device_dropdown is not None:
+            names, idx = pending["input"]
+            self._input_device_dropdown.set_items(names, selected_index=idx)
+
+        if "tts_voice" in pending and self._tts_voice_dropdown is not None:
+            names, idx = pending["tts_voice"]
+            self._tts_voice_dropdown.set_items(names, selected_index=idx)
+
+        if "camera" in pending and self._vision_cam_dropdown is not None:
+            names, indices, idx = pending["camera"]
+            self._cam_device_indices = indices
+            self._vision_cam_dropdown.set_items(names, selected_index=idx)
 
     def set_last_observation(self, text: str) -> None:
         """Update the displayed last observation text.

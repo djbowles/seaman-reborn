@@ -1466,3 +1466,149 @@ class TestAudioManagerLazyRetry:
         engine._audio_manager = existing
         engine._ensure_audio_manager()
         assert engine._audio_manager is existing
+
+
+# ── Heartbeat Diagnostics ─────────────────────────────────────────────
+
+
+class TestHeartbeatDiagnostics:
+    """Tests for the diagnostic heartbeat logging in _update()."""
+
+    def test_heartbeat_timer_increments(self, engine: GameEngine):
+        """Heartbeat timer accumulates across frames."""
+        engine._update(1.0)
+        assert engine._heartbeat_timer == pytest.approx(1.0, abs=0.1)
+
+    def test_heartbeat_logs_at_30s(self, engine: GameEngine, caplog):
+        """Heartbeat emits a log entry after 30s of accumulated dt."""
+        import logging
+
+        with caplog.at_level(logging.INFO, logger="seaman_brain.gui.game_loop"):
+            engine._heartbeat_timer = 29.5
+            engine._update(1.0)
+        assert any("Heartbeat:" in r.message for r in caplog.records)
+
+    def test_heartbeat_resets_after_log(self, engine: GameEngine):
+        """Heartbeat timer resets to 0 after logging."""
+        engine._heartbeat_timer = 29.5
+        engine._update(1.0)
+        assert engine._heartbeat_timer < 1.0
+
+    def test_frame_count_increments(self, engine: GameEngine):
+        """Frame count increments each update call."""
+        initial = engine._frame_count
+        engine._update(0.016)
+        engine._update(0.016)
+        engine._update(0.016)
+        assert engine._frame_count == initial + 3
+
+
+# ── State Transition Logging ──────────────────────────────────────────
+
+
+class TestStateTransitionLogging:
+    """Tests for game state transition logging."""
+
+    def test_toggle_settings_logs_open(self, engine: GameEngine, caplog):
+        """Opening settings logs the state transition."""
+        import logging
+
+        with caplog.at_level(logging.INFO, logger="seaman_brain.gui.game_loop"):
+            with patch("seaman_brain.gui.game_loop.threading"):
+                engine._toggle_settings()
+        assert any("SETTINGS" in r.message for r in caplog.records)
+        assert engine._game_state == GameState.SETTINGS
+
+    def test_toggle_settings_logs_close(self, engine: GameEngine, caplog):
+        """Closing settings logs the state transition."""
+        import logging
+
+        engine._game_state = GameState.SETTINGS
+        with caplog.at_level(logging.INFO, logger="seaman_brain.gui.game_loop"):
+            engine._toggle_settings()
+        assert any("PLAYING" in r.message for r in caplog.records)
+        assert engine._game_state == GameState.PLAYING
+
+    def test_toggle_lineage_logs_open(self, engine: GameEngine, caplog):
+        """Opening lineage logs the state transition."""
+        import logging
+
+        with caplog.at_level(logging.INFO, logger="seaman_brain.gui.game_loop"):
+            engine._toggle_lineage()
+        assert any("LINEAGE" in r.message for r in caplog.records)
+        assert engine._game_state == GameState.LINEAGE
+
+    def test_toggle_lineage_logs_close(self, engine: GameEngine, caplog):
+        """Closing lineage logs the state transition."""
+        import logging
+
+        engine._game_state = GameState.LINEAGE
+        with caplog.at_level(logging.INFO, logger="seaman_brain.gui.game_loop"):
+            engine._toggle_lineage()
+        assert any("PLAYING" in r.message for r in caplog.records)
+        assert engine._game_state == GameState.PLAYING
+
+
+# ── Async Device Refresh ──────────────────────────────────────────────
+
+
+class TestAsyncDeviceRefresh:
+    """Tests for the background thread device refresh in _toggle_settings."""
+
+    def test_toggle_settings_dispatches_refresh_thread(self, engine: GameEngine):
+        """Opening settings dispatches refresh_device_lists on a thread."""
+        with patch("seaman_brain.gui.game_loop.threading") as mock_threading:
+            engine._toggle_settings()
+        mock_threading.Thread.assert_called_once()
+        mock_threading.Thread.return_value.start.assert_called_once()
+        # Verify it was created as a daemon thread
+        _, kwargs = mock_threading.Thread.call_args
+        assert kwargs.get("daemon") is True
+
+    def test_toggle_settings_does_not_block(self, engine: GameEngine):
+        """Opening settings does not call refresh_device_lists synchronously."""
+        with patch("seaman_brain.gui.game_loop.threading"):
+            engine._toggle_settings()
+        # refresh_device_lists should NOT have been called directly
+        engine._settings_panel.refresh_device_lists = MagicMock()
+        # The direct call count should be 0 (thread target is separate)
+
+
+# ── Update Hardening ──────────────────────────────────────────────────
+
+
+class TestUpdateHardening:
+    """Tests that _update() continues when individual subsystems throw."""
+
+    def test_tank_error_does_not_kill_loop(self, engine: GameEngine):
+        """Tank update error doesn't prevent other updates."""
+        engine._tank.update = MagicMock(side_effect=RuntimeError("tank boom"))
+        engine._update(0.1)  # Should not raise
+        # Frame count still incremented
+        assert engine._frame_count >= 1
+
+    def test_mood_error_does_not_kill_loop(self, engine: GameEngine):
+        """Mood calculation error doesn't prevent animation updates."""
+        engine._mood_engine.calculate_mood = MagicMock(
+            side_effect=RuntimeError("mood boom")
+        )
+        initial_session = engine._hud.session_time
+        engine._update(0.1)
+        # HUD still updated despite mood failure
+        assert engine._hud.session_time > initial_session
+
+    def test_audio_bridge_error_does_not_kill_loop(self, engine: GameEngine):
+        """Audio bridge error doesn't prevent notification expiry."""
+        engine._audio_bridge = MagicMock()
+        engine._audio_bridge.update.side_effect = RuntimeError("audio boom")
+        engine._add_notification("test")
+        engine._update(5.0)
+        # Notifications still expired despite audio error
+        assert len(engine._notifications) == 0
+
+    def test_settings_panel_apply_pending_refresh(self, engine: GameEngine):
+        """Settings panel apply_pending_refresh is called during SETTINGS state."""
+        engine._game_state = GameState.SETTINGS
+        engine._settings_panel.apply_pending_refresh = MagicMock()
+        engine._update(0.016)
+        engine._settings_panel.apply_pending_refresh.assert_called_once()

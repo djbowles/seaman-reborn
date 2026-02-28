@@ -9,6 +9,7 @@ expose an ``available`` property indicating hardware readiness.
 
 from __future__ import annotations
 
+import concurrent.futures
 import io
 import logging
 from typing import Any
@@ -24,11 +25,16 @@ except ImportError:
     _CV2_AVAILABLE = False
 
 
+_CAPTURE_POOL = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+_CAPTURE_TIMEOUT = 5.0  # seconds
+
+
 class WebcamCapture:
     """Captures a single JPEG frame from a webcam via OpenCV.
 
     Opens and releases the camera per capture to avoid holding the device
-    between 30-second intervals.
+    between 30-second intervals. The actual capture runs in a thread pool
+    with a timeout to prevent blocking the caller if the device is busy.
 
     Attributes:
         available: Whether OpenCV is importable.
@@ -45,12 +51,27 @@ class WebcamCapture:
     def capture(self) -> bytes | None:
         """Open the camera, grab one frame, encode to JPEG, and release.
 
+        Delegates to a thread pool with a timeout so the calling thread
+        is never blocked for more than ``_CAPTURE_TIMEOUT`` seconds.
+
         Returns:
-            JPEG bytes, or None on failure.
+            JPEG bytes, or None on failure/timeout.
         """
         if not _CV2_AVAILABLE:
             return None
 
+        try:
+            future = _CAPTURE_POOL.submit(self._capture_sync)
+            return future.result(timeout=_CAPTURE_TIMEOUT)
+        except concurrent.futures.TimeoutError:
+            logger.warning("Webcam %d capture timed out", self._device_index)
+            return None
+        except Exception as exc:
+            logger.warning("Webcam capture scheduling failed: %s", exc)
+            return None
+
+    def _capture_sync(self) -> bytes | None:
+        """Synchronous webcam capture (runs in thread pool)."""
         cap = None
         try:
             cap = cv2.VideoCapture(self._device_index)

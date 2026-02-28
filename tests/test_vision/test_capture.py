@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import concurrent.futures
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -175,6 +176,73 @@ class TestWebcamCapture:
                 delattr(cap_mod, "cv2")
 
         assert result is None
+        mock_cap.release.assert_called_once()
+
+
+class TestWebcamCaptureTimeout:
+    """Tests for webcam capture timeout protection."""
+
+    def test_capture_returns_none_on_timeout(self):
+        """Returns None when capture times out."""
+        import seaman_brain.vision.capture as cap_mod
+
+        wc = WebcamCapture()
+        mock_future = MagicMock()
+        mock_future.result.side_effect = concurrent.futures.TimeoutError()
+
+        with (
+            patch.object(cap_mod, "_CV2_AVAILABLE", True),
+            patch.object(cap_mod, "_CAPTURE_POOL") as mock_pool,
+        ):
+            mock_pool.submit.return_value = mock_future
+            result = wc.capture()
+
+        assert result is None
+
+    def test_capture_delegates_to_capture_sync(self):
+        """capture() submits _capture_sync to the thread pool."""
+        import seaman_brain.vision.capture as cap_mod
+
+        wc = WebcamCapture()
+        mock_future = MagicMock()
+        mock_future.result.return_value = b"\xff\xd8fake-jpeg"
+
+        with (
+            patch.object(cap_mod, "_CV2_AVAILABLE", True),
+            patch.object(cap_mod, "_CAPTURE_POOL") as mock_pool,
+        ):
+            mock_pool.submit.return_value = mock_future
+            result = wc.capture()
+
+        assert result == b"\xff\xd8fake-jpeg"
+        mock_pool.submit.assert_called_once_with(wc._capture_sync)
+
+    def test_capture_sync_returns_jpeg_bytes(self):
+        """_capture_sync returns JPEG bytes on success."""
+        import seaman_brain.vision.capture as cap_mod
+
+        wc = WebcamCapture()
+        mock_cap = MagicMock()
+        mock_cap.isOpened.return_value = True
+        mock_cap.read.return_value = (True, MagicMock())
+
+        mock_cv2 = MagicMock()
+        mock_cv2.VideoCapture.return_value = mock_cap
+        mock_cv2.imencode.return_value = (True, b"\xff\xd8\xff\xe0jpeg")
+
+        original = getattr(cap_mod, "cv2", None)
+        try:
+            cap_mod.cv2 = mock_cv2
+            with patch.object(cap_mod, "_CV2_AVAILABLE", True):
+                result = wc._capture_sync()
+        finally:
+            if original is not None:
+                cap_mod.cv2 = original
+            elif hasattr(cap_mod, "cv2"):
+                delattr(cap_mod, "cv2")
+
+        assert result is not None
+        assert isinstance(result, bytes)
         mock_cap.release.assert_called_once()
 
 
