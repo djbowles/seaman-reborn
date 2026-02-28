@@ -54,6 +54,8 @@ from seaman_brain.personality.traits import TraitProfile, get_default_profile
 
 logger = logging.getLogger(__name__)
 
+_STREAM_OVERALL_TIMEOUT = 300.0  # max seconds for entire streaming response
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -338,22 +340,38 @@ class BrainServer:
         except Exception:
             return
 
-        # Stream tokens
+        # Stream tokens (with overall timeout as defense-in-depth)
         accumulated: list[str] = []
         ws_failed = False
         try:
-            async for token in self._manager.process_input_stream(text):
-                accumulated.append(token)
-                if not ws_failed:
-                    token_msg = StreamTokenMessage(
-                        token=token, request_id=request_id
-                    )
-                    try:
-                        await ws.send_text(serialize_response(token_msg))
-                    except Exception:
-                        # Client disconnected mid-stream — keep consuming
-                        # so post-stream steps (memory, save) still run
-                        ws_failed = True
+            async with asyncio.timeout(_STREAM_OVERALL_TIMEOUT):
+                async for token in self._manager.process_input_stream(text):
+                    accumulated.append(token)
+                    if not ws_failed:
+                        token_msg = StreamTokenMessage(
+                            token=token, request_id=request_id
+                        )
+                        try:
+                            await ws.send_text(serialize_response(token_msg))
+                        except Exception:
+                            # Client disconnected mid-stream — keep consuming
+                            # so post-stream steps (memory, save) still run
+                            ws_failed = True
+        except TimeoutError:
+            logger.warning(
+                "Stream overall timeout (%.0fs) for request %s",
+                _STREAM_OVERALL_TIMEOUT,
+                request_id,
+            )
+            try:
+                await ws.send_json({
+                    "type": "error",
+                    "message": "Response generation timed out",
+                    "request_id": request_id,
+                })
+            except Exception:
+                pass
+            return
         except RuntimeError as exc:
             try:
                 await ws.send_json({"type": "error", "message": str(exc)})

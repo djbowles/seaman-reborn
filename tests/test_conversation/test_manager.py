@@ -1040,6 +1040,47 @@ class TestLLMTimeouts:
         finally:
             mgr_mod._LLM_CHAT_TIMEOUT = orig
 
+    async def test_stream_timeout_aborts_gracefully(self, tmp_path):
+        """Stream aborts when LLM stalls mid-stream, returning partial tokens."""
+        import seaman_brain.conversation.manager as mgr_mod
+
+        orig = mgr_mod._LLM_STREAM_TOKEN_TIMEOUT
+        mgr_mod._LLM_STREAM_TOKEN_TIMEOUT = 0.1
+
+        try:
+            class HangingLLM:
+                """LLM that yields a few tokens then hangs forever."""
+
+                chat = AsyncMock(return_value="ok")
+
+                async def stream(self, messages):
+                    yield "Hello"
+                    yield " world"
+                    # Hang forever — simulates Ollama stall
+                    await asyncio.sleep(999)
+                    yield " never"
+
+            cfg = _make_config(save_path=str(tmp_path / "saves"))
+            mgr = ConversationManager(
+                config=cfg, llm=HangingLLM(), creature_state=CreatureState()
+            )
+            await mgr.initialize()
+
+            tokens: list[str] = []
+            async for token in mgr.process_input_stream("Hi"):
+                tokens.append(token)
+
+            # Should have received partial tokens before the stall
+            assert tokens == ["Hello", " world"]
+
+            # Episodic memory should store the partial response
+            messages = mgr._episodic.get_all()
+            assert len(messages) == 2
+            assert messages[1].role == MessageRole.ASSISTANT
+            assert messages[1].content == "Hello world"
+        finally:
+            mgr_mod._LLM_STREAM_TOKEN_TIMEOUT = orig
+
 
 # ---------------------------------------------------------------------------
 # Bloodline switch tests

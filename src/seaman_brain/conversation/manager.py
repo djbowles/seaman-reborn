@@ -34,6 +34,7 @@ logger = logging.getLogger(__name__)
 
 _LLM_CHAT_TIMEOUT = 120.0
 _LLM_WARMUP_TIMEOUT = 60.0
+_LLM_STREAM_TOKEN_TIMEOUT = 30.0  # max seconds between tokens before aborting
 
 
 class ConversationManager:
@@ -399,9 +400,23 @@ class ConversationManager:
         # 7. Stream LLM tokens
         accumulated: list[str] = []
         try:
-            async for token in self._llm.stream(context):
-                accumulated.append(token)
-                yield token
+            stream_iter = self._llm.stream(context).__aiter__()
+            while True:
+                try:
+                    token = await asyncio.wait_for(
+                        stream_iter.__anext__(),
+                        timeout=_LLM_STREAM_TOKEN_TIMEOUT,
+                    )
+                    accumulated.append(token)
+                    yield token
+                except StopAsyncIteration:
+                    break
+                except TimeoutError:
+                    logger.warning(
+                        "LLM stream stalled (no token in %.0fs), aborting",
+                        _LLM_STREAM_TOKEN_TIMEOUT,
+                    )
+                    break
         except Exception as exc:
             logger.error("LLM stream failed: %s", exc)
             fallback = self._fallback_response(evolved)
