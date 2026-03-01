@@ -299,7 +299,7 @@ class TestLLMSettings:
         """set_model_list selects the current config model."""
         panel.open()
         panel.render(_surface_mock)
-        panel.set_model_list(["model-a", "qwen3-coder:30b", "model-c"])
+        panel.set_model_list(["model-a", "qwen3:8b", "model-c"])
         assert panel._model_dropdown is not None
         assert panel._model_dropdown.selected_index == 1
 

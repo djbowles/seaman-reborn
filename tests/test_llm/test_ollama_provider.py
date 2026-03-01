@@ -75,7 +75,7 @@ class TestOllamaProviderHappyPath:
     def test_default_config(self) -> None:
         """Constructor uses default LLMConfig when none provided."""
         provider = OllamaProvider()
-        assert provider.model == "qwen3-coder:30b"
+        assert provider.model == "qwen3:8b"
         assert provider.temperature == 0.8
 
     async def test_chat_returns_response(

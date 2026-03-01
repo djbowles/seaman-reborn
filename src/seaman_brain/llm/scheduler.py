@@ -23,7 +23,8 @@ class ModelScheduler:
     Thread-safe: called from both the sync Pygame loop and async bridge.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, enabled: bool = True) -> None:
+        self._enabled = enabled
         self._lock = threading.Lock()
         self._active: set[str] = set()
 
@@ -42,6 +43,9 @@ class ModelScheduler:
         Returns:
             True if the slot was acquired, False if blocked.
         """
+        if not self._enabled:
+            return True
+
         with self._lock:
             if slot in self._active:
                 logger.debug("Slot %r already held, denying double-acquire", slot)

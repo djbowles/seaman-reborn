@@ -232,7 +232,7 @@ class TestConfigEdgeCases:
         cfg = load_config("config")
 
         assert cfg.llm.provider == "ollama"
-        assert cfg.llm.model == "qwen3-coder:30b"
+        assert cfg.llm.model == "qwen3:8b"
         assert cfg.memory.embeddings.provider == "ollama"
         assert cfg.creature.auto_save is True
         assert len(cfg.creature.evolution_thresholds) == 4
@@ -476,7 +476,7 @@ class TestUserSettingsPersistence:
     def test_missing_user_settings_uses_defaults(self):
         """When no user settings file exists, defaults are used."""
         cfg = load_config("config", user_settings_path="/nonexistent/path.toml")
-        assert cfg.llm.model == "qwen3-coder:30b"
+        assert cfg.llm.model == "qwen3:8b"
 
     def test_user_settings_override_defaults(self, tmp_path, monkeypatch):
         """User settings override default.toml values."""

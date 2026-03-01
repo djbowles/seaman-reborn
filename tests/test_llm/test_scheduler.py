@@ -76,6 +76,38 @@ class TestModelSchedulerExclusion:
         sched.release("chat")  # Should not raise
 
 
+# --- Disabled mode tests ---
+
+
+class TestModelSchedulerDisabled:
+    """Test that enabled=False bypasses all exclusion."""
+
+    def test_acquire_always_true_when_disabled(self):
+        """All acquire calls return True when scheduler is disabled."""
+        sched = ModelScheduler(enabled=False)
+        assert sched.acquire("chat") is True
+        assert sched.acquire("vision") is True
+        assert sched.acquire("chat") is True  # double-acquire allowed
+
+    def test_disabled_allows_concurrent_heavy_slots(self):
+        """Chat and vision can both be acquired simultaneously when disabled."""
+        sched = ModelScheduler(enabled=False)
+        sched.acquire("chat")
+        assert sched.acquire("vision") is True
+
+    def test_release_is_noop_when_disabled(self):
+        """Release does not raise when scheduler is disabled."""
+        sched = ModelScheduler(enabled=False)
+        sched.acquire("chat")
+        sched.release("chat")  # Should not raise
+
+    def test_enabled_true_is_default(self):
+        """Default constructor enables scheduling."""
+        sched = ModelScheduler()
+        sched.acquire("chat")
+        assert sched.acquire("vision") is False  # blocked
+
+
 # --- Thread safety tests ---
 
 

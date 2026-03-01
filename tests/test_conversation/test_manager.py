@@ -1347,3 +1347,80 @@ class TestSetVisionBridge:
         await mgr.initialize()
         result = await mgr._execute_look_at_user()
         assert "not available" in result
+
+
+# ---------------------------------------------------------------------------
+# Retrieval cooldown tests
+# ---------------------------------------------------------------------------
+
+class TestRetrievalCooldown:
+    """Tests for semantic retrieval skip on rapid-fire messages."""
+
+    async def test_rapid_messages_skip_retrieval(self, tmp_path):
+        """Second message within 5s reuses cached memory texts."""
+        cfg = _make_config(save_path=str(tmp_path / "saves"))
+        mgr = ConversationManager(config=cfg, llm=MockLLM(), creature_state=CreatureState())
+        await mgr.initialize()
+
+        mock_retriever = AsyncMock()
+        mock_record = MagicMock()
+        mock_record.text = "remembered fact"
+        mock_retriever.retrieve = AsyncMock(return_value=[mock_record])
+        mgr._retriever = mock_retriever
+
+        # First call — retrieval should run
+        await mgr.process_input("First message")
+        assert mock_retriever.retrieve.await_count == 1
+        assert mgr._last_memory_texts == ["remembered fact"]
+
+        # Second call immediately after — retrieval should be skipped
+        await mgr.process_input("Second message")
+        assert mock_retriever.retrieve.await_count == 1  # still 1
+
+    async def test_retrieval_runs_after_cooldown(self, tmp_path):
+        """Retrieval fires again once the cooldown expires."""
+        import time as _time
+
+        cfg = _make_config(save_path=str(tmp_path / "saves"))
+        mgr = ConversationManager(config=cfg, llm=MockLLM(), creature_state=CreatureState())
+        await mgr.initialize()
+
+        mock_retriever = AsyncMock()
+        mock_record = MagicMock()
+        mock_record.text = "fact"
+        mock_retriever.retrieve = AsyncMock(return_value=[mock_record])
+        mgr._retriever = mock_retriever
+
+        # First call
+        await mgr.process_input("Hello")
+        assert mock_retriever.retrieve.await_count == 1
+
+        # Simulate cooldown expired by backdating the timestamp
+        mgr._last_retrieval_time = _time.monotonic() - 10.0
+
+        await mgr.process_input("Hello again")
+        assert mock_retriever.retrieve.await_count == 2
+
+    async def test_stream_also_skips_rapid_retrieval(self, tmp_path):
+        """process_input_stream also respects retrieval cooldown."""
+        cfg = _make_config(save_path=str(tmp_path / "saves"))
+        mgr = ConversationManager(config=cfg, llm=MockLLM(), creature_state=CreatureState())
+        await mgr.initialize()
+
+        mock_retriever = AsyncMock()
+        mock_record = MagicMock()
+        mock_record.text = "streamed fact"
+        mock_retriever.retrieve = AsyncMock(return_value=[mock_record])
+        mgr._retriever = mock_retriever
+
+        # First call via streaming
+        tokens = []
+        async for token in mgr.process_input_stream("First"):
+            tokens.append(token)
+        assert mock_retriever.retrieve.await_count == 1
+
+        # Second call immediately — should skip
+        tokens2 = []
+        async for token in mgr.process_input_stream("Second"):
+            tokens2.append(token)
+        assert mock_retriever.retrieve.await_count == 1

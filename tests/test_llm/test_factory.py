@@ -44,7 +44,7 @@ def test_create_provider_default_config():
     """Factory uses default config (ollama) when None is passed."""
     provider = create_provider(None)
     assert isinstance(provider, LLMProvider)
-    assert provider.model == "qwen3-coder:30b"
+    assert provider.model == "qwen3:8b"
 
 
 # --- Edge case tests ---

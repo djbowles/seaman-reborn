@@ -158,7 +158,7 @@ class GameEngine:
         self._audio_manager: AudioManager | None = None
         self._audio_bridge: PygameAudioBridge | None = None
         self._vision_bridge: VisionBridge | None = None
-        self._scheduler = ModelScheduler()
+        self._scheduler = ModelScheduler(enabled=False)
 
         # Game logic engines
         self._needs_engine = NeedsEngine(config=cfg.needs, env_config=cfg.environment)

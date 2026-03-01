@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from typing import Any
@@ -37,6 +38,7 @@ _LLM_WARMUP_TIMEOUT = 60.0
 _LLM_STREAM_TOKEN_TIMEOUT = 30.0  # max seconds between tokens before aborting
 _TOOL_MAX_ITERATIONS = 3
 _VISION_POLL_TIMEOUT = 30.0  # seconds to wait for vision observation
+_RETRIEVAL_COOLDOWN = 5.0  # seconds between semantic retrieval calls
 
 # Ollama function-calling tool definition for "look_at_user"
 _LOOK_AT_USER_TOOL: dict[str, Any] = {
@@ -107,6 +109,8 @@ class ConversationManager:
         self._traits: TraitProfile | None = None
         self._vision_observations: list[str] = []
         self._vision_bridge: Any = None  # VisionBridge, set via set_vision_bridge()
+        self._last_retrieval_time: float = 0.0
+        self._last_memory_texts: list[str] = []
 
     @property
     def creature_state(self) -> CreatureState | None:
@@ -278,16 +282,21 @@ class ConversationManager:
                 except ValueError as exc:
                     logger.warning("Evolution failed: %s", exc)
 
-        # 4. Retrieve relevant long-term memories
-        memory_texts: list[str] = []
-        if self._retriever is not None:
+        # 4. Retrieve relevant long-term memories (skip if rapid-fire)
+        now = time.monotonic()
+        if (
+            self._retriever is not None
+            and now - self._last_retrieval_time >= _RETRIEVAL_COOLDOWN
+        ):
             try:
                 records = await self._retriever.retrieve(
                     user_input, top_k=self._config.memory.top_k
                 )
-                memory_texts = [r.text for r in records]
+                self._last_memory_texts = [r.text for r in records]
+                self._last_retrieval_time = now
             except Exception as exc:
                 logger.warning("Memory retrieval failed: %s", exc)
+        memory_texts = self._last_memory_texts
 
         # 5. Build system prompt
         use_tools = (
@@ -404,16 +413,21 @@ class ConversationManager:
                 except ValueError as exc:
                     logger.warning("Evolution failed: %s", exc)
 
-        # 4. Retrieve relevant long-term memories
-        memory_texts: list[str] = []
-        if self._retriever is not None:
+        # 4. Retrieve relevant long-term memories (skip if rapid-fire)
+        now = time.monotonic()
+        if (
+            self._retriever is not None
+            and now - self._last_retrieval_time >= _RETRIEVAL_COOLDOWN
+        ):
             try:
                 records = await self._retriever.retrieve(
                     user_input, top_k=self._config.memory.top_k
                 )
-                memory_texts = [r.text for r in records]
+                self._last_memory_texts = [r.text for r in records]
+                self._last_retrieval_time = now
             except Exception as exc:
                 logger.warning("Memory retrieval failed: %s", exc)
+        memory_texts = self._last_memory_texts
 
         # 5. Build system prompt
         system_prompt = self._prompt_builder.build(

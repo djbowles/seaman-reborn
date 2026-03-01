@@ -31,10 +31,10 @@ class LLMConfig(BaseModel):
     """LLM provider configuration."""
 
     provider: str = "ollama"
-    model: str = "qwen3-coder:30b"
+    model: str = "qwen3:8b"
     temperature: float = 0.8
     max_tokens: int = 512  # Output limit for OpenAI/Anthropic providers
-    context_window: int = 8192  # Ollama num_ctx (input context window)
+    context_window: int = 4096  # Ollama num_ctx (input context window)
     max_response_tokens: int = 4096  # Ollama num_predict (output token limit)
     base_url: str = "http://localhost:11434"
 
@@ -52,7 +52,7 @@ class MemoryConfig(BaseModel):
     buffer_size: int = 20
     vector_dims: int = 384
     top_k: int = 5
-    extraction_interval: int = 5
+    extraction_interval: int = 10
     db_path: str = "data/lancedb"
     similarity_weight: float = 0.7
     recency_weight: float = 0.3
