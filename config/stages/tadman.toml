@@ -13,6 +13,6 @@ formality = 0.3
 aggression = 0.3
 
 [behavior]
-max_response_words = 150
+max_response_words = 50
 speech_style = "philosophical"
 description = "A frog-like humanoid with legs. Contemplative and philosophical. Cynicism tempered by genuine curiosity about existence and the human condition."

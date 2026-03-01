@@ -208,6 +208,19 @@ def _get_stage_description(
     return _STAGE_IDENTITIES.get(stage, "You are a Seaman creature.")
 
 
+def _get_max_response_words(
+    stage: CreatureStage,
+    config_dir: str = "config",
+) -> int | None:
+    """Get the max response word limit from stage TOML, or None."""
+    stage_config = load_stage_config(stage.value, config_dir)
+    if stage_config.behavior:
+        val = stage_config.behavior.get("max_response_words")
+        if val is not None:
+            return int(val)
+    return None
+
+
 class PromptBuilder:
     """Assembles the system prompt for LLM calls.
 
@@ -259,6 +272,14 @@ class PromptBuilder:
         speech = _STAGE_SPEECH.get(stage)
         if speech:
             sections.append(speech)
+
+        # 2b. Hard word limit — critical for TTS responsiveness
+        max_words = _get_max_response_words(stage, self._config_dir)
+        if max_words:
+            sections.append(
+                f"RESPONSE LENGTH: Keep every reply under {max_words} words. "
+                "Be concise. One to three sentences maximum."
+            )
 
         # 3. Trait-driven tone
         tone = _trait_tone_instructions(traits)

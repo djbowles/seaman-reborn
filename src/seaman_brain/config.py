@@ -8,12 +8,13 @@ Stage-specific TOML files can override personality traits.
 from __future__ import annotations
 
 import logging
+import re
 import threading
 import tomllib
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 logger = logging.getLogger(__name__)
 
@@ -118,6 +119,17 @@ class AudioConfig(BaseModel):
     stt_model: str = "large-v3-turbo"  # Faster-Whisper model size
     stt_silence_threshold: float = 0.01  # RMS below this = silence
     stt_silence_duration: float = 1.5  # seconds of silence before auto-submit
+
+    @model_validator(mode="after")
+    def _sanitize_kokoro_voice(self) -> AudioConfig:
+        """Reset tts_voice if it's invalid for the current provider."""
+        if self.tts_provider == "kokoro" and self.tts_voice:
+            if not re.match(r"^[a-z]{2}_[a-z]+$", self.tts_voice):
+                logger.warning(
+                    "Resetting invalid Kokoro voice %r to default", self.tts_voice
+                )
+                self.tts_voice = ""
+        return self
 
 
 class EnvironmentConfig(BaseModel):

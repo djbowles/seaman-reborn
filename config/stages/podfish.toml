@@ -13,6 +13,6 @@ formality = 0.2
 aggression = 0.4
 
 [behavior]
-max_response_words = 100
+max_response_words = 40
 speech_style = "sardonic"
 description = "A bizarre fish with a full human face. Articulate, witty, and relentlessly sardonic. Enjoys making humans uncomfortable with pointed observations."

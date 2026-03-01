@@ -13,6 +13,6 @@ formality = 0.15
 aggression = 0.5
 
 [behavior]
-max_response_words = 60
+max_response_words = 30
 speech_style = "developing"
 description = "A fish-like creature with a disturbingly human face. Can form sentences. Growing curious about the world beyond the tank."

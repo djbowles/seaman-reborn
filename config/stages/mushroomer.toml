@@ -13,6 +13,6 @@ formality = 0.1
 aggression = 0.6
 
 [behavior]
-max_response_words = 30
+max_response_words = 15
 speech_style = "primitive"
 description = "A grotesque mushroom-like larva with a human face. Barely conscious. Communicates in grunts and short, suspicious phrases."

@@ -543,6 +543,68 @@ The creature can now autonomously decide to look at the user via webcam.
 - **Files:** `config.py`, `config/default.toml`
 - `feeding_cooldown_seconds` lowered from 30s to 8s for more responsive gameplay
 
+### Conversational Fluency Overhaul (2026-02-28)
+
+Major rework of the conversation→TTS→STT pipeline to achieve fluid spoken interaction. Six changes across 8 files.
+
+**5a. Streaming token display** — `gui/game_loop.py`, `conversation/manager.py`
+- `_submit_chat()` now uses `process_input_stream()` (async generator) instead of `process_input()` (blocking wait)
+- Tokens flow through a thread-safe `queue.Queue` from the async thread to the Pygame main thread
+- `_check_pending_response()` drains the queue each frame, calling `ChatPanel.append_stream()` for real-time token display
+- User sees text building character-by-character (~1-2s to first token) instead of animated dots for 8-30s
+- Fallback: if no tokens streamed (non-streaming path), adds the complete result directly
+
+**5b. Sentence-boundary TTS** — `gui/game_loop.py`
+- Streamed tokens accumulate in `_tts_sentence_buffer`
+- `_SENTENCE_BOUNDARY` regex (`[.!?](?:\s|$)`) detects complete sentences
+- Each complete sentence fires `play_voice()` immediately while the LLM continues generating
+- Remaining text spoken when stream finishes
+- Voice starts ~3-5s after input instead of waiting 10-30s for full response
+
+**5c. STT echo suppression** — `audio/manager.py`
+- Added `_is_speaking` flag set `True` during `speak()`, cleared in `finally`
+- Added `_speaking_until` monotonic timestamp with 0.5s post-TTS cooldown
+- `listen()` polls (50ms) until both `_is_speaking` is False AND cooldown elapsed
+- `is_speaking` property returns True during both active playback and cooldown window
+- Eliminates feedback loop where creature's TTS output gets picked up by STT microphone
+
+**5d. TTS queue cancellation** — `gui/audio_integration.py`, `gui/game_loop.py`
+- `PygameAudioBridge.cancel_pending_voice()` cancels all queued TTS futures
+- Separate `_pending_voice_futures` list tracks TTS-only futures (pruned in `update()`)
+- `_on_chat_submit()` calls `cancel_pending_voice()` before submitting new chat
+- Prevents Kokoro TTS executor backlog (was cascading 30s timeouts on long responses)
+
+**5e. Response length enforcement** — `personality/prompt_builder.py`, `config/default.toml`, `config/stages/*.toml`
+- `max_response_words` was defined in stage TOMLs but **never injected into the system prompt** — LLM never saw it
+- New `_get_max_response_words()` reads the limit from stage config
+- `PromptBuilder.build()` injects "RESPONSE LENGTH: Keep every reply under N words" after speech style
+- `max_response_tokens` (Ollama `num_predict`) reduced 4096→256 as hard backstop
+- Stage word limits halved for TTS-friendly brevity: mushroomer 15, gillman 30, podfish 40, tadman 50, frogman 60
+
+**5f. Idle chatter gated on critical needs** — `gui/game_loop.py`
+- Verbal behaviors (COMPLAIN, OBSERVE) now require critical creature condition:
+  - `hunger >= 0.7`, `health <= 0.3`, or `comfort <= 0.2`
+- Non-verbal behaviors (swimming, sleeping, eating animations) still fire normally
+- Prevents idle LLM remarks from overwhelming conversation and triggering TTS/STT feedback
+
+**5g. STT debounce reduced** — `gui/game_loop.py`
+- `_STT_DEBOUNCE_SECONDS` lowered from 1.5s to 0.5s — saves 1s per voice interaction
+
+**5h. Kokoro voice config sanitization** — `config.py`
+- Pydantic `model_validator` on `AudioConfig` resets invalid Kokoro voices on load
+- Catches stale pyttsx3 voice names (e.g. "Some Voice") that survive provider switches
+- Prevents recurring "Invalid Kokoro voice" warnings at runtime
+
+**Latency improvement (estimated):**
+
+| Metric | Before | After |
+|--------|--------|-------|
+| First visible token | 8-30s (dots only) | ~1-2s |
+| First spoken sentence | 10-35s | ~3-5s |
+| STT debounce | 1.5s | 0.5s |
+| TTS echo feedback | Frequent | Eliminated |
+| Response length | 100-3000 words | 15-60 words (stage-dependent) |
+
 ## Minor Code Issues (non-blocking)
 
 - `callable` lowercase type hints in `needs/feeding.py:93`, `needs/care.py:90`, `gui/chat_panel.py:77`

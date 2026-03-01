@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -50,6 +51,11 @@ class AudioManager:
         self._stt_enabled: bool = self._config.stt_enabled
         self._sfx_enabled: bool = self._config.sfx_enabled
         self._sfx_volume: float = max(0.0, min(1.0, self._config.sfx_volume))
+
+        # Echo suppression: pause STT while TTS is playing + cooldown after
+        self._is_speaking: bool = False
+        self._speaking_until: float = 0.0  # monotonic time; STT blocked until past
+        self._echo_cooldown: float = 0.5  # seconds to keep STT paused after TTS ends
 
         # Lock for thread-safe SFX playback
         self._sfx_lock = asyncio.Lock()
@@ -160,6 +166,11 @@ class AudioManager:
         logger.info("TTS voice updated to %r", normalized or "(system default)")
 
     @property
+    def is_speaking(self) -> bool:
+        """Whether TTS is playing or cooldown is active (for echo suppression)."""
+        return self._is_speaking or time.monotonic() < self._speaking_until
+
+    @property
     def sfx_enabled(self) -> bool:
         """Whether sound effects are enabled."""
         return self._sfx_enabled
@@ -181,7 +192,8 @@ class AudioManager:
     async def speak(self, text: str) -> None:
         """Speak text through the TTS provider.
 
-        No-op if TTS is disabled or text is empty.
+        Sets ``is_speaking`` True for the duration so STT can pause
+        (echo suppression).  No-op if TTS is disabled or text is empty.
 
         Args:
             text: The text to speak aloud.
@@ -191,6 +203,7 @@ class AudioManager:
             return
         if not text or not text.strip():
             return
+        self._is_speaking = True
         try:
             await self._tts.speak(text)
             self._tts_fail_count = 0
@@ -198,6 +211,11 @@ class AudioManager:
             logger.warning("TTS speak failed: %s", exc)
             self._tts_fail_count += 1
             self._try_fallback_tts()
+        finally:
+            self._is_speaking = False
+            # Keep STT paused briefly after TTS stops so residual speaker
+            # audio doesn't get picked up by the microphone.
+            self._speaking_until = time.monotonic() + self._echo_cooldown
 
     async def synthesize(self, text: str) -> bytes:
         """Synthesize text to audio bytes via the TTS provider.
@@ -228,6 +246,7 @@ class AudioManager:
     async def listen(self) -> str:
         """Listen for speech via the STT provider.
 
+        Waits for TTS to finish first (echo suppression) then listens.
         Returns empty string if STT is disabled.
 
         Returns:
@@ -236,6 +255,9 @@ class AudioManager:
         if not self._stt_enabled:
             logger.debug("STT disabled, skipping listen")
             return ""
+        # Echo suppression: wait until TTS finishes + cooldown elapses
+        while self._is_speaking or time.monotonic() < self._speaking_until:
+            await asyncio.sleep(0.05)
         try:
             return await self._stt.listen()
         except Exception as exc:

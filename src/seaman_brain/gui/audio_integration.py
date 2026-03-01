@@ -97,6 +97,9 @@ class PygameAudioBridge:
         # Track pending async futures so we can cancel them on shutdown
         self._pending_futures: list[Any] = []
 
+        # Track pending TTS futures separately for queue cancellation
+        self._pending_voice_futures: list[Any] = []
+
         # Initialize mixer
         self._init_mixer()
 
@@ -244,6 +247,7 @@ class PygameAudioBridge:
                     self._play_voice_async(text), self._async_loop
                 )
                 self._pending_futures.append(future)
+                self._pending_voice_futures.append(future)
             except RuntimeError:
                 # Loop already closed
                 pass
@@ -276,6 +280,19 @@ class PygameAudioBridge:
                 logger.debug("Voice synthesis cancelled during shutdown")
             except Exception as exc2:
                 logger.warning("Voice playback failed: %s", exc2)
+
+    def cancel_pending_voice(self) -> None:
+        """Cancel all queued TTS futures to prevent executor backlog."""
+        cancelled = 0
+        for future in self._pending_voice_futures:
+            if not future.done():
+                future.cancel()
+                cancelled += 1
+        self._pending_voice_futures = [
+            f for f in self._pending_voice_futures if not f.done()
+        ]
+        if cancelled:
+            logger.debug("Cancelled %d queued TTS futures", cancelled)
 
     def _play_wav_bytes(self, wav_bytes: bytes, channel: Any) -> None:
         """Play WAV bytes through a Pygame mixer channel.
@@ -425,6 +442,9 @@ class PygameAudioBridge:
         """
         # Prune completed futures to prevent unbounded growth
         self._pending_futures = [f for f in self._pending_futures if not f.done()]
+        self._pending_voice_futures = [
+            f for f in self._pending_voice_futures if not f.done()
+        ]
 
         # Health-check: re-init mixer if it was lost
         if self._mixer_initialized:

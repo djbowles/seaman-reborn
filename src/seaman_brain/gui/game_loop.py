@@ -12,6 +12,8 @@ render chat -> flip display.
 from __future__ import annotations
 
 import logging
+import queue
+import re
 import threading
 import time
 from enum import Enum
@@ -84,8 +86,11 @@ _NEEDS_UPDATE_INTERVAL = 1.0  # seconds between needs ticks
 _BEHAVIOR_CHECK_INTERVAL = 15.0  # seconds between behavior checks
 _EVENT_CHECK_INTERVAL = 3.0  # seconds between event checks
 _VISION_LOOK_TIMEOUT = 30.0  # seconds before Look Now gives up
-_STT_DEBOUNCE_SECONDS = 1.5  # wait for speech to settle before submitting
+_STT_DEBOUNCE_SECONDS = 0.5  # wait for speech to settle before submitting
 _PENDING_TIMEOUT = 60.0  # seconds before a stuck pending future is force-cancelled
+
+# Sentence boundary for incremental TTS: .!? followed by whitespace or end-of-string
+_SENTENCE_BOUNDARY = re.compile(r"[.!?](?:\s|$)")
 
 # Situation prompts for interaction reactions via LLM
 _INTERACTION_SITUATIONS: dict[str, str] = {
@@ -193,6 +198,8 @@ class GameEngine:
         # Pending conversation future
         self._pending_response: Any = None
         self._pending_response_time: float = 0.0
+        self._stream_queue: queue.Queue[str | None] = queue.Queue()
+        self._tts_sentence_buffer: str = ""
 
         # Pending autonomous LLM remark (lower priority than user chat)
         self._pending_autonomous: Any = None
@@ -527,7 +534,13 @@ class GameEngine:
         return TraitProfile()
 
     def _check_behaviors(self, time_context: dict) -> None:
-        """Check for autonomous creature behaviors."""
+        """Check for autonomous creature behaviors.
+
+        Verbal (LLM-generated) remarks are suppressed unless the creature
+        is in critical condition — starving, low health, or very
+        uncomfortable.  This keeps idle chatter from overwhelming the
+        conversation and from triggering TTS/STT feedback.
+        """
         creature_dict = {
             "stage": self._creature_state.stage.value,
             "mood": self._creature_state.mood,
@@ -544,7 +557,15 @@ class GameEngine:
         )
         if behavior is not None:
             if behavior.needs_llm:
-                self._request_autonomous_remark(behavior)
+                # Only let the creature speak unprompted when it's suffering
+                needs_critical = (
+                    self._needs.hunger >= 0.7
+                    or self._needs.health <= 0.3
+                    or self._needs.comfort <= 0.2
+                )
+                if needs_critical:
+                    self._request_autonomous_remark(behavior)
+                # else: silently skip the remark
             else:
                 self._apply_behavior(behavior)
 
@@ -909,8 +930,10 @@ class GameEngine:
         if self.game_over or not text.strip():
             return
 
-        # Typed input takes priority — clear any queued STT text
+        # Typed input takes priority — clear any queued STT and TTS
         self._stt_queued_text = None
+        if self._audio_bridge is not None:
+            self._audio_bridge.cancel_pending_voice()
 
         # User chat always wins — cancel any in-flight autonomous remark
         if self._pending_autonomous is not None:
@@ -927,7 +950,7 @@ class GameEngine:
         self._submit_chat(text)
 
     def _submit_chat(self, text: str) -> None:
-        """Submit text to ConversationManager (no cancellation logic)."""
+        """Submit text to ConversationManager via streaming."""
         self._creature_renderer.set_animation(AnimationState.TALKING)
         self._interaction_count_delta += 1
 
@@ -936,8 +959,21 @@ class GameEngine:
             self._chat_panel.start_streaming()
             self._scheduler.acquire("chat")
 
+            # Clear any leftover state from a previous cancelled stream
+            self._tts_sentence_buffer = ""
+            while not self._stream_queue.empty():
+                try:
+                    self._stream_queue.get_nowait()
+                except queue.Empty:
+                    break
+
             async def _process() -> str:
-                return await manager.process_input(text)
+                tokens: list[str] = []
+                async for token in manager.process_input_stream(text):
+                    tokens.append(token)
+                    self._stream_queue.put(token)
+                self._stream_queue.put(None)  # sentinel: stream finished
+                return "".join(tokens)
 
             try:
                 self._pending_response = self.window.submit_async(_process())
@@ -990,9 +1026,36 @@ class GameEngine:
         self._submit_chat(text)
 
     def _check_pending_response(self) -> None:
-        """Check if a pending async conversation response is ready."""
+        """Check if a pending async conversation response is ready.
+
+        Drains the stream queue each frame so tokens appear in real-time,
+        fires TTS per sentence boundary, then finalizes once the async
+        future completes.
+        """
         if self._pending_response is None:
             return
+
+        # Drain streaming tokens into the chat panel (real-time display)
+        while not self._stream_queue.empty():
+            try:
+                token = self._stream_queue.get_nowait()
+                if token is not None:
+                    self._chat_panel.append_stream(token)
+                    self._tts_sentence_buffer += token
+            except queue.Empty:
+                break
+
+        # Incremental TTS: speak complete sentences as they arrive
+        if self._audio_bridge is not None:
+            while True:
+                match = _SENTENCE_BOUNDARY.search(self._tts_sentence_buffer)
+                if not match:
+                    break
+                split_pos = match.start() + 1  # include the punctuation
+                sentence = self._tts_sentence_buffer[:split_pos].strip()
+                self._tts_sentence_buffer = self._tts_sentence_buffer[split_pos:]
+                if sentence:
+                    self._audio_bridge.play_voice(sentence)
 
         if not self._pending_response.done():
             # Force-cancel if stuck beyond timeout
@@ -1003,6 +1066,7 @@ class GameEngine:
                 self._chat_panel.add_message(
                     MessageRole.ASSISTANT, "*yawns* ...lost my train of thought."
                 )
+                self._tts_sentence_buffer = ""
                 self._pending_response = None
                 self._creature_renderer.set_animation(AnimationState.IDLE)
                 self._scheduler.release("chat")
@@ -1010,6 +1074,7 @@ class GameEngine:
 
         # Cancelled by a newer chat submission — silently discard
         if self._pending_response.cancelled():
+            self._tts_sentence_buffer = ""
             self._pending_response = None
             self._creature_renderer.set_animation(AnimationState.IDLE)
             self._scheduler.release("chat")
@@ -1017,10 +1082,21 @@ class GameEngine:
 
         try:
             result = self._pending_response.result(timeout=0)
+            # finish_streaming promotes streamed text to a permanent message;
+            # if no tokens were streamed (e.g. non-streaming fallback), add
+            # the result directly.
+            had_stream = bool(self._chat_panel._stream_text)
             self._chat_panel.finish_streaming()
-            self._chat_panel.add_message(MessageRole.ASSISTANT, result)
-            if self._audio_bridge is not None:
-                self._audio_bridge.play_voice(result)
+            if not had_stream and result:
+                self._chat_panel.add_message(MessageRole.ASSISTANT, result)
+            # Speak any remaining text that didn't end with sentence punctuation
+            remaining = self._tts_sentence_buffer.strip()
+            if remaining and self._audio_bridge is not None:
+                self._audio_bridge.play_voice(remaining)
+            elif not remaining and result and self._audio_bridge is not None:
+                # Non-streaming fallback: no incremental TTS happened
+                if not had_stream:
+                    self._audio_bridge.play_voice(result)
         except Exception as exc:
             self._chat_panel.finish_streaming()
             self._chat_panel.add_message(
@@ -1028,6 +1104,7 @@ class GameEngine:
             )
             logger.error("Conversation error: %s", exc, exc_info=True)
         finally:
+            self._tts_sentence_buffer = ""
             self._pending_response = None
             self._creature_renderer.set_animation(AnimationState.IDLE)
             self._scheduler.release("chat")

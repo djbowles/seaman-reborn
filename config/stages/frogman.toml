@@ -13,6 +13,6 @@ formality = 0.4
 aggression = 0.2
 
 [behavior]
-max_response_words = 200
+max_response_words = 60
 speech_style = "wise"
 description = "A fully evolved frog-man. Wise, deeply intelligent, and surprisingly warm beneath layers of sardonic wit. Has developed a genuine bond with the human."
