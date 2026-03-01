@@ -61,6 +61,7 @@ class OllamaProvider:
                     "num_ctx": self.num_ctx,
                     "num_predict": self.num_predict,
                 },
+                think=False,
             )
         except Exception as exc:
             raise ConnectionError(
@@ -95,6 +96,7 @@ class OllamaProvider:
                     "num_ctx": self.num_ctx,
                     "num_predict": self.num_predict,
                 },
+                think=False,
             )
         except Exception as exc:
             raise ConnectionError(
@@ -138,6 +140,7 @@ class OllamaProvider:
                     "num_predict": self.num_predict,
                 },
                 stream=True,
+                think=False,
             )
         except Exception as exc:
             raise ConnectionError(

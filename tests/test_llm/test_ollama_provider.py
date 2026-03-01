@@ -96,6 +96,7 @@ class TestOllamaProviderHappyPath:
                 {"role": "user", "content": "Hello"},
             ],
             options={"temperature": 0.5, "num_ctx": 8192, "num_predict": 4096},
+            think=False,
         )
 
     async def test_stream_yields_chunks(
@@ -112,6 +113,8 @@ class TestOllamaProviderHappyPath:
             tokens.append(token)
 
         assert tokens == ["Hello", " there", " human"]
+        call_kwargs = provider._client.chat.call_args.kwargs
+        assert call_kwargs["think"] is False
 
     async def test_format_messages(
         self, llm_config: LLMConfig, sample_messages: list[ChatMessage]
@@ -260,9 +263,10 @@ class TestOllamaProviderToolCalling:
 
         assert result["content"] == "I see you clearly."
         assert result["tool_calls"] is None
-        # Verify tools were passed to the client
-        call_kwargs = provider._client.chat.call_args
-        assert call_kwargs.kwargs.get("tools") == tools or call_kwargs[1].get("tools") == tools
+        # Verify tools and think=False were passed to the client
+        call_kwargs = provider._client.chat.call_args.kwargs
+        assert call_kwargs["tools"] == tools
+        assert call_kwargs["think"] is False
 
     async def test_chat_with_tools_returns_tool_calls(
         self, llm_config: LLMConfig, sample_messages: list[ChatMessage]
