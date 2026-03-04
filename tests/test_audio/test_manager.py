@@ -699,3 +699,167 @@ class TestTTSAutoFallback:
         # Success resets counter
         await mgr.speak("success")
         assert mgr._tts_fail_count == 0
+
+
+# ─── Full-duplex mode ─────────────────────────────────────────────
+
+
+class TestFullDuplexMode:
+    """Test AudioManager in full-duplex mode with AEC pipeline."""
+
+    def test_pipeline_created_when_aec_enabled(self, mock_tts, mock_stt, sounds_dir):
+        """Pipeline is created when aec_enabled=True."""
+        config = AudioConfig(aec_enabled=True)
+        mgr = AudioManager(
+            config=config,
+            tts_provider=mock_tts,
+            stt_provider=mock_stt,
+            sounds_dir=sounds_dir,
+        )
+        assert mgr.full_duplex is True
+        assert mgr._pipeline is not None
+        assert mgr._pending_utterance is not None
+        assert mgr._barge_in_event is not None
+
+    def test_no_pipeline_when_aec_disabled(self, manager):
+        """Pipeline is not created when aec_enabled=False (default)."""
+        assert manager.full_duplex is False
+        assert manager._pipeline is None
+
+    async def test_speak_feeds_reference_in_full_duplex(
+        self, mock_tts, mock_stt, sounds_dir
+    ):
+        """speak() synthesizes and feeds reference in full-duplex mode."""
+        import io
+        import wave
+
+        # Create realistic WAV data
+        buf = io.BytesIO()
+        with wave.open(buf, "wb") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(16000)
+            wf.writeframes(b"\x00\x00" * 1600)
+        wav_bytes = buf.getvalue()
+
+        mock_tts.synthesize = AsyncMock(return_value=wav_bytes)
+
+        config = AudioConfig(aec_enabled=True)
+        mgr = AudioManager(
+            config=config,
+            tts_provider=mock_tts,
+            stt_provider=mock_stt,
+            sounds_dir=sounds_dir,
+        )
+        mgr._tts_enabled = True
+
+        # Mock the pipeline's feed_reference and playback
+        mgr._pipeline.feed_reference = MagicMock()
+        with patch.object(mgr, "_play_wav_async", new_callable=AsyncMock):
+            await mgr.speak("Hello full-duplex")
+
+        mock_tts.synthesize.assert_awaited_once_with("Hello full-duplex")
+        mgr._pipeline.feed_reference.assert_called_once_with(wav_bytes)
+
+    async def test_listen_gets_from_utterance_queue(
+        self, mock_tts, mock_stt, sounds_dir
+    ):
+        """listen() gets transcribed text from pipeline queue."""
+        config = AudioConfig(aec_enabled=True, stt_enabled=True)
+        mgr = AudioManager(
+            config=config,
+            tts_provider=mock_tts,
+            stt_provider=mock_stt,
+            sounds_dir=sounds_dir,
+        )
+
+        # Put text in the queue
+        await mgr._pending_utterance.put("hello from pipeline")
+
+        result = await mgr.listen()
+        assert result == "hello from pipeline"
+
+    async def test_listen_timeout_returns_empty(
+        self, mock_tts, mock_stt, sounds_dir
+    ):
+        """listen() returns empty on timeout."""
+        import seaman_brain.audio.manager as mgr_mod
+
+        orig = mgr_mod._LISTEN_TIMEOUT
+        mgr_mod._LISTEN_TIMEOUT = 0.01
+
+        try:
+            config = AudioConfig(aec_enabled=True, stt_enabled=True)
+            mgr = AudioManager(
+                config=config,
+                tts_provider=mock_tts,
+                stt_provider=mock_stt,
+                sounds_dir=sounds_dir,
+            )
+
+            result = await mgr.listen()
+            assert result == ""
+        finally:
+            mgr_mod._LISTEN_TIMEOUT = orig
+
+    def test_barge_in_event_propagation(self, mock_tts, mock_stt, sounds_dir):
+        """Barge-in callback sets the event."""
+        config = AudioConfig(aec_enabled=True, barge_in_enabled=True)
+        mgr = AudioManager(
+            config=config,
+            tts_provider=mock_tts,
+            stt_provider=mock_stt,
+            sounds_dir=sounds_dir,
+        )
+
+        assert not mgr._barge_in_event.is_set()
+        mgr._on_pipeline_barge_in()
+        assert mgr._barge_in_event.is_set()
+
+    def test_cancel_tts_clears_reference(self, mock_tts, mock_stt, sounds_dir):
+        """cancel_tts() clears pipeline reference queue."""
+        config = AudioConfig(aec_enabled=True)
+        mgr = AudioManager(
+            config=config,
+            tts_provider=mock_tts,
+            stt_provider=mock_stt,
+            sounds_dir=sounds_dir,
+        )
+
+        mgr._pipeline.clear_reference = MagicMock()
+        with patch("sounddevice.stop"):
+            mgr.cancel_tts()
+        mgr._pipeline.clear_reference.assert_called_once()
+
+    def test_cancel_tts_without_pipeline(self, manager):
+        """cancel_tts() is safe when no pipeline."""
+        with patch("sounddevice.stop"):
+            manager.cancel_tts()
+        assert manager._is_speaking is False
+
+    def test_start_stop_pipeline(self, mock_tts, mock_stt, sounds_dir):
+        """start_pipeline/stop_pipeline lifecycle."""
+        config = AudioConfig(aec_enabled=True)
+        mgr = AudioManager(
+            config=config,
+            tts_provider=mock_tts,
+            stt_provider=mock_stt,
+            sounds_dir=sounds_dir,
+        )
+
+        mgr._pipeline.start = MagicMock()
+        mgr._pipeline.stop = MagicMock()
+
+        mgr.start_pipeline()
+        mgr._pipeline.start.assert_called_once()
+
+        mgr.stop_pipeline()
+        mgr._pipeline.stop.assert_called_once()
+
+    async def test_half_duplex_unchanged(self, manager, mock_tts, mock_stt):
+        """Half-duplex behavior is unchanged when aec_enabled=False."""
+        assert manager.full_duplex is False
+
+        # speak() uses original path
+        await manager.speak("Hello half-duplex")
+        mock_tts.speak.assert_awaited_once_with("Hello half-duplex")

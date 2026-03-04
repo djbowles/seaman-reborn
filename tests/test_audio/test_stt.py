@@ -10,6 +10,7 @@ import pytest
 from seaman_brain.audio.stt import (
     FasterWhisperSTTProvider,
     NoopSTTProvider,
+    RivaSTTProvider,
     SpeechRecognitionSTTProvider,
     STTProvider,
     create_stt_provider,
@@ -580,3 +581,189 @@ class TestSetInputDevice:
         provider = FasterWhisperSTTProvider(config)
         provider.set_input_device("System Default")
         assert provider._config.audio_input_device == "System Default"
+
+
+# ─── FasterWhisperSTTProvider transcribe ──────────────────────────
+
+
+class TestFasterWhisperTranscribe:
+    """Test the transcribe() method for pre-captured audio."""
+
+    @pytest.mark.asyncio
+    async def test_transcribe_returns_text(self):
+        """transcribe() returns transcribed text from PCM bytes."""
+        import numpy as np
+
+        mock_fw, mock_model = _mock_faster_whisper()
+
+        mock_segment = MagicMock()
+        mock_segment.text = "hello pipeline"
+        mock_model.transcribe.return_value = (iter([mock_segment]), MagicMock())
+
+        with patch.dict(sys.modules, {"faster_whisper": mock_fw, "numpy": np}):
+            provider = FasterWhisperSTTProvider()
+            provider._initialize()
+
+            # Create PCM bytes (16kHz 16-bit mono)
+            samples = np.zeros(1600, dtype=np.int16)
+            result = await provider.transcribe(samples.tobytes())
+            assert result == "hello pipeline"
+
+    @pytest.mark.asyncio
+    async def test_transcribe_unavailable_returns_empty(self):
+        """transcribe() returns empty when model unavailable."""
+        with patch.dict(sys.modules, {"faster_whisper": None}):
+            provider = FasterWhisperSTTProvider()
+            result = await provider.transcribe(b"\x00\x00" * 100)
+            assert result == ""
+
+    @pytest.mark.asyncio
+    async def test_transcribe_error_returns_empty(self):
+        """transcribe() handles errors gracefully."""
+        import numpy as np
+
+        mock_fw, mock_model = _mock_faster_whisper()
+        mock_model.transcribe.side_effect = RuntimeError("decode error")
+
+        with patch.dict(sys.modules, {"faster_whisper": mock_fw, "numpy": np}):
+            provider = FasterWhisperSTTProvider()
+            provider._initialize()
+            result = await provider.transcribe(b"\x00\x00" * 100)
+            assert result == ""
+
+
+# ─── RivaSTTProvider ──────────────────────────────────────────────
+
+
+def _mock_riva_stt():
+    """Create mock riva.client module for STT tests."""
+    mock_riva = MagicMock()
+    mock_client = MagicMock()
+
+    mock_auth = MagicMock()
+    mock_service = MagicMock()
+    mock_client.Auth.return_value = mock_auth
+    mock_client.ASRService.return_value = mock_service
+    mock_client.RecognitionConfig = MagicMock
+    mock_client.AudioEncoding = MagicMock()
+    mock_client.AudioEncoding.LINEAR_PCM = 1
+
+    mock_riva.client = mock_client
+    return mock_riva, mock_client, mock_service
+
+
+class TestRivaSTTProviderInit:
+    """Test initialization of RivaSTTProvider."""
+
+    def test_implements_protocol(self):
+        """RivaSTTProvider satisfies STTProvider protocol."""
+        with patch.dict(sys.modules, {"riva": MagicMock(), "riva.client": MagicMock()}):
+            provider = RivaSTTProvider()
+        assert isinstance(provider, STTProvider)
+
+    def test_init_success(self):
+        mock_riva, mock_client, _ = _mock_riva_stt()
+        with patch.dict(sys.modules, {"riva": mock_riva, "riva.client": mock_client}):
+            provider = RivaSTTProvider()
+            assert provider.available is True
+
+    def test_init_import_error(self):
+        with patch.dict(sys.modules, {"riva": None, "riva.client": None}):
+            provider = RivaSTTProvider()
+            assert provider.available is False
+            assert "not installed" in provider._init_error
+
+    def test_init_connection_error(self):
+        mock_riva, mock_client, _ = _mock_riva_stt()
+        mock_client.Auth.side_effect = RuntimeError("Connection refused")
+        with patch.dict(sys.modules, {"riva": mock_riva, "riva.client": mock_client}):
+            provider = RivaSTTProvider()
+            assert provider.available is False
+
+    def test_set_input_device(self):
+        """set_input_device stores device name."""
+        with patch.dict(sys.modules, {"riva": MagicMock(), "riva.client": MagicMock()}):
+            provider = RivaSTTProvider()
+        provider.set_input_device("Test Mic")
+        assert provider._config.audio_input_device == "Test Mic"
+
+
+class TestRivaSTTProviderTranscribe:
+    """Test Riva STT transcription."""
+
+    @pytest.mark.asyncio
+    async def test_transcribe_returns_text(self):
+        """transcribe() returns text from PCM bytes."""
+        mock_riva, mock_client, mock_service = _mock_riva_stt()
+
+        mock_alt = MagicMock()
+        mock_alt.transcript = "hello riva"
+        mock_result = MagicMock()
+        mock_result.alternatives = [mock_alt]
+        mock_resp = MagicMock()
+        mock_resp.results = [mock_result]
+        mock_service.offline_recognize.return_value = mock_resp
+
+        with patch.dict(sys.modules, {"riva": mock_riva, "riva.client": mock_client}):
+            provider = RivaSTTProvider()
+            result = await provider.transcribe(b"\x00\x00" * 1600)
+            assert result == "hello riva"
+
+    @pytest.mark.asyncio
+    async def test_transcribe_unavailable_returns_empty(self):
+        with patch.dict(sys.modules, {"riva": None, "riva.client": None}):
+            provider = RivaSTTProvider()
+            result = await provider.transcribe(b"\x00\x00" * 100)
+            assert result == ""
+
+    @pytest.mark.asyncio
+    async def test_transcribe_error_returns_empty(self):
+        mock_riva, mock_client, mock_service = _mock_riva_stt()
+        mock_service.offline_recognize.side_effect = RuntimeError("gRPC error")
+
+        with patch.dict(sys.modules, {"riva": mock_riva, "riva.client": mock_client}):
+            provider = RivaSTTProvider()
+            result = await provider.transcribe(b"\x00\x00" * 100)
+            assert result == ""
+
+
+class TestRivaSTTFactory:
+    """Test factory with Riva provider."""
+
+    def test_factory_creates_riva_when_available(self):
+        config = AudioConfig(stt_enabled=True, stt_provider="riva")
+        mock_riva, mock_client, _ = _mock_riva_stt()
+        with patch.dict(sys.modules, {"riva": mock_riva, "riva.client": mock_client}):
+            provider = create_stt_provider(config)
+            assert isinstance(provider, RivaSTTProvider)
+
+    def test_factory_riva_falls_back_to_faster_whisper(self):
+        config = AudioConfig(stt_enabled=True, stt_provider="riva")
+        mock_fw, _ = _mock_faster_whisper()
+        with patch.dict(sys.modules, {
+            "riva": None, "riva.client": None,
+            "faster_whisper": mock_fw,
+        }):
+            provider = create_stt_provider(config)
+            assert isinstance(provider, FasterWhisperSTTProvider)
+
+    def test_factory_riva_falls_back_to_speech_recognition(self):
+        config = AudioConfig(stt_enabled=True, stt_provider="riva")
+        mock_sr_mod, _ = _mock_sr()
+        with patch.dict(sys.modules, {
+            "riva": None, "riva.client": None,
+            "faster_whisper": None,
+            "speech_recognition": mock_sr_mod,
+        }):
+            provider = create_stt_provider(config)
+            assert isinstance(provider, SpeechRecognitionSTTProvider)
+
+    def test_factory_riva_falls_back_to_noop(self):
+        config = AudioConfig(stt_enabled=True, stt_provider="riva")
+        with patch.dict(sys.modules, {
+            "riva": None, "riva.client": None,
+            "faster_whisper": None,
+            "speech_recognition": None,
+        }):
+            provider = create_stt_provider(config)
+            assert isinstance(provider, NoopSTTProvider)

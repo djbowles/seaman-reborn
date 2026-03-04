@@ -273,6 +273,10 @@ class GameEngine:
             on_stt_result=self._on_stt_result,
         )
 
+        # Start full-duplex audio pipeline if AEC is enabled
+        if self._audio_manager is not None and self._config.audio.aec_enabled:
+            self._audio_manager.start_pipeline()
+
         # Set up vision bridge if enabled
         if self._config.vision.enabled:
             self._vision_bridge = VisionBridge(
@@ -1851,6 +1855,13 @@ class GameEngine:
         shutdown guards to prevent new async submissions), then the
         window shuts down the async loop and Pygame.
         """
+        # 0. Stop full-duplex audio pipeline if running
+        if self._audio_manager is not None:
+            try:
+                self._audio_manager.stop_pipeline()
+            except Exception:
+                pass
+
         # 1. Signal bridges to stop accepting new work
         if self._audio_bridge is not None:
             self._audio_bridge.shutdown()

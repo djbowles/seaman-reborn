@@ -1,7 +1,8 @@
 """Unified audio manager coordinating TTS, STT, and sound effects.
 
 Provides a single entry point for all audio operations (speak, listen, SFX)
-with per-channel enable/disable and thread-safe concurrent usage.
+with per-channel enable/disable and thread-safe concurrent usage. Supports
+optional full-duplex mode with AEC pipeline for barge-in.
 """
 
 from __future__ import annotations
@@ -17,11 +18,12 @@ from seaman_brain.audio.tts import TTSProvider, create_tts_provider
 from seaman_brain.config import AudioConfig
 
 if TYPE_CHECKING:
-    pass
+    from seaman_brain.audio.pipeline import AudioIOPipeline
 
 logger = logging.getLogger(__name__)
 
 _TTS_FALLBACK_THRESHOLD = 3
+_LISTEN_TIMEOUT = 15.0  # seconds for full-duplex utterance wait
 
 
 class AudioManager:
@@ -29,6 +31,9 @@ class AudioManager:
 
     Thread-safe for concurrent GUI usage. Each channel (tts, stt, sfx) can be
     independently enabled or disabled at runtime.
+
+    When ``aec_enabled=True``, operates in full-duplex mode with an
+    ``AudioIOPipeline`` for continuous mic processing, AEC, and barge-in.
     """
 
     def __init__(
@@ -59,6 +64,14 @@ class AudioManager:
 
         # Lock for thread-safe SFX playback
         self._sfx_lock = asyncio.Lock()
+
+        # Full-duplex pipeline (created when aec_enabled=True)
+        self._pipeline: AudioIOPipeline | None = None
+        self._pending_utterance: asyncio.Queue[str] | None = None
+        self._barge_in_event: asyncio.Event | None = None
+
+        if self._config.aec_enabled:
+            self._init_pipeline()
 
     @property
     def tts_provider(self) -> TTSProvider:
@@ -192,8 +205,9 @@ class AudioManager:
     async def speak(self, text: str) -> None:
         """Speak text through the TTS provider.
 
-        Sets ``is_speaking`` True for the duration so STT can pause
-        (echo suppression).  No-op if TTS is disabled or text is empty.
+        In full-duplex mode, synthesizes WAV, feeds it to the pipeline as
+        reference, and plays via sounddevice. In half-duplex mode, sets
+        ``is_speaking`` True for the duration so STT can pause.
 
         Args:
             text: The text to speak aloud.
@@ -203,6 +217,22 @@ class AudioManager:
             return
         if not text or not text.strip():
             return
+
+        # Full-duplex: synthesize -> feed reference -> play
+        if self._pipeline is not None:
+            try:
+                wav_bytes = await self._tts.synthesize(text)
+                self._tts_fail_count = 0
+                if wav_bytes and len(wav_bytes) > 44:
+                    self._pipeline.feed_reference(wav_bytes)
+                    await self._play_wav_async(wav_bytes)
+            except Exception as exc:
+                logger.warning("TTS speak failed (full-duplex): %s", exc)
+                self._tts_fail_count += 1
+                self._try_fallback_tts()
+            return
+
+        # Half-duplex: original behavior
         self._is_speaking = True
         try:
             await self._tts.speak(text)
@@ -246,8 +276,9 @@ class AudioManager:
     async def listen(self) -> str:
         """Listen for speech via the STT provider.
 
-        Waits for TTS to finish first (echo suppression) then listens.
-        Returns empty string if STT is disabled.
+        In full-duplex mode, waits for transcribed utterance from the
+        pipeline queue. In half-duplex mode, waits for TTS to finish
+        first (echo suppression) then listens.
 
         Returns:
             Transcribed text, or empty string on timeout/failure/disabled.
@@ -255,7 +286,21 @@ class AudioManager:
         if not self._stt_enabled:
             logger.debug("STT disabled, skipping listen")
             return ""
-        # Echo suppression: wait until TTS finishes + cooldown elapses
+
+        # Full-duplex: get from pipeline utterance queue
+        if self._pipeline is not None and self._pending_utterance is not None:
+            try:
+                return await asyncio.wait_for(
+                    self._pending_utterance.get(),
+                    timeout=_LISTEN_TIMEOUT,
+                )
+            except TimeoutError:
+                return ""
+            except Exception as exc:
+                logger.warning("Full-duplex listen failed: %s", exc)
+                return ""
+
+        # Half-duplex: echo suppression wait + STT listen
         while self._is_speaking or time.monotonic() < self._speaking_until:
             await asyncio.sleep(0.05)
         try:
@@ -263,6 +308,114 @@ class AudioManager:
         except Exception as exc:
             logger.warning("STT listen failed: %s", exc)
             return ""
+
+    # ── Full-duplex pipeline methods ─────────────────────────────────
+
+    def _init_pipeline(self) -> None:
+        """Create the full-duplex audio pipeline."""
+        from seaman_brain.audio.pipeline import AudioIOPipeline
+
+        self._pending_utterance = asyncio.Queue()
+        self._barge_in_event = asyncio.Event()
+        self._pipeline = AudioIOPipeline(
+            config=self._config,
+            on_utterance=self._on_pipeline_utterance,
+            on_barge_in=self._on_pipeline_barge_in,
+        )
+
+    @property
+    def full_duplex(self) -> bool:
+        """Whether the manager is in full-duplex mode."""
+        return self._pipeline is not None
+
+    @property
+    def barge_in_event(self) -> asyncio.Event | None:
+        """Event set when barge-in is detected (full-duplex only)."""
+        return self._barge_in_event
+
+    def start_pipeline(self) -> None:
+        """Start the full-duplex audio pipeline."""
+        if self._pipeline is not None:
+            self._pipeline.start()
+            logger.info("Full-duplex audio pipeline started")
+
+    def stop_pipeline(self) -> None:
+        """Stop the full-duplex audio pipeline."""
+        if self._pipeline is not None:
+            self._pipeline.stop()
+            logger.info("Full-duplex audio pipeline stopped")
+
+    def cancel_tts(self) -> None:
+        """Cancel current TTS playback and clear pipeline reference."""
+        if self._pipeline is not None:
+            self._pipeline.clear_reference()
+        try:
+            import sounddevice as sd
+            sd.stop()
+        except Exception:
+            pass
+        self._is_speaking = False
+        logger.debug("TTS cancelled")
+
+    def _on_pipeline_utterance(self, pcm_bytes: bytes) -> None:
+        """Callback from pipeline thread: transcribe and enqueue result."""
+        if self._pending_utterance is None:
+            return
+
+        # Check if STT provider has transcribe() (duck typing)
+        if hasattr(self._stt, "transcribe"):
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    asyncio.run_coroutine_threadsafe(
+                        self._transcribe_and_enqueue(pcm_bytes), loop
+                    )
+                    return
+            except RuntimeError:
+                pass
+
+        # Fallback: put raw bytes info as empty (no transcribe method)
+        logger.debug("STT provider lacks transcribe(), dropping utterance")
+
+    async def _transcribe_and_enqueue(self, pcm_bytes: bytes) -> None:
+        """Transcribe PCM bytes and put result in utterance queue."""
+        try:
+            text = await self._stt.transcribe(pcm_bytes)
+            if text and text.strip() and self._pending_utterance is not None:
+                await self._pending_utterance.put(text.strip())
+        except Exception as exc:
+            logger.warning("Pipeline transcription failed: %s", exc)
+
+    def _on_pipeline_barge_in(self) -> None:
+        """Callback from pipeline thread: signal barge-in event."""
+        if self._barge_in_event is not None:
+            self._barge_in_event.set()
+        logger.debug("Barge-in detected")
+
+    async def _play_wav_async(self, wav_bytes: bytes) -> None:
+        """Play WAV bytes via sounddevice in executor."""
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, self._play_wav_sd, wav_bytes)
+
+    @staticmethod
+    def _play_wav_sd(wav_bytes: bytes) -> None:
+        """Synchronous WAV playback via sounddevice."""
+        try:
+            import io as _io
+            import wave as _wave
+
+            import numpy as np
+            import sounddevice as sd
+
+            buf = _io.BytesIO(wav_bytes)
+            with _wave.open(buf, "rb") as wf:
+                raw = wf.readframes(wf.getnframes())
+                rate = wf.getframerate()
+            data = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
+            sd.play(data, rate)
+            sd.wait()
+        except Exception as exc:
+            logger.warning("sounddevice playback failed: %s", exc)
 
     async def play_sfx(self, sound_name: str) -> None:
         """Play a sound effect from the sounds directory.

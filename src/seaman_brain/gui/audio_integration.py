@@ -434,6 +434,21 @@ class PygameAudioBridge:
         self.audio_available = False
         self._init_mixer()
 
+    def _handle_barge_in(self) -> None:
+        """Handle barge-in: cancel pending voice and stop playback."""
+        self.cancel_pending_voice()
+        if self._voice_channel is not None:
+            try:
+                self._voice_channel.stop()
+            except Exception:
+                pass
+        if self._audio_manager is not None:
+            try:
+                self._audio_manager.cancel_tts()
+            except Exception as exc:
+                logger.debug("cancel_tts error during barge-in: %s", exc)
+        logger.info("Barge-in: TTS cancelled")
+
     def update(self, dt: float) -> None:
         """Per-frame update for audio state.
 
@@ -445,6 +460,13 @@ class PygameAudioBridge:
         self._pending_voice_futures = [
             f for f in self._pending_voice_futures if not f.done()
         ]
+
+        # Poll barge-in event from AudioManager pipeline
+        if self._audio_manager is not None:
+            barge_in = getattr(self._audio_manager, "barge_in_event", None)
+            if barge_in is not None and barge_in.is_set():
+                barge_in.clear()
+                self._handle_barge_in()
 
         # Health-check: re-init mixer if it was lost
         if self._mixer_initialized:

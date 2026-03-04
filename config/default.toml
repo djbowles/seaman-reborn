@@ -61,6 +61,15 @@ audio_input_device = ""
 stt_model = "large-v3-turbo"
 stt_silence_threshold = 0.01
 stt_silence_duration = 1.5
+riva_uri = "localhost:50051"
+riva_tts_voice = ""
+riva_tts_language = "en-US"
+riva_asr_language = "en-US"
+aec_enabled = false
+vad_aggressiveness = 2
+aec_filter_length = 2048
+aec_step_size = 0.01
+barge_in_enabled = false
 
 [environment]
 initial_temperature = 24.0

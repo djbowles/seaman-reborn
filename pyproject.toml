@@ -45,6 +45,14 @@ vision = [
     "Pillow>=10.0",
     "pygrabber>=0.2",
 ]
+riva = [
+    "nvidia-riva-client>=2.16.0",
+    "grpcio>=1.60.0",
+]
+aec = [
+    "webrtcvad-wheels>=2.0.13",
+    "scipy>=1.12.0",
+]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.24",
@@ -52,7 +60,7 @@ dev = [
     "ruff>=0.8",
     "httpx>=0.28",
 ]
-all = ["seaman-brain[cloud,stt,stt-local,tts-neural,vision,dev]"]
+all = ["seaman-brain[cloud,stt,stt-local,tts-neural,vision,riva,aec,dev]"]
 
 [project.scripts]
 seaman-brain = "seaman_brain.__main__:main"

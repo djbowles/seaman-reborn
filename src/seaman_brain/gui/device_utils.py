@@ -182,11 +182,42 @@ def list_kokoro_voices() -> list[tuple[str, str]]:
     return voices
 
 
+def list_riva_tts_voices(uri: str = "localhost:50051") -> list[tuple[str, str]]:
+    """Enumerate available Riva TTS voices via gRPC.
+
+    Queries the Riva server for available voice models. Falls back
+    gracefully if the server is unreachable or the client isn't installed.
+
+    Args:
+        uri: Riva server gRPC URI.
+
+    Returns:
+        List of (voice_name, friendly_name) tuples with "" as first entry.
+    """
+    voices: list[tuple[str, str]] = [("", "Default")]
+    try:
+        import riva.client  # type: ignore[import-untyped]
+
+        auth = riva.client.Auth(uri=uri)
+        service = riva.client.SpeechSynthesisService(auth)
+        # GetRivaSynthesisConfig may not exist on all versions
+        config = service.stub.GetRivaSynthesisConfig(
+            riva.client.riva_tts_pb2.RivaSynthesisConfigRequest()
+        )
+        for model in config.model_config:
+            voices.append((model.model_name, model.model_name))
+    except ImportError:
+        logger.debug("nvidia-riva-client not available for voice enumeration")
+    except Exception as exc:
+        logger.debug("Riva voice enumeration failed: %s", exc)
+    return voices
+
+
 def list_tts_voices(provider: str = "pyttsx3") -> list[tuple[str, str]]:
     """Enumerate available TTS voices for the given provider.
 
     Args:
-        provider: TTS provider name (``"pyttsx3"`` or ``"kokoro"``).
+        provider: TTS provider name (``"pyttsx3"``, ``"kokoro"``, or ``"riva"``).
 
     Returns:
         List of (voice_id, friendly_name) tuples with "" as first entry
@@ -194,6 +225,9 @@ def list_tts_voices(provider: str = "pyttsx3") -> list[tuple[str, str]]:
     """
     if provider.lower() == "kokoro":
         return list_kokoro_voices()
+
+    if provider.lower() == "riva":
+        return list_riva_tts_voices()
 
     # Default: pyttsx3
     voices: list[tuple[str, str]] = [("", "System Default")]

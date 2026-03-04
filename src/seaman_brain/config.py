@@ -120,6 +120,19 @@ class AudioConfig(BaseModel):
     stt_silence_threshold: float = 0.01  # RMS below this = silence
     stt_silence_duration: float = 1.5  # seconds of silence before auto-submit
 
+    # Riva settings
+    riva_uri: str = "localhost:50051"
+    riva_tts_voice: str = ""
+    riva_tts_language: str = "en-US"
+    riva_asr_language: str = "en-US"
+
+    # AEC / full-duplex settings
+    aec_enabled: bool = False
+    vad_aggressiveness: int = 2  # webrtcvad 0-3
+    aec_filter_length: int = 2048  # NLMS taps
+    aec_step_size: float = 0.01  # NLMS learning rate
+    barge_in_enabled: bool = False
+
     @model_validator(mode="after")
     def _sanitize_kokoro_voice(self) -> AudioConfig:
         """Reset tts_voice if it's invalid for the current provider."""

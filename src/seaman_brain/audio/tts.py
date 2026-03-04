@@ -436,6 +436,128 @@ class KokoroTTSProvider:
             logger.warning("Kokoro TTS speak timed out after %.0fs", _TTS_TIMEOUT)
 
 
+class RivaTTSProvider:
+    """TTS provider using NVIDIA Riva gRPC service.
+
+    Connects to a Riva TTS server (typically running in Docker on WSL2)
+    and synthesizes speech via gRPC. Audio is returned as 16kHz 16-bit
+    PCM wrapped in WAV format.
+
+    Requires: ``nvidia-riva-client`` and ``grpcio``.
+    """
+
+    def __init__(self, config: AudioConfig | None = None) -> None:
+        self._config = config or AudioConfig()
+        self._available = False
+        self._init_error: str = ""
+        self._auth: object | None = None
+        self._service: object | None = None
+        self._initialize()
+
+    def _initialize(self) -> None:
+        """Connect to the Riva TTS service."""
+        try:
+            import riva.client
+
+            self._auth = riva.client.Auth(uri=self._config.riva_uri)
+            self._service = riva.client.SpeechSynthesisService(self._auth)
+            self._available = True
+        except ImportError as exc:
+            self._available = False
+            self._init_error = f"nvidia-riva-client not installed: {exc}"
+            logger.warning("Riva TTS unavailable: %s", self._init_error)
+        except Exception as exc:
+            self._available = False
+            self._init_error = str(exc)
+            logger.warning("Riva TTS init failed: %s", exc)
+
+    @property
+    def available(self) -> bool:
+        """Whether the Riva TTS service is reachable."""
+        return self._available
+
+    @staticmethod
+    def _pcm_to_wav(pcm_data: bytes, sample_rate: int = 16000) -> bytes:
+        """Wrap raw PCM bytes in a WAV container."""
+        buf = io.BytesIO()
+        with wave.open(buf, "wb") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(sample_rate)
+            wf.writeframes(pcm_data)
+        return buf.getvalue()
+
+    def _synthesize_sync(self, text: str) -> bytes:
+        """Synchronous synthesis via Riva gRPC."""
+        if not self._available or self._service is None:
+            raise RuntimeError(f"Riva TTS unavailable: {self._init_error}")
+
+        if not text or not text.strip():
+            return self._pcm_to_wav(b"")
+
+        import riva.client
+
+        req = riva.client.SynthesizeSpeechRequest(
+            text=text.strip(),
+            language_code=self._config.riva_tts_language,
+            encoding=riva.client.AudioEncoding.LINEAR_PCM,
+            sample_rate_hertz=16000,
+        )
+        if self._config.riva_tts_voice:
+            req.voice_name = self._config.riva_tts_voice
+
+        resp = self._service.synthesize(req)
+        return self._pcm_to_wav(resp.audio, 16000)
+
+    def _speak_sync(self, text: str) -> None:
+        """Synchronous speak — synthesize then play via sounddevice."""
+        if not self._available:
+            logger.warning("Riva TTS unavailable, skipping speak")
+            return
+
+        if not text or not text.strip():
+            return
+
+        wav_bytes = self._synthesize_sync(text)
+
+        try:
+            import numpy as np
+            import sounddevice as sd
+
+            pcm_buf = io.BytesIO(wav_bytes)
+            with wave.open(pcm_buf, "rb") as wf:
+                raw = wf.readframes(wf.getnframes())
+                rate = wf.getframerate()
+            data = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
+            sd.play(data, rate)
+            sd.wait()
+        except Exception as exc:
+            logger.warning("Riva playback failed: %s", exc, exc_info=True)
+
+    async def synthesize(self, text: str) -> bytes:
+        """Convert text to WAV audio bytes asynchronously."""
+        loop = asyncio.get_running_loop()
+        try:
+            return await asyncio.wait_for(
+                loop.run_in_executor(_tts_executor, self._synthesize_sync, text),
+                timeout=_TTS_TIMEOUT,
+            )
+        except TimeoutError:
+            logger.warning("Riva TTS synthesize timed out after %.0fs", _TTS_TIMEOUT)
+            return self._pcm_to_wav(b"")
+
+    async def speak(self, text: str) -> None:
+        """Speak text through default audio output asynchronously."""
+        loop = asyncio.get_running_loop()
+        try:
+            await asyncio.wait_for(
+                loop.run_in_executor(_tts_executor, self._speak_sync, text),
+                timeout=_TTS_TIMEOUT,
+            )
+        except TimeoutError:
+            logger.warning("Riva TTS speak timed out after %.0fs", _TTS_TIMEOUT)
+
+
 def create_tts_provider(config: AudioConfig | None = None) -> TTSProvider:
     """Create a TTS provider based on configuration.
 
@@ -455,7 +577,15 @@ def create_tts_provider(config: AudioConfig | None = None) -> TTSProvider:
 
     provider_name = config.tts_provider.lower()
 
-    if provider_name == "kokoro":
+    if provider_name == "riva":
+        riva_provider = RivaTTSProvider(config)
+        if riva_provider.available:
+            logger.info("TTS initialized: riva (uri=%s)", config.riva_uri)
+            return riva_provider
+        logger.warning("Riva TTS unavailable, falling back to kokoro")
+        # Fall through to kokoro
+
+    if provider_name in ("kokoro", "riva"):
         kokoro_provider = KokoroTTSProvider(config)
         # Trigger lazy init to check availability
         kokoro_provider._initialize()
@@ -465,7 +595,7 @@ def create_tts_provider(config: AudioConfig | None = None) -> TTSProvider:
         logger.warning("Kokoro unavailable, falling back to pyttsx3")
         # Fall through to pyttsx3
 
-    if provider_name in ("pyttsx3", "kokoro"):
+    if provider_name in ("pyttsx3", "kokoro", "riva"):
         pyttsx3_provider = Pyttsx3TTSProvider(config)
         if pyttsx3_provider.available:
             logger.info("TTS initialized: pyttsx3")

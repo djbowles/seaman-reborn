@@ -13,6 +13,7 @@ from seaman_brain.audio.tts import (
     KokoroTTSProvider,
     NoopTTSProvider,
     Pyttsx3TTSProvider,
+    RivaTTSProvider,
     TTSProvider,
     create_tts_provider,
 )
@@ -845,3 +846,154 @@ class TestEmptyWAVDetection:
                                     RuntimeError, match="TTS produced empty audio"
                                 ):
                                     provider._synthesize_sync("test")
+
+
+# ─── RivaTTSProvider ─────────────────────────────────────────────
+
+
+def _mock_riva_tts():
+    """Create mock riva.client module for TTS tests."""
+    mock_riva = MagicMock()
+    mock_client = MagicMock()
+
+    # Auth and SpeechSynthesisService
+    mock_auth = MagicMock()
+    mock_service = MagicMock()
+    mock_client.Auth.return_value = mock_auth
+    mock_client.SpeechSynthesisService.return_value = mock_service
+    mock_client.SynthesizeSpeechRequest = MagicMock
+    mock_client.AudioEncoding = MagicMock()
+    mock_client.AudioEncoding.LINEAR_PCM = 1
+
+    mock_riva.client = mock_client
+    return mock_riva, mock_client, mock_service
+
+
+class TestRivaTTSProviderInit:
+    """Test initialization of RivaTTSProvider."""
+
+    def test_implements_protocol(self):
+        """RivaTTSProvider satisfies TTSProvider protocol."""
+        with patch.dict(sys.modules, {"riva": MagicMock(), "riva.client": MagicMock()}):
+            provider = RivaTTSProvider()
+        assert isinstance(provider, TTSProvider)
+
+    def test_init_success(self):
+        """Successful init marks provider as available."""
+        mock_riva, mock_client, _ = _mock_riva_tts()
+        with patch.dict(sys.modules, {"riva": mock_riva, "riva.client": mock_client}):
+            provider = RivaTTSProvider()
+            assert provider.available is True
+
+    def test_init_import_error(self):
+        """Missing riva.client marks provider unavailable."""
+        with patch.dict(sys.modules, {"riva": None, "riva.client": None}):
+            provider = RivaTTSProvider()
+            assert provider.available is False
+            assert "not installed" in provider._init_error
+
+    def test_init_connection_error(self):
+        """Connection failure marks provider unavailable."""
+        mock_riva, mock_client, _ = _mock_riva_tts()
+        mock_client.Auth.side_effect = RuntimeError("Connection refused")
+        with patch.dict(sys.modules, {"riva": mock_riva, "riva.client": mock_client}):
+            provider = RivaTTSProvider()
+            assert provider.available is False
+
+
+class TestRivaTTSProviderSynthesize:
+    """Test Riva TTS synthesis."""
+
+    @pytest.mark.asyncio
+    async def test_synthesize_returns_wav_bytes(self):
+        """synthesize() returns WAV bytes wrapping PCM."""
+        mock_riva, mock_client, mock_service = _mock_riva_tts()
+        # Mock response with PCM audio
+        mock_resp = MagicMock()
+        mock_resp.audio = b"\x00\x00" * 1600  # 0.1s at 16kHz
+        mock_service.synthesize.return_value = mock_resp
+
+        with patch.dict(sys.modules, {"riva": mock_riva, "riva.client": mock_client}):
+            provider = RivaTTSProvider()
+            data = await provider.synthesize("Hello")
+            assert isinstance(data, bytes)
+            assert len(data) > 44  # More than just WAV header
+
+    @pytest.mark.asyncio
+    async def test_synthesize_unavailable_raises(self):
+        """synthesize() raises when Riva unavailable."""
+        with patch.dict(sys.modules, {"riva": None, "riva.client": None}):
+            provider = RivaTTSProvider()
+            with pytest.raises(RuntimeError, match="Riva TTS unavailable"):
+                await provider.synthesize("hello")
+
+    @pytest.mark.asyncio
+    async def test_synthesize_empty_text(self):
+        """synthesize() returns empty WAV for blank input."""
+        mock_riva, mock_client, _ = _mock_riva_tts()
+        with patch.dict(sys.modules, {"riva": mock_riva, "riva.client": mock_client}):
+            provider = RivaTTSProvider()
+            data = await provider.synthesize("")
+            assert isinstance(data, bytes)
+            buf = io.BytesIO(data)
+            with wave.open(buf, "rb") as wf:
+                assert wf.getnframes() == 0
+
+    def test_pcm_to_wav(self):
+        """_pcm_to_wav wraps PCM bytes in valid WAV container."""
+        pcm = b"\x00\x00" * 100
+        wav = RivaTTSProvider._pcm_to_wav(pcm, 16000)
+        buf = io.BytesIO(wav)
+        with wave.open(buf, "rb") as wf:
+            assert wf.getnchannels() == 1
+            assert wf.getsampwidth() == 2
+            assert wf.getframerate() == 16000
+            assert wf.getnframes() == 100
+
+
+class TestRivaTTSFactory:
+    """Test factory with Riva provider."""
+
+    def test_factory_creates_riva_when_available(self):
+        """Factory creates RivaTTSProvider when provider='riva' and installed."""
+        config = AudioConfig(tts_provider="riva")
+        mock_riva, mock_client, _ = _mock_riva_tts()
+        with patch.dict(sys.modules, {"riva": mock_riva, "riva.client": mock_client}):
+            provider = create_tts_provider(config)
+            assert isinstance(provider, RivaTTSProvider)
+
+    def test_factory_riva_falls_back_to_kokoro(self):
+        """Factory falls back to kokoro when Riva unavailable."""
+        config = AudioConfig(tts_provider="riva")
+        mock_kokoro, _ = _mock_kokoro()
+        with patch.dict(sys.modules, {
+            "riva": None, "riva.client": None,
+            "kokoro": mock_kokoro,
+        }):
+            provider = create_tts_provider(config)
+            assert isinstance(provider, KokoroTTSProvider)
+
+    def test_factory_riva_falls_back_to_pyttsx3(self):
+        """Factory falls back to pyttsx3 when Riva and Kokoro unavailable."""
+        config = AudioConfig(tts_provider="riva")
+        mock_pyttsx3, _ = _mock_pyttsx3()
+        with patch.dict(sys.modules, {
+            "riva": None, "riva.client": None,
+            "kokoro": None,
+            "pyttsx3": mock_pyttsx3,
+        }):
+            provider = create_tts_provider(config)
+            assert isinstance(provider, Pyttsx3TTSProvider)
+
+    def test_factory_riva_falls_back_to_noop(self):
+        """Factory falls back to noop when all unavailable."""
+        config = AudioConfig(tts_provider="riva")
+        mock_pyttsx3 = MagicMock()
+        mock_pyttsx3.init.side_effect = RuntimeError("No audio")
+        with patch.dict(sys.modules, {
+            "riva": None, "riva.client": None,
+            "kokoro": None,
+            "pyttsx3": mock_pyttsx3,
+        }):
+            provider = create_tts_provider(config)
+            assert isinstance(provider, NoopTTSProvider)

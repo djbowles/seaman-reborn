@@ -360,6 +360,52 @@ class FasterWhisperSTTProvider:
             logger.warning("Faster-Whisper listen failed: %s", exc)
             return ""
 
+    def _transcribe_sync(self, pcm_bytes: bytes) -> str:
+        """Transcribe pre-captured PCM audio (16kHz 16-bit mono).
+
+        Args:
+            pcm_bytes: Raw PCM audio bytes.
+
+        Returns:
+            Transcribed text, or empty string on failure.
+        """
+        self._initialize()
+        if not self._available or self._model is None:
+            return ""
+
+        try:
+            import numpy as np
+
+            audio = np.frombuffer(pcm_bytes, dtype=np.int16).astype(np.float32) / 32768.0
+            segments, _info = self._model.transcribe(
+                audio,
+                language="en",
+                vad_filter=True,
+                beam_size=5,
+            )
+            text = " ".join(seg.text for seg in segments).strip()
+            return text
+        except Exception as exc:
+            logger.warning("Faster-Whisper transcribe failed: %s", exc)
+            return ""
+
+    async def transcribe(self, pcm_bytes: bytes) -> str:
+        """Transcribe pre-captured PCM audio asynchronously.
+
+        Used by the full-duplex pipeline to transcribe utterances that
+        have already been captured and segmented.
+
+        Args:
+            pcm_bytes: Raw 16kHz 16-bit mono PCM bytes.
+
+        Returns:
+            Transcribed text, or empty string on failure.
+        """
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            _stt_executor, self._transcribe_sync, pcm_bytes
+        )
+
     async def listen(self) -> str:
         """Listen for speech and return transcribed text asynchronously.
 
@@ -369,6 +415,127 @@ class FasterWhisperSTTProvider:
         Returns:
             Transcribed text, or empty string on timeout/failure.
         """
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(_stt_executor, self._listen_sync)
+
+
+class RivaSTTProvider:
+    """STT provider using NVIDIA Riva gRPC service.
+
+    Connects to a Riva ASR server (typically running in Docker on WSL2)
+    and transcribes speech via gRPC. Supports both live microphone
+    recording (``listen()``) and pre-captured audio (``transcribe()``).
+
+    Requires: ``nvidia-riva-client`` and ``grpcio``.
+    """
+
+    def __init__(self, config: AudioConfig | None = None) -> None:
+        self._config = config or AudioConfig()
+        self._available = False
+        self._init_error: str = ""
+        self._auth: object | None = None
+        self._service: object | None = None
+        self._initialize()
+
+    def _initialize(self) -> None:
+        """Connect to the Riva ASR service."""
+        try:
+            import riva.client
+
+            self._auth = riva.client.Auth(uri=self._config.riva_uri)
+            self._service = riva.client.ASRService(self._auth)
+            self._available = True
+        except ImportError as exc:
+            self._available = False
+            self._init_error = f"nvidia-riva-client not installed: {exc}"
+            logger.warning("Riva STT unavailable: %s", self._init_error)
+        except Exception as exc:
+            self._available = False
+            self._init_error = str(exc)
+            logger.warning("Riva STT init failed: %s", exc)
+
+    @property
+    def available(self) -> bool:
+        """Whether the Riva ASR service is reachable."""
+        return self._available
+
+    def set_input_device(self, device_name: str) -> None:
+        """Change the microphone device at runtime."""
+        self._config.audio_input_device = device_name
+        logger.info("Riva STT input device set to: %s", device_name)
+
+    def _transcribe_sync(self, pcm_bytes: bytes) -> str:
+        """Transcribe pre-captured PCM audio via Riva gRPC.
+
+        Args:
+            pcm_bytes: Raw 16kHz 16-bit mono PCM bytes.
+
+        Returns:
+            Transcribed text, or empty string on failure.
+        """
+        if not self._available or self._service is None:
+            return ""
+
+        try:
+            import riva.client
+
+            config = riva.client.RecognitionConfig(
+                language_code=self._config.riva_asr_language,
+                max_alternatives=1,
+                enable_automatic_punctuation=True,
+                audio_channel_count=1,
+                sample_rate_hertz=16000,
+                encoding=riva.client.AudioEncoding.LINEAR_PCM,
+            )
+            response = self._service.offline_recognize(pcm_bytes, config)
+
+            texts = []
+            for result in response.results:
+                if result.alternatives:
+                    texts.append(result.alternatives[0].transcript)
+            return " ".join(texts).strip()
+        except Exception as exc:
+            logger.warning("Riva transcribe failed: %s", exc)
+            return ""
+
+    async def transcribe(self, pcm_bytes: bytes) -> str:
+        """Transcribe pre-captured PCM audio asynchronously.
+
+        Args:
+            pcm_bytes: Raw 16kHz 16-bit mono PCM bytes.
+
+        Returns:
+            Transcribed text, or empty string on failure.
+        """
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            _stt_executor, self._transcribe_sync, pcm_bytes
+        )
+
+    def _listen_sync(self) -> str:
+        """Record 5s of audio via sounddevice, then transcribe."""
+        if not self._available:
+            return ""
+
+        try:
+            import sounddevice as sd
+
+            duration = 5.0
+            audio = sd.rec(
+                int(duration * 16000),
+                samplerate=16000,
+                channels=1,
+                dtype="int16",
+            )
+            sd.wait()
+            pcm_bytes = audio.tobytes()
+            return self._transcribe_sync(pcm_bytes)
+        except Exception as exc:
+            logger.warning("Riva listen failed: %s", exc)
+            return ""
+
+    async def listen(self) -> str:
+        """Listen for speech and return transcribed text asynchronously."""
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(_stt_executor, self._listen_sync)
 
@@ -392,7 +559,15 @@ def create_stt_provider(config: AudioConfig | None = None) -> STTProvider:
 
     provider_name = config.stt_provider.lower()
 
-    if provider_name == "faster_whisper":
+    if provider_name == "riva":
+        riva_provider = RivaSTTProvider(config)
+        if riva_provider.available:
+            logger.info("STT initialized: riva (uri=%s)", config.riva_uri)
+            return riva_provider
+        logger.warning("Riva STT unavailable, falling back to faster_whisper")
+        # Fall through to faster_whisper
+
+    if provider_name in ("faster_whisper", "riva"):
         fw_provider = FasterWhisperSTTProvider(config)
         fw_provider._initialize()
         if fw_provider.available:
