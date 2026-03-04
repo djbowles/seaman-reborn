@@ -440,7 +440,8 @@ class RivaTTSProvider:
     """TTS provider using NVIDIA Riva gRPC service.
 
     Connects to a Riva TTS server (typically running in Docker on WSL2)
-    and synthesizes speech via gRPC. Audio is returned as 16kHz 16-bit
+    and synthesizes speech via gRPC. Uses the Magpie multilingual model
+    for high-quality neural speech. Audio is returned as 44.1kHz 16-bit
     PCM wrapped in WAV format.
 
     Requires: ``nvidia-riva-client`` and ``grpcio``.
@@ -497,17 +498,14 @@ class RivaTTSProvider:
 
         import riva.client
 
-        req = riva.client.SynthesizeSpeechRequest(
+        resp = self._service.synthesize(
             text=text.strip(),
+            voice_name=self._config.riva_tts_voice or None,
             language_code=self._config.riva_tts_language,
             encoding=riva.client.AudioEncoding.LINEAR_PCM,
-            sample_rate_hertz=16000,
+            sample_rate_hz=44100,
         )
-        if self._config.riva_tts_voice:
-            req.voice_name = self._config.riva_tts_voice
-
-        resp = self._service.synthesize(req)
-        return self._pcm_to_wav(resp.audio, 16000)
+        return self._pcm_to_wav(resp.audio, 44100)
 
     def _speak_sync(self, text: str) -> None:
         """Synchronous speak — synthesize then play via sounddevice."""

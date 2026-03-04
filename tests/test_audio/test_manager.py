@@ -863,3 +863,105 @@ class TestFullDuplexMode:
         # speak() uses original path
         await manager.speak("Hello half-duplex")
         mock_tts.speak.assert_awaited_once_with("Hello half-duplex")
+
+
+# ─── Runtime provider swap ─────────────────────────────────────
+
+
+class TestSwapTTSProvider:
+    """Test swap_tts_provider() runtime provider replacement."""
+
+    def test_swap_returns_class_name(self, manager):
+        """swap_tts_provider returns the new provider's class name."""
+        mock_new = MagicMock()
+        with patch(
+            "seaman_brain.audio.manager.create_tts_provider",
+            return_value=mock_new,
+        ):
+            result = manager.swap_tts_provider(AudioConfig())
+        assert result == type(mock_new).__name__
+        assert manager._tts is mock_new
+
+    def test_swap_resets_fail_count(self, manager):
+        """swap_tts_provider resets the failure counter."""
+        manager._tts_fail_count = 5
+        mock_new = MagicMock()
+        with patch(
+            "seaman_brain.audio.manager.create_tts_provider",
+            return_value=mock_new,
+        ):
+            manager.swap_tts_provider(AudioConfig())
+        assert manager._tts_fail_count == 0
+
+    def test_swap_updates_config(self, manager):
+        """swap_tts_provider updates the manager's config reference."""
+        new_config = AudioConfig(tts_provider="kokoro")
+        mock_new = MagicMock()
+        with patch(
+            "seaman_brain.audio.manager.create_tts_provider",
+            return_value=mock_new,
+        ):
+            manager.swap_tts_provider(new_config)
+        assert manager._config is new_config
+
+
+class TestSwapSTTProvider:
+    """Test swap_stt_provider() runtime provider replacement."""
+
+    def test_swap_returns_class_name(self, manager):
+        """swap_stt_provider returns the new provider's class name."""
+        mock_new = MagicMock()
+        with patch(
+            "seaman_brain.audio.manager.create_stt_provider",
+            return_value=mock_new,
+        ):
+            result = manager.swap_stt_provider(AudioConfig(stt_enabled=True))
+        assert result == type(mock_new).__name__
+        assert manager._stt is mock_new
+
+    def test_swap_updates_config(self, manager):
+        """swap_stt_provider updates the manager's config reference."""
+        new_config = AudioConfig(stt_provider="faster_whisper", stt_enabled=True)
+        mock_new = MagicMock()
+        with patch(
+            "seaman_brain.audio.manager.create_stt_provider",
+            return_value=mock_new,
+        ):
+            manager.swap_stt_provider(new_config)
+        assert manager._config is new_config
+
+
+class TestToggleAEC:
+    """Test toggle_aec() runtime AEC pipeline management."""
+
+    def test_enable_creates_pipeline(self, manager):
+        """toggle_aec(True) creates and starts the pipeline."""
+        assert manager._pipeline is None
+        manager.toggle_aec(True)
+        assert manager._pipeline is not None
+        assert manager._pending_utterance is not None
+        assert manager._barge_in_event is not None
+
+    def test_disable_destroys_pipeline(self, mock_tts, mock_stt, sounds_dir):
+        """toggle_aec(False) stops and tears down the pipeline."""
+        config = AudioConfig(aec_enabled=True)
+        mgr = AudioManager(
+            config=config,
+            tts_provider=mock_tts,
+            stt_provider=mock_stt,
+            sounds_dir=sounds_dir,
+        )
+        assert mgr._pipeline is not None
+        mgr._pipeline.stop = MagicMock()
+        mgr.toggle_aec(False)
+        assert mgr._pipeline is None
+        assert mgr._pending_utterance is None
+        assert mgr._barge_in_event is None
+
+    def test_enable_then_disable_roundtrip(self, manager):
+        """Enable then disable AEC returns to half-duplex."""
+        manager.toggle_aec(True)
+        assert manager.full_duplex is True
+        manager._pipeline.stop = MagicMock()
+        manager.toggle_aec(False)
+        assert manager.full_duplex is False

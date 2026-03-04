@@ -20,6 +20,8 @@ from seaman_brain.config import PresetConfig, SeamanConfig, load_presets
 from seaman_brain.gui.device_utils import (
     list_audio_input_devices,
     list_audio_output_devices,
+    list_stt_providers,
+    list_tts_providers,
     list_tts_voices,
     list_webcams,
 )
@@ -149,9 +151,15 @@ class SettingsPanel:
         self._tts_toggle: Toggle | None = None
         self._stt_toggle: Toggle | None = None
         self._sfx_toggle: Toggle | None = None
+        self._aec_toggle: Toggle | None = None
+        self._barge_in_toggle: Toggle | None = None
         self._tts_vol_slider: Slider | None = None
         self._sfx_vol_slider: Slider | None = None
         self._ambient_vol_slider: Slider | None = None
+        self._tts_provider_dropdown: Dropdown | None = None
+        self._stt_provider_dropdown: Dropdown | None = None
+        self._tts_provider_ids: list[str] = []
+        self._stt_provider_ids: list[str] = []
 
         # Vision state
         self._vision_widgets: list[Any] = []
@@ -288,44 +296,85 @@ class SettingsPanel:
         self._llm_widgets = [self._model_dropdown, self._temp_slider, self._llm_apply_button]
 
     def _build_audio_widgets(self, x: int, y: int) -> None:
-        """Build audio toggles, volume sliders, and device dropdowns."""
+        """Build audio toggles, volume sliders, provider and device dropdowns."""
         w = _PANEL_WIDTH - 2 * _CONTENT_PADDING
 
+        # ── Row 1: 5 toggles (TTS / STT / SFX / AEC / Barge-in) ──
         self._tts_toggle = Toggle(
             x, y, w, 24, "Text-to-Speech",
             value=self._config.audio.tts_enabled,
             on_change=lambda v: self._on_audio_setting("tts_enabled", v),
         )
         self._stt_toggle = Toggle(
-            x, y + 32, w, 24, "Speech-to-Text",
+            x, y + 26, w, 24, "Speech-to-Text",
             value=self._config.audio.stt_enabled,
             on_change=lambda v: self._on_audio_setting("stt_enabled", v),
         )
         self._sfx_toggle = Toggle(
-            x, y + 64, w, 24, "Sound Effects",
+            x, y + 52, w, 24, "Sound Effects",
             value=self._config.audio.sfx_enabled,
             on_change=lambda v: self._on_audio_setting("sfx_enabled", v),
         )
+        self._aec_toggle = Toggle(
+            x, y + 78, w, 24, "Echo Cancel (AEC)",
+            value=self._config.audio.aec_enabled,
+            on_change=lambda v: self._on_audio_setting("aec_enabled", v),
+        )
+        self._barge_in_toggle = Toggle(
+            x, y + 104, w, 24, "Barge-in",
+            value=self._config.audio.barge_in_enabled,
+            on_change=lambda v: self._on_audio_setting("barge_in_enabled", v),
+        )
 
-        slider_y = y + 108
+        # ── Row 2: 3 volume sliders ──
+        slider_y = y + 140
         self._tts_vol_slider = Slider(
             x, slider_y, w, 24, "TTS Volume",
             value=self._config.audio.tts_volume,
             on_change=lambda v: self._on_audio_setting("tts_volume", v),
         )
         self._sfx_vol_slider = Slider(
-            x, slider_y + 32, w, 24, "SFX Volume",
+            x, slider_y + 28, w, 24, "SFX Volume",
             value=self._config.audio.sfx_volume,
             on_change=lambda v: self._on_audio_setting("sfx_volume", v),
         )
         self._ambient_vol_slider = Slider(
-            x, slider_y + 64, w, 24, "Ambient Vol",
+            x, slider_y + 56, w, 24, "Ambient Vol",
             value=self._config.audio.ambient_volume,
             on_change=lambda v: self._on_audio_setting("ambient_volume", v),
         )
 
-        # Device dropdowns — match saved config values to find correct index
-        device_y = slider_y + 104
+        # ── Row 3: TTS Engine / STT Engine dropdowns ──
+        engine_y = slider_y + 92
+        tts_provs = list_tts_providers()
+        tts_names = [name for _, name in tts_provs]
+        self._tts_provider_ids = [pid for pid, _ in tts_provs]
+        tts_prov_idx = _find_saved_index(
+            self._tts_provider_ids, self._config.audio.tts_provider
+        )
+        self._tts_provider_dropdown = Dropdown(
+            x, engine_y, w, 26, "TTS Engine",
+            items=tts_names, selected_index=tts_prov_idx,
+            on_change=lambda i, _v: self._on_tts_provider_change(i),
+        )
+
+        stt_provs = list_stt_providers()
+        stt_names = [name for _, name in stt_provs]
+        self._stt_provider_ids = [pid for pid, _ in stt_provs]
+        stt_prov_idx = _find_saved_index(
+            self._stt_provider_ids, self._config.audio.stt_provider
+        )
+        self._stt_provider_dropdown = Dropdown(
+            x, engine_y + 30, w, 26, "STT Engine",
+            items=stt_names, selected_index=stt_prov_idx,
+            on_change=lambda i, _v: self._on_audio_setting(
+                "stt_provider",
+                self._stt_provider_ids[i] if i < len(self._stt_provider_ids) else "",
+            ),
+        )
+
+        # ── Row 4: Output / Input / TTS Voice dropdowns ──
+        device_y = engine_y + 64
         out_devs = list_audio_output_devices()
         out_names = [name for _, name in out_devs]
         out_idx = _find_saved_index(out_names, self._config.audio.audio_output_device)
@@ -339,7 +388,7 @@ class SettingsPanel:
         in_names = [name for _, name in in_devs]
         in_idx = _find_saved_index(in_names, self._config.audio.audio_input_device)
         self._input_device_dropdown = Dropdown(
-            x, device_y + 34, w, 26, "Input",
+            x, device_y + 30, w, 26, "Input",
             items=in_names, selected_index=in_idx,
             on_change=lambda _i, v: self._on_audio_setting("audio_input_device", v),
         )
@@ -349,7 +398,7 @@ class SettingsPanel:
         self._voice_ids = [vid for vid, _ in voices]
         voice_idx = _find_saved_index(self._voice_ids, self._config.audio.tts_voice)
         self._tts_voice_dropdown = Dropdown(
-            x, device_y + 68, w, 26, "TTS Voice",
+            x, device_y + 60, w, 26, "TTS Voice",
             items=voice_names, selected_index=voice_idx,
             on_change=lambda i, _v: self._on_audio_setting(
                 "tts_voice", self._voice_ids[i] if i < len(self._voice_ids) else ""
@@ -358,7 +407,9 @@ class SettingsPanel:
 
         self._audio_widgets = [
             self._tts_toggle, self._stt_toggle, self._sfx_toggle,
+            self._aec_toggle, self._barge_in_toggle,
             self._tts_vol_slider, self._sfx_vol_slider, self._ambient_vol_slider,
+            self._tts_provider_dropdown, self._stt_provider_dropdown,
             self._output_device_dropdown, self._input_device_dropdown,
             self._tts_voice_dropdown,
         ]
@@ -433,6 +484,8 @@ class SettingsPanel:
             self._output_device_dropdown,
             self._input_device_dropdown,
             self._tts_voice_dropdown,
+            self._tts_provider_dropdown,
+            self._stt_provider_dropdown,
         ):
             if dd is not None:
                 dd.expanded = False
@@ -729,6 +782,16 @@ class SettingsPanel:
             self._model_dropdown.expanded = False
         if tab != SettingsTab.VISION and self._vision_source_dropdown is not None:
             self._vision_source_dropdown.expanded = False
+        if tab != SettingsTab.AUDIO:
+            for dd in (
+                self._tts_provider_dropdown,
+                self._stt_provider_dropdown,
+                self._output_device_dropdown,
+                self._input_device_dropdown,
+                self._tts_voice_dropdown,
+            ):
+                if dd is not None:
+                    dd.expanded = False
 
     def _select_preset(self, key: str) -> None:
         """Apply a personality preset."""
@@ -794,6 +857,29 @@ class SettingsPanel:
         if self.on_audio_change is not None:
             self.on_audio_change(key, value)
 
+    def _on_tts_provider_change(self, index: int) -> None:
+        """Handle TTS engine dropdown change.
+
+        Updates config, fires the audio change callback, and rebuilds
+        the TTS Voice dropdown with voices for the new provider.
+        """
+        if index >= len(self._tts_provider_ids):
+            return
+        provider_key = self._tts_provider_ids[index]
+        self._config.audio.tts_provider = provider_key
+        self._config.audio.tts_voice = ""  # Reset voice for new provider
+        self._status_text = f"Audio: tts_provider = {provider_key}"
+
+        if self.on_audio_change is not None:
+            self.on_audio_change("tts_provider", provider_key)
+
+        # Rebuild TTS Voice dropdown for the new provider
+        if self._tts_voice_dropdown is not None:
+            voices = list_tts_voices(provider_key)
+            voice_names = [name for _, name in voices]
+            self._voice_ids = [vid for vid, _ in voices]
+            self._tts_voice_dropdown.set_items(voice_names, selected_index=0)
+
     def _on_vision_setting(self, key: str, value: Any) -> None:
         """Handle a vision setting change."""
         if key == "source":
@@ -830,6 +916,20 @@ class SettingsPanel:
 
         try:
             result: dict[str, Any] = {}
+
+            if self._tts_provider_dropdown is not None:
+                tts_provs = list_tts_providers()
+                tts_names = [name for _, name in tts_provs]
+                tts_ids = [pid for pid, _ in tts_provs]
+                tts_idx = _find_saved_index(tts_ids, self._config.audio.tts_provider)
+                result["tts_provider"] = (tts_names, tts_ids, tts_idx)
+
+            if self._stt_provider_dropdown is not None:
+                stt_provs = list_stt_providers()
+                stt_names = [name for _, name in stt_provs]
+                stt_ids = [pid for pid, _ in stt_provs]
+                stt_idx = _find_saved_index(stt_ids, self._config.audio.stt_provider)
+                result["stt_provider"] = (stt_names, stt_ids, stt_idx)
 
             if self._output_device_dropdown is not None:
                 out_devs = list_audio_output_devices()
@@ -883,6 +983,16 @@ class SettingsPanel:
         if pending is None:
             return
         self._pending_refresh = None
+
+        if "tts_provider" in pending and self._tts_provider_dropdown is not None:
+            names, ids, idx = pending["tts_provider"]
+            self._tts_provider_ids = ids
+            self._tts_provider_dropdown.set_items(names, selected_index=idx)
+
+        if "stt_provider" in pending and self._stt_provider_dropdown is not None:
+            names, ids, idx = pending["stt_provider"]
+            self._stt_provider_ids = ids
+            self._stt_provider_dropdown.set_items(names, selected_index=idx)
 
         if "output" in pending and self._output_device_dropdown is not None:
             names, idx = pending["output"]

@@ -181,6 +181,76 @@ class TestListWebcams:
         assert (1, "OBS Virtual Cam") in devices
 
 
+class TestListTTSProviders:
+    """Tests for list_tts_providers."""
+
+    def test_always_returns_three_providers(self):
+        """Always returns exactly three provider entries."""
+        from seaman_brain.gui.device_utils import list_tts_providers
+
+        providers = list_tts_providers()
+        assert len(providers) == 3
+
+    def test_expected_keys_present(self):
+        """All expected provider keys are present."""
+        from seaman_brain.gui.device_utils import list_tts_providers
+
+        providers = list_tts_providers()
+        keys = [key for key, _ in providers]
+        assert "pyttsx3" in keys
+        assert "kokoro" in keys
+        assert "riva" in keys
+
+    def test_missing_lib_shows_not_installed(self):
+        """Providers with missing libraries show '(not installed)' suffix."""
+        with patch.dict("sys.modules", {"kokoro": None}):
+            import importlib
+
+            from seaman_brain.gui import device_utils
+
+            importlib.reload(device_utils)
+            providers = device_utils.list_tts_providers()
+
+        kokoro_entry = [name for key, name in providers if key == "kokoro"]
+        assert kokoro_entry
+        assert "not installed" in kokoro_entry[0]
+
+
+class TestListSTTProviders:
+    """Tests for list_stt_providers."""
+
+    def test_always_returns_three_providers(self):
+        """Always returns exactly three provider entries."""
+        from seaman_brain.gui.device_utils import list_stt_providers
+
+        providers = list_stt_providers()
+        assert len(providers) == 3
+
+    def test_expected_keys_present(self):
+        """All expected provider keys are present."""
+        from seaman_brain.gui.device_utils import list_stt_providers
+
+        providers = list_stt_providers()
+        keys = [key for key, _ in providers]
+        assert "speech_recognition" in keys
+        assert "faster_whisper" in keys
+        assert "riva" in keys
+
+    def test_missing_lib_shows_not_installed(self):
+        """Providers with missing libraries show '(not installed)' suffix."""
+        with patch.dict("sys.modules", {"faster_whisper": None}):
+            import importlib
+
+            from seaman_brain.gui import device_utils
+
+            importlib.reload(device_utils)
+            providers = device_utils.list_stt_providers()
+
+        fw_entry = [name for key, name in providers if key == "faster_whisper"]
+        assert fw_entry
+        assert "not installed" in fw_entry[0]
+
+
 class TestListTTSVoices:
     """Tests for list_tts_voices."""
 

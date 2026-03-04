@@ -122,7 +122,7 @@ class AudioConfig(BaseModel):
 
     # Riva settings
     riva_uri: str = "localhost:50051"
-    riva_tts_voice: str = ""
+    riva_tts_voice: str = "English-US.Male-1"
     riva_tts_language: str = "en-US"
     riva_asr_language: str = "en-US"
 
@@ -363,13 +363,18 @@ def _do_save(config: SeamanConfig) -> None:
     lines.append(f"tts_enabled = {str(config.audio.tts_enabled).lower()}")
     lines.append(f"stt_enabled = {str(config.audio.stt_enabled).lower()}")
     lines.append(f"sfx_enabled = {str(config.audio.sfx_enabled).lower()}")
+    lines.append(f'tts_provider = "{config.audio.tts_provider}"')
+    lines.append(f'stt_provider = "{config.audio.stt_provider}"')
     lines.append(f'tts_voice = "{config.audio.tts_voice}"')
     lines.append(f"tts_rate = {config.audio.tts_rate}")
     lines.append(f"tts_volume = {config.audio.tts_volume}")
+    lines.append(f"tts_speed = {config.audio.tts_speed}")
     lines.append(f"sfx_volume = {config.audio.sfx_volume}")
     lines.append(f"ambient_volume = {config.audio.ambient_volume}")
     lines.append(f'audio_output_device = "{config.audio.audio_output_device}"')
     lines.append(f'audio_input_device = "{config.audio.audio_input_device}"')
+    lines.append(f"aec_enabled = {str(config.audio.aec_enabled).lower()}")
+    lines.append(f"barge_in_enabled = {str(config.audio.barge_in_enabled).lower()}")
     lines.append("")
 
     # Vision

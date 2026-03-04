@@ -65,10 +65,14 @@ class AudioManager:
         # Lock for thread-safe SFX playback
         self._sfx_lock = asyncio.Lock()
 
+        # Lock for serializing TTS speak calls (prevents overlapping playback)
+        self._speak_lock = asyncio.Lock()
+
         # Full-duplex pipeline (created when aec_enabled=True)
         self._pipeline: AudioIOPipeline | None = None
         self._pending_utterance: asyncio.Queue[str] | None = None
         self._barge_in_event: asyncio.Event | None = None
+        self._async_loop: asyncio.AbstractEventLoop | None = None
 
         if self._config.aec_enabled:
             self._init_pipeline()
@@ -152,6 +156,62 @@ class AudioManager:
         except Exception as exc:
             logger.warning("pyttsx3 fallback creation failed: %s", exc)
 
+    def swap_tts_provider(self, config: AudioConfig) -> str:
+        """Replace the TTS provider at runtime using the factory.
+
+        Args:
+            config: Updated audio config with new tts_provider key.
+
+        Returns:
+            Class name of the new TTS provider.
+        """
+        self._config = config
+        self._tts = create_tts_provider(config)
+        self._tts_fail_count = 0
+        name = type(self._tts).__name__
+        logger.info("TTS provider swapped to %s", name)
+        return name
+
+    def swap_stt_provider(self, config: AudioConfig) -> str:
+        """Replace the STT provider at runtime using the factory.
+
+        Args:
+            config: Updated audio config with new stt_provider key.
+
+        Returns:
+            Class name of the new STT provider.
+        """
+        self._config = config
+        self._stt = create_stt_provider(config)
+        name = type(self._stt).__name__
+        logger.info("STT provider swapped to %s", name)
+        return name
+
+    def toggle_aec(
+        self,
+        enabled: bool,
+        loop: asyncio.AbstractEventLoop | None = None,
+    ) -> None:
+        """Enable or disable the full-duplex AEC pipeline at runtime.
+
+        Args:
+            enabled: True to create and start the pipeline,
+                     False to stop and tear it down.
+            loop: Event loop for scheduling transcription coroutines.
+        """
+        if enabled:
+            if self._pipeline is None:
+                self._init_pipeline()
+            self.start_pipeline(loop=loop)
+            logger.info("AEC pipeline enabled (full-duplex)")
+        else:
+            self.stop_pipeline()
+            self._pipeline = None
+            self._pending_utterance = None
+            self._barge_in_event = None
+            self._async_loop = None
+            logger.info("AEC pipeline disabled (half-duplex)")
+
     def set_input_device(self, device_name: str) -> None:
         """Change the STT microphone device at runtime.
 
@@ -218,34 +278,35 @@ class AudioManager:
         if not text or not text.strip():
             return
 
-        # Full-duplex: synthesize -> feed reference -> play
-        if self._pipeline is not None:
+        async with self._speak_lock:
+            # Full-duplex: synthesize -> feed reference -> play
+            if self._pipeline is not None:
+                try:
+                    wav_bytes = await self._tts.synthesize(text)
+                    self._tts_fail_count = 0
+                    if wav_bytes and len(wav_bytes) > 44:
+                        self._pipeline.feed_reference(wav_bytes)
+                        await self._play_wav_async(wav_bytes)
+                except Exception as exc:
+                    logger.warning("TTS speak failed (full-duplex): %s", exc)
+                    self._tts_fail_count += 1
+                    self._try_fallback_tts()
+                return
+
+            # Half-duplex: original behavior
+            self._is_speaking = True
             try:
-                wav_bytes = await self._tts.synthesize(text)
+                await self._tts.speak(text)
                 self._tts_fail_count = 0
-                if wav_bytes and len(wav_bytes) > 44:
-                    self._pipeline.feed_reference(wav_bytes)
-                    await self._play_wav_async(wav_bytes)
             except Exception as exc:
-                logger.warning("TTS speak failed (full-duplex): %s", exc)
+                logger.warning("TTS speak failed: %s", exc)
                 self._tts_fail_count += 1
                 self._try_fallback_tts()
-            return
-
-        # Half-duplex: original behavior
-        self._is_speaking = True
-        try:
-            await self._tts.speak(text)
-            self._tts_fail_count = 0
-        except Exception as exc:
-            logger.warning("TTS speak failed: %s", exc)
-            self._tts_fail_count += 1
-            self._try_fallback_tts()
-        finally:
-            self._is_speaking = False
-            # Keep STT paused briefly after TTS stops so residual speaker
-            # audio doesn't get picked up by the microphone.
-            self._speaking_until = time.monotonic() + self._echo_cooldown
+            finally:
+                self._is_speaking = False
+                # Keep STT paused briefly after TTS stops so residual speaker
+                # audio doesn't get picked up by the microphone.
+                self._speaking_until = time.monotonic() + self._echo_cooldown
 
     async def synthesize(self, text: str) -> bytes:
         """Synthesize text to audio bytes via the TTS provider.
@@ -333,11 +394,29 @@ class AudioManager:
         """Event set when barge-in is detected (full-duplex only)."""
         return self._barge_in_event
 
-    def start_pipeline(self) -> None:
-        """Start the full-duplex audio pipeline."""
+    def start_pipeline(
+        self, loop: asyncio.AbstractEventLoop | None = None
+    ) -> None:
+        """Start the full-duplex audio pipeline.
+
+        Args:
+            loop: Event loop to use for scheduling transcription coroutines
+                from pipeline background threads. If None, attempts to
+                detect the running loop automatically.
+        """
         if self._pipeline is not None:
+            if loop is not None:
+                self._async_loop = loop
+            else:
+                try:
+                    self._async_loop = asyncio.get_running_loop()
+                except RuntimeError:
+                    try:
+                        self._async_loop = asyncio.get_event_loop()
+                    except RuntimeError:
+                        self._async_loop = None
             self._pipeline.start()
-            logger.info("Full-duplex audio pipeline started")
+            logger.info("Full-duplex audio pipeline started (loop=%s)", self._async_loop)
 
     def stop_pipeline(self) -> None:
         """Stop the full-duplex audio pipeline."""
@@ -362,29 +441,43 @@ class AudioManager:
         if self._pending_utterance is None:
             return
 
+        logger.debug(
+            "Pipeline utterance received: %d bytes, stt=%s, has_transcribe=%s",
+            len(pcm_bytes),
+            type(self._stt).__name__,
+            hasattr(self._stt, "transcribe"),
+        )
+
         # Check if STT provider has transcribe() (duck typing)
         if hasattr(self._stt, "transcribe"):
-            try:
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
-                    asyncio.run_coroutine_threadsafe(
-                        self._transcribe_and_enqueue(pcm_bytes), loop
-                    )
-                    return
-            except RuntimeError:
-                pass
+            loop = self._async_loop
+            if loop is not None and loop.is_running():
+                asyncio.run_coroutine_threadsafe(
+                    self._transcribe_and_enqueue(pcm_bytes), loop
+                )
+                return
+            logger.warning(
+                "Pipeline utterance: no running event loop (loop=%s)", loop
+            )
+            return
 
         # Fallback: put raw bytes info as empty (no transcribe method)
-        logger.debug("STT provider lacks transcribe(), dropping utterance")
+        logger.warning(
+            "STT provider %s lacks transcribe(), dropping utterance",
+            type(self._stt).__name__,
+        )
 
     async def _transcribe_and_enqueue(self, pcm_bytes: bytes) -> None:
         """Transcribe PCM bytes and put result in utterance queue."""
         try:
             text = await self._stt.transcribe(pcm_bytes)
             if text and text.strip() and self._pending_utterance is not None:
+                logger.info("Pipeline STT result: %r", text.strip())
                 await self._pending_utterance.put(text.strip())
+            else:
+                logger.debug("Pipeline STT returned empty/blank")
         except Exception as exc:
-            logger.warning("Pipeline transcription failed: %s", exc)
+            logger.warning("Pipeline transcription failed: %s", exc, exc_info=True)
 
     def _on_pipeline_barge_in(self) -> None:
         """Callback from pipeline thread: signal barge-in event."""

@@ -275,7 +275,7 @@ class GameEngine:
 
         # Start full-duplex audio pipeline if AEC is enabled
         if self._audio_manager is not None and self._config.audio.aec_enabled:
-            self._audio_manager.start_pipeline()
+            self._audio_manager.start_pipeline(loop=self.window._loop)
 
         # Set up vision bridge if enabled
         if self._config.vision.enabled:
@@ -1454,6 +1454,29 @@ class GameEngine:
                     if self._audio_manager is not None:
                         self._audio_manager.set_input_device(device_name)
                     self._add_notification(f"Mic: {device_name}")
+                elif key == "tts_provider":
+                    if self._audio_manager is not None:
+                        name = self._audio_manager.swap_tts_provider(self._config.audio)
+                        self._add_notification(f"TTS engine: {name}")
+                    else:
+                        self._add_notification(f"TTS engine: {value}")
+                elif key == "stt_provider":
+                    if self._audio_manager is not None:
+                        name = self._audio_manager.swap_stt_provider(self._config.audio)
+                        self._add_notification(f"STT engine: {name}")
+                    else:
+                        self._add_notification(f"STT engine: {value}")
+                elif key == "aec_enabled":
+                    if self._audio_manager is not None:
+                        self._audio_manager.toggle_aec(
+                            bool(value), loop=self.window._loop
+                        )
+                    mode = "full-duplex" if value else "half-duplex"
+                    self._add_notification(f"Audio: {mode}")
+                elif key == "barge_in_enabled":
+                    self._add_notification(
+                        "Barge-in " + ("enabled" if value else "disabled")
+                    )
             save_user_settings(self._config)
         except Exception as exc:
             logger.error("Audio change error: %s", exc)

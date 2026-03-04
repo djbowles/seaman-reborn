@@ -2,12 +2,12 @@
 
 ## Project Status
 
-The Python "brain" backend is **feature-complete**: 2574 tests passing, ruff clean, all 52 user stories implemented across 14 subpackages (llm, personality, memory, creature, conversation, cli, audio, environment, needs, behavior, gui, api, vision). LLM-initiated vision via tool-use/function-calling is wired end-to-end.
+The Python "brain" backend is **feature-complete**: 2674 tests passing, ruff clean, all 52 user stories implemented across 14 subpackages (llm, personality, memory, creature, conversation, cli, audio, environment, needs, behavior, gui, api, vision). LLM-initiated vision via tool-use/function-calling is wired end-to-end.
 
 - **Repo**: https://github.com/djbowles/seaman-reborn (private)
 - **Branch**: `ralph/ai-brain-core` (all work), `main` (base)
 - **Entry points**: `python -m seaman_brain` (terminal), `--gui` (Pygame), `--api` (WebSocket server)
-- **Hardware**: RTX 5090 (32GB VRAM), Ollama with qwen3-coder:30b + all-minilm:l6-v2 + qwen3-vl:8b
+- **Hardware**: RTX 5090 (32GB VRAM), Ollama with qwen3:8b + all-minilm:l6-v2 + qwen3-vl:8b
 
 ## What Exists (Python Brain)
 
@@ -21,7 +21,7 @@ The Python "brain" backend is **feature-complete**: 2574 tests passing, ruff cle
 | Autonomous behavior + mood engine | Done | `behavior/` — mood calculation, idle behaviors |
 | Environment simulation | Done | `environment/` — real-time clock, tank state |
 | Conversation orchestration | Done | `conversation/` — context assembly, full pipeline |
-| TTS/STT audio | Done | `audio/` — pyttsx3/Kokoro TTS, speech_recognition/Faster-Whisper STT |
+| TTS/STT audio + full-duplex AEC | Done | `audio/` — pyttsx3/Kokoro/Riva TTS, SR/Faster-Whisper/Riva STT, NLMS AEC pipeline |
 | Pygame GUI (playable) | Done | `gui/` — tank, sprites, chat, HUD, action bar |
 | **FastAPI WebSocket bridge** | **Done** | `api/` — **this is the UE5 connection point** |
 
@@ -400,9 +400,9 @@ Four-phase infrastructure upgrade addressing LLM token misconfiguration, VRAM sc
 | Combination | VRAM | Fits 32GB? |
 |-------------|------|------------|
 | Whisper + Kokoro (always loaded) | ~5GB | Yes |
-| + Coder (during chat) | ~23GB | Yes |
-| + Vision (swaps Coder out) | ~19GB | Yes |
-| Coder + Vision simultaneously | ~26-31GB | Risky — scheduler prevents this |
+| + Chat 8B (during chat) | ~10GB | Yes |
+| + Vision 8B (during capture) | ~13GB | Yes |
+| Chat 8B + Vision 8B simultaneously | ~18GB | Yes — scheduler disabled (both fit) |
 
 ### New Tests (123 tests across 6 files)
 
@@ -486,7 +486,7 @@ Three-pronged throttle on autonomous verbal behaviors:
 
 ## GUI Gaps Closed + LLM-Initiated Vision (2026-02-28)
 
-Four features implemented, closing the remaining GUI gaps and adding LLM tool-use for autonomous vision. 2574 tests passing, ruff clean.
+Four features implemented, closing the remaining GUI gaps and adding LLM tool-use for autonomous vision. 2581 tests passing, ruff clean.
 
 ### 1. HUD DPI Scaling
 - **File:** `gui/window.py` — `pygame.SCALED` flag added to `display.set_mode()` with `hasattr` guard for compatibility
@@ -604,6 +604,30 @@ Major rework of the conversation→TTS→STT pipeline to achieve fluid spoken in
 | STT debounce | 1.5s | 0.5s |
 | TTS echo feedback | Frequent | Eliminated |
 | Response length | 100-3000 words | 15-60 words (stage-dependent) |
+
+## 8B Model Swap + Qwen3 Thinking Mode Fix (2026-03-04)
+
+Swapped from `qwen3-coder:30b` to `qwen3:8b` for faster inference (~100-150 tok/s vs 30-50), disabled VRAM scheduler (8B chat+vision fit simultaneously), and added retrieval cooldown (skip semantic retrieval if <5s since last call).
+
+### Empty Response Fix (9c0a170)
+
+**Problem**: After the 8B swap, creature returned empty responses. Qwen3 (non-coder variants) enable **thinking mode** by default, generating internal `<think>...</think>` reasoning tokens before the actual response. These thinking tokens consumed the entire `num_predict` budget (256 tokens), leaving nothing for the visible response.
+
+**Fix**: Pass `think=False` to all 3 `_client.chat()` calls in `llm/ollama_provider.py` (`chat()`, `chat_with_tools()`, `stream()`). Hardcoded to `False` since chain-of-thought reasoning is pure overhead for in-character creature responses — the personality system prompt does all the work.
+
+| File | Change |
+|------|--------|
+| `llm/ollama_provider.py` | Added `think=False` to all 3 `_client.chat()` calls |
+| `tests/test_llm/test_ollama_provider.py` | Assert `think=False` in chat, stream, and tool-calling tests |
+
+### Other Changes (9b50c73)
+
+| File | Change |
+|------|--------|
+| `config/default.toml` | `model = "qwen3:8b"`, `context_window = 4096`, `extraction_interval = 10` |
+| `config.py` | Default model changed to `qwen3:8b` |
+| `llm/scheduler.py` | `ModelScheduler(enabled=False)` — 8B models fit simultaneously, no blocking needed |
+| `conversation/manager.py` | Retrieval cooldown: skips semantic retrieval if <5s since last call, reuses `_last_memory_texts` |
 
 ## Minor Code Issues (non-blocking)
 
@@ -805,3 +829,82 @@ Systematic 5-agent audit traced **all user flows where audio or visual output pe
 - Issues: #21, #24, #26 — all resolved
 - Files: `config.py`, `settings_panel.py`, `window.py`
 - Core: debounced TOML save (0.5s coalesce via threading.Timer), `asyncio.wait()` with 3s timeout in `_drain()`, device list rebuild on settings panel open (background thread)
+
+## NVIDIA Riva + Full-Duplex AEC (2026-03-04)
+
+### What Was Built (commit 1cf6af2)
+- **NLMS Echo Canceller** (`audio/aec.py`) — pure numpy adaptive filter, float64, per-sample weight updates
+- **Full-Duplex Pipeline** (`audio/pipeline.py`) — continuous mic stream, AEC, VAD (webrtcvad or RMS fallback), utterance segmentation, barge-in detection
+- **RivaTTSProvider** (`audio/tts.py`) — gRPC synthesis via `nvidia-riva-client`, returns 16kHz PCM wrapped in WAV
+- **RivaSTTProvider** (`audio/stt.py`) — gRPC offline_recognize, plus `transcribe(pcm_bytes)` for pipeline mode
+- **FasterWhisperSTTProvider.transcribe()** — pre-captured audio transcription (duck-typed, not on Protocol)
+- **AudioManager full-duplex mode** — pipeline created when `aec_enabled=True`, speak() synthesizes→feeds reference→plays, listen() reads from utterance queue, cancel_tts() clears reference
+- **GUI barge-in** — `PygameAudioBridge.update()` polls `barge_in_event`, cancels pending voice + stops playback
+- **Config**: 9 new `AudioConfig` fields, `[riva]` and `[aec]` optional dep groups in pyproject.toml
+- **68 new tests** (2649 at that commit, 2674 after settings overhaul + Riva fixes)
+
+### Settings Panel Audio Overhaul (2026-03-04)
+
+Exposed TTS/STT provider switching, AEC toggle, and barge-in toggle in the GUI Settings panel Audio tab. Users no longer need to hand-edit TOML files.
+
+**13 controls in Audio tab** (was 9): 5 toggles (TTS, STT, SFX, AEC, Barge-in) + 3 sliders (TTS/SFX/Ambient vol) + 5 dropdowns (TTS Engine, STT Engine, Output, Input, TTS Voice).
+
+| File | Changes |
+|------|---------|
+| `gui/device_utils.py` | `list_tts_providers()`, `list_stt_providers()` — enumerate available backends with "(not installed)" suffix |
+| `gui/settings_panel.py` | 2 new engine dropdowns, 2 new toggles, `_on_tts_provider_change()` rebuilds voice list, close/switch collapse new dropdowns |
+| `audio/manager.py` | `swap_tts_provider()`, `swap_stt_provider()` — runtime provider replacement; `toggle_aec()` — creates/destroys pipeline |
+| `config.py` | Persists `tts_provider`, `stt_provider`, `tts_speed`, `aec_enabled`, `barge_in_enabled` to user_settings.toml |
+| `gui/game_loop.py` | Handlers for new settings keys, pipeline `start_pipeline(loop=)` wiring |
+
+### Riva Runtime Bug Fixes (2026-03-04)
+
+Four bugs found and fixed after first Riva runtime testing:
+
+1. **TTS API mismatch** — `riva.client.SynthesizeSpeechRequest` doesn't exist; the SDK's `SpeechSynthesisService.synthesize()` takes keyword args directly (`text`, `voice_name`, `language_code`, `encoding`, `sample_rate_hz`). Fixed in `audio/tts.py`.
+
+2. **STT silently dropping all utterances** — `_on_pipeline_utterance()` called `asyncio.get_event_loop()` from the pipeline background thread, got a non-running loop. Fixed by capturing event loop reference in `start_pipeline(loop=)` and storing as `self._async_loop`. `game_loop.py` passes `self.window._loop`.
+
+3. **TTS quality degradation (16kHz)** — `RivaTTSProvider._synthesize_sync()` hardcoded `sample_rate_hz=16000` for AEC compat, but `pipeline.py` already resamples reference audio. Fixed to 44100Hz.
+
+4. **Dual-voice overlapping playback** — Streaming sentence splitter fires multiple concurrent `play_voice()` calls. Each ran `sd.play()` in separate executor threads, causing overlapping audio. Fixed by adding `self._speak_lock = asyncio.Lock()` serializing all `speak()` calls.
+
+**Also fixed**: `device_utils.py` Riva voice enumeration import (`riva.client.proto.riva_tts_pb2`, not `riva.client.riva_tts_pb2`).
+
+**25 new tests** across 3 files (2674 total), all passing.
+
+### Magpie TTS Model Upgrade (2026-03-04)
+
+Switched Riva TTS from `fastpitch_hifigan` (older two-stage mel-spectrogram + vocoder) to **Magpie TTS Multilingual** — NVIDIA's newer high-quality neural TTS model, available since Riva 2.19.0.
+
+| File | Change |
+|------|---------|
+| `docker/docker-compose.riva.yml` | `--tts-model=fastpitch_hifigan` → `--tts-model=magpie` |
+| `config.py` | Default `riva_tts_voice = "Magpie-Multilingual.EN-US.Leo"` |
+| `config/default.toml` | Same default voice |
+| `gui/device_utils.py` | `_MAGPIE_VOICES` fallback list (Aria, Jason, Leo, Mia); server gRPC query used first |
+| `audio/tts.py` | Updated docstring for Magpie + 44.1kHz |
+
+**Available Magpie voices (EN-US):** Aria (Female), Jason (Male), Leo (Male), Mia (Female).
+
+**To apply:** Re-init Riva models in WSL2 — `docker volume rm seaman-riva-models`, re-run `riva-init`, restart `riva-speech`. Old fastpitch models must be cleared first.
+
+### Riva Docker/WSL2 Setup — COMPLETE
+
+Docker infrastructure is in place. Files: `docker/docker-compose.riva.yml`, `docker/riva_setup.sh`, `docker/README.md`.
+
+**Setup:** `bash docker/riva_setup.sh` from WSL2 (checks prerequisites, pulls image, inits models, starts server).
+
+**Smoke test:**
+```bash
+# In WSL2:
+cd docker && docker compose -f docker-compose.riva.yml up -d
+# Wait for model loading (~2-5 min first run)
+
+# In Windows:
+python -m seaman_brain --gui
+# Settings → Audio → TTS Engine: NVIDIA Riva, STT Engine: NVIDIA Riva
+# Verify: creature speaks via Riva Magpie TTS, mic input via Riva ASR
+```
+
+**VRAM budget**: Riva ASR+TTS ~4-6GB + Ollama qwen3:8b ~6GB + qwen3-vl:8b ~6GB = ~18GB peak, fits in 32GB RTX 5090

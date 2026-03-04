@@ -352,6 +352,99 @@ class TestAudioSettings:
         p._on_audio_setting("sfx_enabled", True)
         cb.assert_called_once_with("sfx_enabled", True)
 
+    def test_audio_tab_has_13_widgets(self, panel: SettingsPanel):
+        """Audio tab builds exactly 13 widgets."""
+        panel.open()
+        panel.render(_surface_mock)
+        assert len(panel._audio_widgets) == 13
+
+    def test_aec_toggle_built(self, panel: SettingsPanel):
+        """AEC toggle is created during build."""
+        panel.open()
+        panel.render(_surface_mock)
+        assert panel._aec_toggle is not None
+
+    def test_barge_in_toggle_built(self, panel: SettingsPanel):
+        """Barge-in toggle is created during build."""
+        panel.open()
+        panel.render(_surface_mock)
+        assert panel._barge_in_toggle is not None
+
+    def test_tts_provider_dropdown_built(self, panel: SettingsPanel):
+        """TTS engine dropdown is created during build."""
+        panel.open()
+        panel.render(_surface_mock)
+        assert panel._tts_provider_dropdown is not None
+
+    def test_stt_provider_dropdown_built(self, panel: SettingsPanel):
+        """STT engine dropdown is created during build."""
+        panel.open()
+        panel.render(_surface_mock)
+        assert panel._stt_provider_dropdown is not None
+
+    def test_aec_toggle_updates_config(self, panel: SettingsPanel):
+        """Toggling AEC updates audio config."""
+        panel._on_audio_setting("aec_enabled", True)
+        assert panel._config.audio.aec_enabled is True
+
+    def test_barge_in_toggle_updates_config(self, panel: SettingsPanel):
+        """Toggling barge-in updates audio config."""
+        panel._on_audio_setting("barge_in_enabled", True)
+        assert panel._config.audio.barge_in_enabled is True
+
+    def test_tts_provider_change_rebuilds_voice_list(self, panel: SettingsPanel):
+        """Changing TTS provider rebuilds the TTS voice dropdown."""
+        panel.open()
+        panel.render(_surface_mock)
+        # Record old voice items
+        old_voice_ids = list(panel._voice_ids)
+        # Mock list_tts_voices to return different voices for "kokoro"
+        with patch(
+            "seaman_brain.gui.settings_panel.list_tts_voices",
+            return_value=[("", "Default"), ("af_heart", "Heart")],
+        ):
+            panel._on_tts_provider_change(1)  # Switch to kokoro (index 1)
+        assert panel._voice_ids != old_voice_ids or len(panel._voice_ids) == 2
+        assert panel._config.audio.tts_voice == ""  # Reset on provider change
+
+    def test_tts_provider_change_fires_callback(self, config: SeamanConfig):
+        """TTS provider change fires on_audio_change callback."""
+        cb = MagicMock()
+        p = SettingsPanel(config=config, on_audio_change=cb)
+        p.open()
+        p.render(_surface_mock)
+        with patch(
+            "seaman_brain.gui.settings_panel.list_tts_voices",
+            return_value=[("", "Default")],
+        ):
+            p._on_tts_provider_change(0)
+        cb.assert_called_once()
+
+    def test_close_collapses_provider_dropdowns(self, panel: SettingsPanel):
+        """close() collapses TTS/STT provider dropdowns."""
+        panel.open()
+        panel.render(_surface_mock)
+        if panel._tts_provider_dropdown is not None:
+            panel._tts_provider_dropdown.expanded = True
+        if panel._stt_provider_dropdown is not None:
+            panel._stt_provider_dropdown.expanded = True
+        panel.close()
+        if panel._tts_provider_dropdown is not None:
+            assert panel._tts_provider_dropdown.expanded is False
+        if panel._stt_provider_dropdown is not None:
+            assert panel._stt_provider_dropdown.expanded is False
+
+    def test_switch_away_closes_audio_dropdowns(self, panel: SettingsPanel):
+        """Switching away from Audio tab closes all audio dropdowns."""
+        panel.open()
+        panel.render(_surface_mock)
+        panel.active_tab = SettingsTab.AUDIO
+        if panel._tts_provider_dropdown is not None:
+            panel._tts_provider_dropdown.expanded = True
+        panel._switch_tab(SettingsTab.PERSONALITY)
+        if panel._tts_provider_dropdown is not None:
+            assert panel._tts_provider_dropdown.expanded is False
+
 
 # ── Click Handling Tests ──────────────────────────────────────────────
 
