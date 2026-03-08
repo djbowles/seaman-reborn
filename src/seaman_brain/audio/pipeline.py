@@ -27,6 +27,7 @@ from seaman_brain.config import AudioConfig
 logger = logging.getLogger(__name__)
 
 _SILENCE_FRAMES_DEFAULT = 150  # 1.5s at 10ms/frame
+_ECHO_COOLDOWN_FRAMES = 50  # 0.5s at 10ms/frame
 
 
 class AudioIOPipeline:
@@ -80,6 +81,9 @@ class AudioIOPipeline:
         self._speech_buffer: list[np.ndarray] = []
         self._silence_count = 0
         self._in_utterance = False
+
+        # Echo suppression cooldown (frames remaining after TTS stops)
+        self._echo_cooldown_remaining = 0
 
         # RMS fallback threshold for VAD
         self._rms_threshold = config.stt_silence_threshold
@@ -150,6 +154,9 @@ class AudioIOPipeline:
                 self._tts_playing = True
                 self._barge_in_fired = False
 
+            # Clear any partial speech buffer to prevent mixed utterances
+            self._reset_segmentation()
+
         except Exception as exc:
             logger.warning("Failed to feed reference audio: %s", exc)
 
@@ -217,6 +224,13 @@ class AudioIOPipeline:
         try:
             import sounddevice as sd
 
+            # Verify a valid default input device exists before opening stream
+            try:
+                sd.query_devices(kind="input")
+            except sd.PortAudioError as exc:
+                logger.warning("No valid input device found: %s", exc)
+                return
+
             self._stream = sd.InputStream(
                 samplerate=SAMPLE_RATE,
                 channels=1,
@@ -277,6 +291,7 @@ class AudioIOPipeline:
                 frame = self._ref_queue.popleft()
                 if not self._ref_queue:
                     self._tts_playing = False
+                    self._echo_cooldown_remaining = _ECHO_COOLDOWN_FRAMES
                 return frame
         return np.zeros(FRAME_SAMPLES, dtype=np.float64)
 
@@ -294,7 +309,20 @@ class AudioIOPipeline:
         return rms > self._rms_threshold
 
     def _segment_utterance(self, frame: np.ndarray, is_speech: bool) -> None:
-        """Buffer speech frames and detect end-of-utterance via silence."""
+        """Buffer speech frames and detect end-of-utterance via silence.
+
+        Suppresses capture while TTS is playing (unless barge-in is enabled)
+        and for a short cooldown after TTS stops, to prevent the creature's
+        own speech from being transcribed back as user input.
+        """
+        # Suppress echo: skip buffering during TTS playback + cooldown
+        if not self._config.barge_in_enabled:
+            if self._tts_playing:
+                return
+            if self._echo_cooldown_remaining > 0:
+                self._echo_cooldown_remaining -= 1
+                return
+
         if is_speech:
             self._in_utterance = True
             self._silence_count = 0

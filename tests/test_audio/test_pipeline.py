@@ -323,6 +323,87 @@ class TestBargeIn:
         assert barge_in_count[0] == 0
 
 
+# ─── Echo suppression ─────────────────────────────────────────────
+
+
+class TestEchoSuppression:
+    """Test TTS echo suppression in the pipeline."""
+
+    def test_suppresses_during_tts(self):
+        """Frames during TTS playback are not buffered as utterance."""
+        received = []
+        config = _make_config(barge_in_enabled=False, stt_silence_duration=0.03)
+        pipeline = AudioIOPipeline(
+            config, on_utterance=lambda pcm: received.append(pcm)
+        )
+        pipeline._tts_playing = True
+
+        speech = np.ones(FRAME_SAMPLES, dtype=np.float64) * 0.5
+        for _ in range(10):
+            pipeline._segment_utterance(speech, is_speech=True)
+
+        # Nothing should be buffered while TTS is playing
+        assert len(pipeline._speech_buffer) == 0
+        assert len(received) == 0
+
+    def test_cooldown_after_tts(self):
+        """Frames during cooldown after TTS stops are also suppressed."""
+        received = []
+        config = _make_config(barge_in_enabled=False, stt_silence_duration=0.03)
+        pipeline = AudioIOPipeline(
+            config, on_utterance=lambda pcm: received.append(pcm)
+        )
+        pipeline._tts_playing = False
+        pipeline._echo_cooldown_remaining = 5
+
+        speech = np.ones(FRAME_SAMPLES, dtype=np.float64) * 0.5
+        for _ in range(5):
+            pipeline._segment_utterance(speech, is_speech=True)
+
+        # All consumed by cooldown
+        assert len(pipeline._speech_buffer) == 0
+        assert pipeline._echo_cooldown_remaining == 0
+
+        # Next frame should be captured normally
+        pipeline._segment_utterance(speech, is_speech=True)
+        assert len(pipeline._speech_buffer) == 1
+
+    def test_barge_in_bypasses_suppression(self):
+        """With barge_in_enabled=True, frames ARE captured during TTS."""
+        received = []
+        config = _make_config(barge_in_enabled=True, stt_silence_duration=0.03)
+        pipeline = AudioIOPipeline(
+            config, on_utterance=lambda pcm: received.append(pcm)
+        )
+        pipeline._tts_playing = True
+
+        speech = np.ones(FRAME_SAMPLES, dtype=np.float64) * 0.5
+        for _ in range(5):
+            pipeline._segment_utterance(speech, is_speech=True)
+
+        # Should be buffered despite TTS playing
+        assert len(pipeline._speech_buffer) == 5
+
+    def test_feed_reference_clears_partial_buffer(self):
+        """Partial speech buffer is cleared when new TTS starts."""
+        config = _make_config()
+        pipeline = AudioIOPipeline(config)
+
+        # Simulate partial speech buffered
+        speech = np.ones(FRAME_SAMPLES, dtype=np.float64) * 0.5
+        pipeline._speech_buffer.append(speech)
+        pipeline._in_utterance = True
+        pipeline._silence_count = 3
+
+        # Feed new TTS reference
+        pipeline.feed_reference(_make_wav())
+
+        # Buffer should be cleared
+        assert len(pipeline._speech_buffer) == 0
+        assert pipeline._in_utterance is False
+        assert pipeline._silence_count == 0
+
+
 # ─── VAD ──────────────────────────────────────────────────────────
 
 

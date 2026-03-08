@@ -727,6 +727,7 @@ class GameEngine:
 
         try:
             self._pending_autonomous = self.window.submit_async(_generate())
+            self._pending_autonomous_time = time.monotonic()
             self._pending_autonomous_behavior = None  # No fallback for interactions
         except RuntimeError:
             logger.warning("Async bridge dead — skipping interaction reaction")

@@ -303,13 +303,16 @@ class ConversationManager:
             self._vision_bridge is not None
             and isinstance(self._llm, ToolCapableLLM)
         )
+        state_dict = self._creature_state.to_dict()
+        destressed = PromptBuilder.is_destressed(state_dict)
         system_prompt = self._prompt_builder.build(
             stage=self._creature_state.stage,
             traits=self._traits,
             memories=memory_texts if memory_texts else None,
-            creature_state=self._creature_state.to_dict(),
+            creature_state=state_dict,
             observations=self._vision_observations if self._vision_observations else None,
             vision_tool_available=use_tools,
+            destressed=destressed,
         )
 
         # 6. Assemble context
@@ -333,7 +336,9 @@ class ConversationManager:
             return self._fallback_response(evolved)
 
         # 8. Apply personality constraints
-        response = apply_constraints(raw_response, self._traits)
+        response = apply_constraints(
+            raw_response, self._traits, destressed=destressed,
+        )
 
         # 9. Store assistant response in episodic memory
         assistant_msg = ChatMessage(role=MessageRole.ASSISTANT, content=response)
@@ -430,14 +435,17 @@ class ConversationManager:
         memory_texts = self._last_memory_texts
 
         # 5. Build system prompt
+        state_dict = self._creature_state.to_dict()
+        destressed = PromptBuilder.is_destressed(state_dict)
         system_prompt = self._prompt_builder.build(
             stage=self._creature_state.stage,
             traits=self._traits,
             memories=memory_texts if memory_texts else None,
-            creature_state=self._creature_state.to_dict(),
+            creature_state=state_dict,
             observations=(
                 self._vision_observations if self._vision_observations else None
             ),
+            destressed=destressed,
         )
 
         # 6. Assemble context
@@ -477,7 +485,9 @@ class ConversationManager:
         raw_response = "".join(accumulated)
 
         # 8. Apply personality constraints
-        response = apply_constraints(raw_response, self._traits)
+        response = apply_constraints(
+            raw_response, self._traits, destressed=destressed,
+        )
 
         # 9. Store assistant response in episodic memory
         assistant_msg = ChatMessage(role=MessageRole.ASSISTANT, content=response)

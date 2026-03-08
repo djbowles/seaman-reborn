@@ -2,7 +2,7 @@
 
 ## Project Status
 
-The Python "brain" backend is **feature-complete**: 2674 tests passing, ruff clean, all 52 user stories implemented across 14 subpackages (llm, personality, memory, creature, conversation, cli, audio, environment, needs, behavior, gui, api, vision). LLM-initiated vision via tool-use/function-calling is wired end-to-end.
+The Python "brain" backend is **feature-complete**: 2678 tests passing, ruff clean, all 52 user stories implemented across 14 subpackages (llm, personality, memory, creature, conversation, cli, audio, environment, needs, behavior, gui, api, vision). LLM-initiated vision via tool-use/function-calling is wired end-to-end.
 
 - **Repo**: https://github.com/djbowles/seaman-reborn (private)
 - **Branch**: `ralph/ai-brain-core` (all work), `main` (base)
@@ -871,7 +871,7 @@ Four bugs found and fixed after first Riva runtime testing:
 
 **Also fixed**: `device_utils.py` Riva voice enumeration import (`riva.client.proto.riva_tts_pb2`, not `riva.client.riva_tts_pb2`).
 
-**25 new tests** across 3 files (2674 total), all passing.
+**25 new tests** across 3 files, all passing.
 
 ### Magpie TTS Model Upgrade (2026-03-04)
 
@@ -908,3 +908,21 @@ python -m seaman_brain --gui
 ```
 
 **VRAM budget**: Riva ASR+TTS ~4-6GB + Ollama qwen3:8b ~6GB + qwen3-vl:8b ~6GB = ~18GB peak, fits in 32GB RTX 5090
+
+### TTS Echo Suppression Fix (2026-03-04)
+
+Fixed critical bug: creature's TTS output was picked up by the mic and transcribed back as user input in full-duplex AEC mode. The NLMS adaptive filter alone couldn't cancel enough echo due to timing misalignment between reference frames and acoustic delay. Evidence: STT transcribed `*determined*` markdown as the literal word "asterisk".
+
+**Root cause**: `_segment_utterance()` buffered all frames regardless of TTS playback state, relying solely on the NLMS filter for echo cancellation.
+
+**Fix**: Pipeline-level echo suppression in `audio/pipeline.py`:
+
+| Change | Detail |
+|--------|--------|
+| `_segment_utterance()` | Returns early (suppresses buffering) while `_tts_playing=True` and `barge_in_enabled=False` |
+| Echo cooldown | 50-frame (0.5s) cooldown after TTS stops — catches acoustic tail/reverb |
+| `_get_ref_frame()` | Sets `_echo_cooldown_remaining` when last reference frame dequeued |
+| `feed_reference()` | Clears partial `_speech_buffer` when new TTS starts, preventing mixed utterances |
+| Barge-in bypass | When `barge_in_enabled=True`, suppression is skipped so user can still interrupt |
+
+**4 new tests** in `tests/test_audio/test_pipeline.py` — 2678 total, all passing.

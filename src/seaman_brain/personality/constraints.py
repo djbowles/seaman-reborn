@@ -55,9 +55,11 @@ _FORBIDDEN_PATTERNS: list[re.Pattern[str]] = [
 
 # Response length bounds (in characters).
 _MIN_LENGTH = 10
-_MAX_LENGTH = 500
+_MAX_LENGTH = 300
+_DESTRESS_MAX_LENGTH = 800
 # Verbosity 0.0 -> _MIN_LENGTH, verbosity 1.0 -> _MAX_LENGTH
 # Linear interpolation between the two.
+# When destressed (hostile/irritated mood + critical needs), use _DESTRESS_MAX_LENGTH.
 
 
 def _strip_forbidden(text: str) -> str:
@@ -78,10 +80,11 @@ def _clean_whitespace(text: str) -> str:
     return text
 
 
-def _max_length_for_verbosity(verbosity: float) -> int:
+def _max_length_for_verbosity(verbosity: float, *, destressed: bool = False) -> int:
     """Calculate max response length from verbosity trait (0.0-1.0)."""
     v = max(0.0, min(1.0, verbosity))
-    return int(_MIN_LENGTH + (_MAX_LENGTH - _MIN_LENGTH) * v)
+    ceiling = _DESTRESS_MAX_LENGTH if destressed else _MAX_LENGTH
+    return int(_MIN_LENGTH + (ceiling - _MIN_LENGTH) * v)
 
 
 def _truncate(text: str, max_len: int) -> str:
@@ -117,7 +120,9 @@ def _strip_think_blocks(text: str) -> str:
     return re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL | re.IGNORECASE)
 
 
-def apply_constraints(response: str, profile: TraitProfile) -> str:
+def apply_constraints(
+    response: str, profile: TraitProfile, *, destressed: bool = False,
+) -> str:
     """Filter LLM output through personality constraints.
 
     1. Strips ``<think>`` reasoning blocks from Qwen3-style models.
@@ -129,6 +134,7 @@ def apply_constraints(response: str, profile: TraitProfile) -> str:
     Args:
         response: Raw LLM response text.
         profile: Current creature's trait profile (uses verbosity for length).
+        destressed: When True, use the higher destress length ceiling.
 
     Returns:
         Filtered, length-constrained response string.
@@ -144,7 +150,7 @@ def apply_constraints(response: str, profile: TraitProfile) -> str:
     if not text:
         return ""
 
-    max_len = _max_length_for_verbosity(profile.verbosity)
+    max_len = _max_length_for_verbosity(profile.verbosity, destressed=destressed)
     text = _truncate(text, max_len)
 
     return text

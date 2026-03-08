@@ -21,7 +21,7 @@ from seaman_brain.personality.traits import TraitProfile
 
 @pytest.fixture
 def default_profile() -> TraitProfile:
-    """A default TraitProfile (verbosity=0.5 -> max ~255 chars)."""
+    """A default TraitProfile (verbosity=0.5 -> max ~155 chars)."""
     return TraitProfile()
 
 
@@ -33,7 +33,7 @@ def terse_profile() -> TraitProfile:
 
 @pytest.fixture
 def verbose_profile() -> TraitProfile:
-    """A very verbose creature (verbosity=1.0 -> max 500 chars)."""
+    """A very verbose creature (verbosity=1.0 -> max 300 chars)."""
     return TraitProfile(verbosity=1.0)
 
 
@@ -99,16 +99,16 @@ class TestLengthEnforcement:
         assert len(result) <= 10
 
     def test_verbose_allows_long_responses(self, verbose_profile: TraitProfile) -> None:
-        response = "Word " * 80  # ~400 chars
+        response = "Word " * 50  # ~250 chars
         result = apply_constraints(response, verbose_profile)
-        assert len(result) <= 500
+        assert len(result) <= 300
 
     def test_default_verbosity_medium_length(self, default_profile: TraitProfile) -> None:
         max_len = _max_length_for_verbosity(0.5)
-        assert max_len == 255
-        response = "X" * 300
+        assert max_len == 155
+        response = "X" * 200
         result = apply_constraints(response, default_profile)
-        assert len(result) <= 255
+        assert len(result) <= 155
 
     def test_short_response_not_truncated(self, terse_profile: TraitProfile) -> None:
         response = "No."
@@ -169,7 +169,7 @@ class TestEdgeCases:
         assert _max_length_for_verbosity(-1.0) == 10
 
     def test_verbosity_clamped_above_one(self) -> None:
-        assert _max_length_for_verbosity(2.0) == 500
+        assert _max_length_for_verbosity(2.0) == 300
 
 
 # ---------------------------------------------------------------------------
@@ -205,8 +205,13 @@ class TestHelpers:
 
     def test_max_length_linear_interpolation(self) -> None:
         assert _max_length_for_verbosity(0.0) == 10
-        assert _max_length_for_verbosity(0.5) == 255
-        assert _max_length_for_verbosity(1.0) == 500
+        assert _max_length_for_verbosity(0.5) == 155
+        assert _max_length_for_verbosity(1.0) == 300
+
+    def test_max_length_destressed(self) -> None:
+        assert _max_length_for_verbosity(0.0, destressed=True) == 10
+        assert _max_length_for_verbosity(0.5, destressed=True) == 405
+        assert _max_length_for_verbosity(1.0, destressed=True) == 800
 
 
 # ---------------------------------------------------------------------------
@@ -276,3 +281,33 @@ class TestAsteriskStripping:
         text = "Just a normal sentence."
         result = apply_constraints(text, default_profile)
         assert result == text
+
+
+# ---------------------------------------------------------------------------
+# Destress mode tests
+# ---------------------------------------------------------------------------
+
+class TestDestressMode:
+    """Tests for destress soliloquy length override."""
+
+    def test_destress_allows_longer_response(self) -> None:
+        """destressed=True uses higher ceiling, doesn't truncate at 300."""
+        profile = TraitProfile(verbosity=1.0)
+        response = "A" * 600
+        result = apply_constraints(response, profile, destressed=True)
+        assert len(result) > 300
+        assert len(result) <= 800
+
+    def test_normal_truncates_at_lower_limit(self) -> None:
+        """Without destress, text IS truncated at 300."""
+        profile = TraitProfile(verbosity=1.0)
+        response = "A" * 600
+        result = apply_constraints(response, profile, destressed=False)
+        assert len(result) <= 300
+
+    def test_destress_default_false(self) -> None:
+        """destressed defaults to False (backward compat)."""
+        profile = TraitProfile(verbosity=1.0)
+        response = "A" * 600
+        result = apply_constraints(response, profile)
+        assert len(result) <= 300

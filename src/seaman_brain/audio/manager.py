@@ -135,17 +135,20 @@ class AudioManager:
         return True
 
     def _try_fallback_tts(self) -> None:
-        """Switch from Kokoro to pyttsx3 after repeated TTS failures."""
+        """Switch to pyttsx3 after repeated TTS failures from any provider."""
         if self._tts_fail_count < _TTS_FALLBACK_THRESHOLD:
             return
-        from seaman_brain.audio.tts import KokoroTTSProvider, Pyttsx3TTSProvider
-        if not isinstance(self._tts, KokoroTTSProvider):
+        # Already on pyttsx3 — nowhere to fall back to
+        if type(self._tts).__name__ == "Pyttsx3TTSProvider":
             return
+        provider_name = type(self._tts).__name__
         logger.warning(
-            "Kokoro TTS failed %d times, falling back to pyttsx3",
+            "%s TTS failed %d times, falling back to pyttsx3",
+            provider_name,
             self._tts_fail_count,
         )
         try:
+            from seaman_brain.audio.tts import Pyttsx3TTSProvider
             fallback = Pyttsx3TTSProvider(self._config)
             if fallback.available:
                 self._tts = fallback

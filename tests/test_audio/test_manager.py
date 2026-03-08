@@ -647,10 +647,17 @@ class TestTTSAutoFallback:
             assert mgr._tts is mock_pyttsx3
             assert mgr._tts_fail_count == 0
 
-    async def test_no_fallback_for_non_kokoro(self, mock_stt, sounds_dir):
-        """Fallback does not trigger for non-Kokoro providers."""
-        mock_tts = AsyncMock()
-        mock_tts.speak = AsyncMock(side_effect=RuntimeError("error"))
+    async def test_no_fallback_for_pyttsx3(self, mock_stt, sounds_dir):
+        """Fallback does not trigger when already on pyttsx3."""
+        # Create a mock whose type().__name__ == "Pyttsx3TTSProvider"
+        class Pyttsx3TTSProvider:
+            async def speak(self, text):
+                raise RuntimeError("error")
+
+            async def synthesize(self, text):
+                return b""
+
+        mock_tts = Pyttsx3TTSProvider()
 
         config = AudioConfig()
         mgr = AudioManager(
@@ -664,7 +671,7 @@ class TestTTSAutoFallback:
         for _ in range(5):
             await mgr.speak("test")
 
-        # Still the original provider (not Kokoro, so no fallback)
+        # Still the original provider (already pyttsx3, no fallback)
         assert mgr._tts is mock_tts
 
     async def test_success_resets_fail_count(self, mock_stt, sounds_dir):

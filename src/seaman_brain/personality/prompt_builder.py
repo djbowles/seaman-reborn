@@ -237,6 +237,34 @@ class PromptBuilder:
         """
         self._config_dir = config_dir
 
+    @staticmethod
+    def is_destressed(state: dict[str, Any]) -> bool:
+        """Check if creature is destressed (hostile/irritated + critical needs).
+
+        Returns True only when the creature has BOTH a bad mood AND at least
+        one critical need, preventing constant long responses.
+
+        Args:
+            state: Creature state dict with mood, hunger, health, comfort.
+
+        Returns:
+            True if creature qualifies for destress soliloquy mode.
+        """
+        mood = (state.get("mood") or "").lower()
+        if mood not in ("hostile", "irritated"):
+            return False
+
+        hunger = state.get("hunger")
+        health = state.get("health")
+        comfort = state.get("comfort")
+
+        has_critical_need = (
+            (hunger is not None and hunger > 0.8)
+            or (health is not None and health < 0.3)
+            or (comfort is not None and comfort < 0.2)
+        )
+        return has_critical_need
+
     def build(
         self,
         stage: CreatureStage,
@@ -245,6 +273,7 @@ class PromptBuilder:
         creature_state: dict[str, Any] | None = None,
         observations: list[str] | None = None,
         vision_tool_available: bool = False,
+        destressed: bool = False,
     ) -> str:
         """Build the full system prompt for an LLM call.
 
@@ -276,10 +305,16 @@ class PromptBuilder:
         # 2b. Hard word limit — critical for TTS responsiveness
         max_words = _get_max_response_words(stage, self._config_dir)
         if max_words:
-            sections.append(
-                f"RESPONSE LENGTH: Keep every reply under {max_words} words. "
-                "Be concise. One to three sentences maximum."
-            )
+            if destressed:
+                sections.append(
+                    "RESPONSE LENGTH: You may rant, monologue, or vent at length. "
+                    "Express your frustration fully."
+                )
+            else:
+                sections.append(
+                    f"RESPONSE LENGTH: Keep every reply under {max_words} words. "
+                    "Be concise. One to three sentences maximum."
+                )
 
         # 3. Trait-driven tone
         tone = _trait_tone_instructions(traits)

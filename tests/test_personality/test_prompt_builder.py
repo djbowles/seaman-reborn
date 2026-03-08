@@ -447,3 +447,75 @@ class TestVisionSection:
             vision_tool_available=False,
         )
         assert "VISION CAPABILITY" not in result
+
+
+# ---------------------------------------------------------------------------
+# Destress detection and prompt tests
+# ---------------------------------------------------------------------------
+
+class TestDestress:
+    """Tests for destress detection and vent-permissive prompts."""
+
+    def test_is_destressed_hostile_and_starving(self):
+        """Hostile mood + starving -> True."""
+        state = {"mood": "hostile", "hunger": 0.9, "health": 0.8, "comfort": 0.5}
+        assert PromptBuilder.is_destressed(state) is True
+
+    def test_is_destressed_irritated_and_low_health(self):
+        """Irritated mood + low health -> True."""
+        state = {"mood": "irritated", "hunger": 0.3, "health": 0.2, "comfort": 0.5}
+        assert PromptBuilder.is_destressed(state) is True
+
+    def test_is_destressed_hostile_and_low_comfort(self):
+        """Hostile mood + low comfort -> True."""
+        state = {"mood": "hostile", "hunger": 0.3, "health": 0.8, "comfort": 0.1}
+        assert PromptBuilder.is_destressed(state) is True
+
+    def test_is_destressed_mood_only_not_enough(self):
+        """Hostile mood but needs are fine -> False."""
+        state = {"mood": "hostile", "hunger": 0.3, "health": 0.8, "comfort": 0.5}
+        assert PromptBuilder.is_destressed(state) is False
+
+    def test_is_destressed_needs_only_not_enough(self):
+        """Starving but neutral mood -> False."""
+        state = {"mood": "neutral", "hunger": 0.9, "health": 0.2, "comfort": 0.1}
+        assert PromptBuilder.is_destressed(state) is False
+
+    def test_is_destressed_empty_state(self):
+        """Empty state -> False."""
+        assert PromptBuilder.is_destressed({}) is False
+
+    def test_is_destressed_no_mood(self):
+        """No mood key -> False."""
+        state = {"hunger": 0.9, "health": 0.1}
+        assert PromptBuilder.is_destressed(state) is False
+
+    def test_destressed_prompt_allows_vent(self, tmp_path, default_traits):
+        """destressed=True produces vent-permissive instruction."""
+        config_dir = tmp_path / "cfg_vent"
+        stages_dir = config_dir / "stages"
+        stages_dir.mkdir(parents=True)
+        (stages_dir / "podfish.toml").write_text(
+            "[behavior]\nmax_response_words = 40\n"
+        )
+        b = PromptBuilder(config_dir=str(config_dir))
+        result = b.build(
+            CreatureStage.PODFISH, default_traits, destressed=True,
+        )
+        assert "rant" in result.lower() or "vent" in result.lower()
+        assert "Be concise" not in result
+
+    def test_normal_prompt_enforces_brevity(self, tmp_path, default_traits):
+        """destressed=False keeps concise instruction."""
+        config_dir = tmp_path / "cfg_brief"
+        stages_dir = config_dir / "stages"
+        stages_dir.mkdir(parents=True)
+        (stages_dir / "podfish.toml").write_text(
+            "[behavior]\nmax_response_words = 40\n"
+        )
+        b = PromptBuilder(config_dir=str(config_dir))
+        result = b.build(
+            CreatureStage.PODFISH, default_traits, destressed=False,
+        )
+        assert "Be concise" in result or "under" in result.lower()
+        assert "rant" not in result.lower()
