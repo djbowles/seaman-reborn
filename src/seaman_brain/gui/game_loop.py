@@ -13,10 +13,8 @@ from __future__ import annotations
 
 import logging
 import queue
-import re
 import threading
 import time
-from enum import Enum
 from typing import Any
 
 import pygame
@@ -30,7 +28,12 @@ from seaman_brain.behavior.autonomous import (
 )
 from seaman_brain.behavior.events import EventSystem
 from seaman_brain.behavior.mood import CreatureMood, MoodEngine
-from seaman_brain.config import SeamanConfig, load_config, save_user_settings
+from seaman_brain.config import (
+    SeamanConfig,
+    flush_pending_save,
+    load_config,
+    save_user_settings,
+)
 from seaman_brain.creature.evolution import EvolutionEngine
 from seaman_brain.creature.state import CreatureState
 from seaman_brain.environment.clock import GameClock
@@ -38,6 +41,19 @@ from seaman_brain.environment.tank import EnvironmentType, TankEnvironment
 from seaman_brain.gui.action_bar import ActionBar
 from seaman_brain.gui.audio_integration import AudioChannel, PygameAudioBridge
 from seaman_brain.gui.chat_panel import ChatPanel
+from seaman_brain.gui.game_systems import (
+    _BEHAVIOR_CHECK_INTERVAL,
+    _EVENT_CHECK_INTERVAL,
+    _INTERACTION_FALLBACKS,
+    _NEEDS_UPDATE_INTERVAL,
+    _PENDING_TIMEOUT,
+    _REACTION_COOLDOWN,
+    _STT_DEBOUNCE_SECONDS,
+    _VISION_LOOK_TIMEOUT,
+    GameState,
+    _build_interaction_situation,
+    find_tts_split,
+)
 from seaman_brain.gui.hud import HUD
 from seaman_brain.gui.interactions import InteractionManager, InteractionType
 from seaman_brain.gui.lineage_panel import LineagePanel
@@ -70,39 +86,6 @@ _FOOD_MENU_HOVER = (40, 65, 100)
 _FOOD_MENU_TEXT = (200, 220, 240)
 _FOOD_MENU_ITEM_H = 32
 _FOOD_MENU_WIDTH = 120
-
-# ── Game state enum ──────────────────────────────────────────────────
-
-
-class GameState(Enum):
-    """Top-level game state for input/update gating."""
-
-    PLAYING = "playing"
-    SETTINGS = "settings"
-    LINEAGE = "lineage"
-
-
-_NEEDS_UPDATE_INTERVAL = 1.0  # seconds between needs ticks
-_BEHAVIOR_CHECK_INTERVAL = 15.0  # seconds between behavior checks
-_EVENT_CHECK_INTERVAL = 3.0  # seconds between event checks
-_VISION_LOOK_TIMEOUT = 30.0  # seconds before Look Now gives up
-_STT_DEBOUNCE_SECONDS = 0.5  # wait for speech to settle before submitting
-_PENDING_TIMEOUT = 60.0  # seconds before a stuck pending future is force-cancelled
-
-# Sentence boundary for incremental TTS: .!? followed by whitespace or end-of-string
-_SENTENCE_BOUNDARY = re.compile(r"[.!?](?:\s|$)")
-
-# Situation prompts for interaction reactions via LLM
-_INTERACTION_SITUATIONS: dict[str, str] = {
-    "feed": "Your owner just fed you. React to receiving food.",
-    "tap_glass": "Your owner just tapped the glass of your tank. React to the disturbance.",
-    "clean": "Your owner just cleaned your tank. React to the improved cleanliness.",
-    "aerate": "Your owner just aerated your tank water. React to the fresh bubbles.",
-    "temp_up": "Your owner just raised your tank temperature. React to the warmth change.",
-    "temp_down": "Your owner just lowered your tank temperature. React to the temperature drop.",
-    "drain": "Your owner just changed the water level in your tank. React to the change.",
-}
-
 
 class GameEngine:
     """Orchestrates all Pygame subsystems into a cohesive game.
@@ -147,6 +130,7 @@ class GameEngine:
         self._chat_panel = ChatPanel(
             gui_config=cfg.gui,
             on_submit=self._on_chat_submit,
+            ui_manager=None,  # Set after window init when ui_manager is ready
         )
         self._hud = HUD(gui_config=cfg.gui)
         self._interaction_manager = InteractionManager(
@@ -175,6 +159,7 @@ class GameEngine:
         self._behavior_timer = 0.0
         self._event_timer = 0.0
         self._interaction_count_delta = 0
+        self._last_reaction_time: float = 0.0
 
         # Game over state
         self.game_over = False
@@ -258,6 +243,16 @@ class GameEngine:
         """Initialize all subsystems and register with the window."""
         self.window.initialize()
 
+        # Wire up pygame_gui UIManager to panels that support it
+        _ui_mgr = self.window.ui_manager
+        self._chat_panel._ui_manager = _ui_mgr
+
+        # Auto-start Riva server if configured (blocks until ready or timeout)
+        if self._config.audio.riva_auto_start:
+            from seaman_brain.audio.riva_launcher import ensure_riva_running
+
+            ensure_riva_running(self._config.audio)
+
         # Create AudioManager for TTS/STT and pass to audio bridge
         try:
             self._audio_manager = AudioManager(config=self._config.audio)
@@ -276,6 +271,15 @@ class GameEngine:
         # Start full-duplex audio pipeline if AEC is enabled
         if self._audio_manager is not None and self._config.audio.aec_enabled:
             self._audio_manager.start_pipeline(loop=self.window._loop)
+
+        # Auto-activate microphone if STT is enabled in saved settings
+        if (
+            self._config.audio.stt_enabled
+            and self._audio_bridge is not None
+            and self._audio_manager is not None
+            and not self._audio_bridge.mic_active
+        ):
+            self._audio_bridge.toggle_microphone()
 
         # Set up vision bridge if enabled
         if self._config.vision.enabled:
@@ -309,6 +313,7 @@ class GameEngine:
             on_audio_change=self._on_audio_change,
             on_vision_change=self._on_vision_change,
             on_close=self._on_settings_close,
+            ui_manager=_ui_mgr,
         )
 
         # Lineage panel
@@ -320,6 +325,7 @@ class GameEngine:
             on_new=self._new_bloodline,
             on_delete=self._delete_bloodline,
             on_close=self._on_lineage_close,
+            ui_manager=_ui_mgr,
         )
 
         # Register event handlers
@@ -328,6 +334,10 @@ class GameEngine:
         self.window.register_event_handler(pygame.MOUSEBUTTONUP, self._on_mouse_up)
         self.window.register_event_handler(pygame.MOUSEWHEEL, self._on_mouse_scroll)
         self.window.register_event_handler(pygame.KEYDOWN, self._on_key_down)
+
+        # Register pygame_gui UI event handler (USEREVENT is the base type
+        # for all pygame_gui events)
+        self.window.register_event_handler(pygame.USEREVENT, self._on_ui_event)
 
         # Register update and render callbacks
         self.window.register_update(self._update)
@@ -376,6 +386,11 @@ class GameEngine:
                 try:
                     self._settings_panel.update(dt)
                     self._settings_panel.apply_pending_refresh()
+                    # Feed live provider status to settings panel
+                    if self._audio_manager is not None:
+                        self._settings_panel.audio_provider_status = (
+                            self._audio_manager.get_provider_status()
+                        )
                 except Exception as exc:
                     logger.error("Settings panel update error: %s", exc, exc_info=True)
             # Still process pending vision results so "Look Now" works
@@ -483,6 +498,12 @@ class GameEngine:
             self._hud.tts_active = (
                 self._audio_manager is not None and self._audio_manager.tts_enabled
             )
+            # Surface active provider names in HUD + pipeline health check
+            if self._audio_manager is not None:
+                self._audio_manager.check_pipeline_health()
+                pstatus = self._audio_manager.get_provider_status()
+                self._hud.tts_provider_label = pstatus["tts_label"]
+                self._hud.stt_provider_label = pstatus["stt_label"]
 
             if self._vision_bridge is not None:
                 self._vision_bridge.update(dt, self.window.screen)
@@ -590,20 +611,31 @@ class GameEngine:
         if behavior.message:
             self._chat_panel.add_message(MessageRole.ASSISTANT, behavior.message)
             if self._audio_bridge is not None:
-                self._audio_bridge.play_voice(behavior.message)
+                self._audio_bridge.play_voice(
+                    behavior.message, self._creature_state.mood
+                )
 
     def _request_autonomous_remark(self, behavior: IdleBehavior) -> None:
         """Submit an autonomous LLM remark for a verbal behavior.
 
-        Gates on both ``_pending_response`` and ``_pending_autonomous`` being
-        empty.  If the LLM is busy, falls back to the canned message.
+        Gates on ``_pending_response``, ``_pending_autonomous`` being empty,
+        and TTS not actively playing. If any gate blocks, falls back to
+        the canned message.
         """
-        # LLM busy — fall back to canned message
+        # LLM busy or TTS still playing — fall back to canned message
         if self._pending_response is not None or self._pending_autonomous is not None:
             logger.debug(
                 "Autonomous LLM busy (chat=%s, auto=%s), using canned for %s",
                 self._pending_response is not None,
                 self._pending_autonomous is not None,
+                behavior.action_type.value,
+            )
+            self._apply_behavior(behavior)
+            return
+
+        if self._audio_manager is not None and self._audio_manager.is_speaking:
+            logger.debug(
+                "TTS still playing, using canned for %s",
                 behavior.action_type.value,
             )
             self._apply_behavior(behavior)
@@ -676,7 +708,9 @@ class GameEngine:
                 logger.info("Autonomous LLM remark delivered: %s", result[:80])
                 self._chat_panel.add_message(MessageRole.ASSISTANT, result)
                 if self._audio_bridge is not None:
-                    self._audio_bridge.play_voice(result)
+                    self._audio_bridge.play_voice(
+                        result, self._creature_state.mood
+                    )
             elif behavior is not None:
                 logger.warning("Autonomous LLM returned None, using canned fallback")
                 self._apply_behavior(behavior)
@@ -689,24 +723,31 @@ class GameEngine:
             self._pending_autonomous_behavior = None
             self._scheduler.release("chat")
 
-    _INTERACTION_FALLBACKS: dict[str, str] = {
-        "feed": "*munches*",
-        "tap_glass": "*startles*",
-        "clean": "*looks around at the clean tank*",
-        "aerate": "*watches the bubbles*",
-        "temp_up": "*stretches in the warmth*",
-        "temp_down": "*shivers*",
-        "drain": "*blinks at the water level*",
-    }
-
     def _request_interaction_reaction(self, action_key: str) -> None:
         """Submit an LLM reaction to a player interaction.
 
         Same gating as ``_request_autonomous_remark``. When the LLM is busy,
-        shows a canned fallback emote instead of silent skip.
+        TTS is currently playing, or a reaction was generated recently
+        (within ``_REACTION_COOLDOWN``), shows a canned fallback emote
+        instead of silent skip.
         """
+        now = time.monotonic()
+        if now - self._last_reaction_time < _REACTION_COOLDOWN:
+            fallback = _INTERACTION_FALLBACKS.get(action_key)
+            if fallback:
+                self._chat_panel.add_message(MessageRole.ASSISTANT, fallback)
+            return
+
+        # Gate on TTS playing — prevents stacking reaction TTS that
+        # suppresses the mic for extended periods.
+        if self._audio_manager is not None and self._audio_manager.is_speaking:
+            fallback = _INTERACTION_FALLBACKS.get(action_key)
+            if fallback:
+                self._chat_panel.add_message(MessageRole.ASSISTANT, fallback)
+            return
+
         if self._pending_response is not None or self._pending_autonomous is not None:
-            fallback = self._INTERACTION_FALLBACKS.get(action_key)
+            fallback = _INTERACTION_FALLBACKS.get(action_key)
             if fallback:
                 self._chat_panel.add_message(MessageRole.ASSISTANT, fallback)
             return
@@ -715,15 +756,20 @@ class GameEngine:
         if manager is None or not manager.is_initialized:
             return
 
-        situation = _INTERACTION_SITUATIONS.get(action_key)
+        situation = _build_interaction_situation(
+            action_key, self._creature_state, self._tank, self._needs
+        )
         if situation is None:
             return
 
+        self._last_reaction_time = time.monotonic()
         logger.info("Requesting interaction reaction: %s", action_key)
         self._scheduler.acquire("chat")
 
         async def _generate() -> str | None:
-            return await manager.generate_autonomous_remark(situation)
+            return await manager.generate_autonomous_remark(
+                situation, call_type="reaction"
+            )
 
         try:
             self._pending_autonomous = self.window.submit_async(_generate())
@@ -1050,17 +1096,18 @@ class GameEngine:
             except queue.Empty:
                 break
 
-        # Incremental TTS: speak complete sentences as they arrive
+        # Incremental TTS: speak at sentence or clause boundaries
         if self._audio_bridge is not None:
             while True:
-                match = _SENTENCE_BOUNDARY.search(self._tts_sentence_buffer)
-                if not match:
+                split_pos = find_tts_split(self._tts_sentence_buffer)
+                if split_pos is None:
                     break
-                split_pos = match.start() + 1  # include the punctuation
                 sentence = self._tts_sentence_buffer[:split_pos].strip()
                 self._tts_sentence_buffer = self._tts_sentence_buffer[split_pos:]
                 if sentence:
-                    self._audio_bridge.play_voice(sentence)
+                    self._audio_bridge.play_voice(
+                        sentence, self._creature_state.mood
+                    )
 
         if not self._pending_response.done():
             # Force-cancel if stuck beyond timeout
@@ -1097,11 +1144,15 @@ class GameEngine:
             # Speak any remaining text that didn't end with sentence punctuation
             remaining = self._tts_sentence_buffer.strip()
             if remaining and self._audio_bridge is not None:
-                self._audio_bridge.play_voice(remaining)
+                self._audio_bridge.play_voice(
+                    remaining, self._creature_state.mood
+                )
             elif not remaining and result and self._audio_bridge is not None:
                 # Non-streaming fallback: no incremental TTS happened
                 if not had_stream:
-                    self._audio_bridge.play_voice(result)
+                    self._audio_bridge.play_voice(
+                        result, self._creature_state.mood
+                    )
         except Exception as exc:
             self._chat_panel.finish_streaming()
             self._chat_panel.add_message(
@@ -1296,6 +1347,20 @@ class GameEngine:
         if event.key == pygame.K_h:
             self._hud.toggle_mode()
 
+    def _on_ui_event(self, event: pygame.event.Event) -> None:
+        """Route pygame_gui UI events to the appropriate panel."""
+        try:
+            if self._game_state == GameState.SETTINGS:
+                if self._settings_panel is not None:
+                    self._settings_panel.process_ui_event(event)
+            elif self._game_state == GameState.LINEAGE:
+                if self._lineage_panel is not None:
+                    self._lineage_panel.process_ui_event(event)
+            elif self._game_state == GameState.PLAYING:
+                self._chat_panel.process_ui_event(event)
+        except Exception as exc:
+            logger.error("UI event routing error: %s", exc, exc_info=True)
+
     def _toggle_settings(self) -> None:
         """Toggle the settings overlay open/closed."""
         if self._settings_panel is None:
@@ -1382,6 +1447,23 @@ class GameEngine:
             manager = self.window.manager
             if manager is not None:
                 manager.update_llm_settings(model, temperature)
+
+                # Apply routing mode changes
+                routing_mode = self._config.llm.routing_mode
+                manager.set_routing_mode(routing_mode)
+
+                # If cloud routing is requested, try to create/update the cloud provider
+                if routing_mode in ("hybrid", "cloud"):
+                    cloud_name = self._config.llm.cloud_provider
+                    if cloud_name:
+                        from seaman_brain.llm.factory import create_cloud_provider
+
+                        cloud = create_cloud_provider(self._config.llm)
+                        manager.set_cloud_provider(cloud)
+                        logger.info(
+                            "Cloud provider updated: %s (mode=%s)",
+                            cloud_name, routing_mode,
+                        )
         except Exception as exc:
             logger.error("LLM apply error: %s", exc)
 
@@ -1879,19 +1961,25 @@ class GameEngine:
         shutdown guards to prevent new async submissions), then the
         window shuts down the async loop and Pygame.
         """
-        # 0. Stop full-duplex audio pipeline if running
+        # 0. Flush any pending user settings to disk before anything stops
+        try:
+            flush_pending_save()
+        except Exception:
+            pass
+
+        # 1. Stop full-duplex audio pipeline if running
         if self._audio_manager is not None:
             try:
                 self._audio_manager.stop_pipeline()
             except Exception:
                 pass
 
-        # 1. Signal bridges to stop accepting new work
+        # 2. Signal bridges to stop accepting new work
         if self._audio_bridge is not None:
             self._audio_bridge.shutdown()
         if self._vision_bridge is not None:
             self._vision_bridge.shutdown()
 
-        # 2. Now safe to cancel pending tasks and stop the async loop
+        # 3. Now safe to cancel pending tasks and stop the async loop
         self.window.shutdown()
         logger.info("GameEngine shutdown complete")
