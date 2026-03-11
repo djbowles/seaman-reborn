@@ -102,6 +102,12 @@ class HUD:
         # Tile rects (computed on render for click/hover detection)
         self._tile_rects: list[tuple[int, int, int, int, str, str]] = []
 
+        # Food dropdown
+        self._food_menu_open: bool = False
+        self._food_types: list[str] = []
+        self._food_menu_rect: tuple[int, int, int, int] | None = None
+        self.on_feed: callable | None = None
+
     @property
     def session_time(self) -> float:
         return self._session_time
@@ -142,15 +148,54 @@ class HUD:
                 tile["cooldown_end"] = end
                 break
 
+    def set_food_types(self, food_types: list[str]) -> None:
+        """Set the available food types for the dropdown."""
+        self._food_types = list(food_types)
+
+    def handle_action_click(self, action_key: str) -> str | None:
+        """Handle an action tile click. Returns the action key.
+
+        For 'feed', opens the food dropdown instead of returning immediately.
+        """
+        if action_key == "feed" and self._food_types:
+            self._food_menu_open = True
+            return action_key
+        return action_key
+
+    def _select_food(self, index: int) -> None:
+        """Select a food item from the dropdown by index."""
+        if index < 0 or index >= len(self._food_types):
+            return
+        self._food_menu_open = False
+        if self.on_feed is not None:
+            self.on_feed(self._food_types[index])
+
     def resize(self, layout: ScreenLayout) -> None:
         """Update layout reference on window resize."""
         self._layout = layout
 
     def handle_click(self, mx: int, my: int) -> str | None:
-        """Check if click hits an action tile. Returns action key or None."""
+        """Check if click hits a tile or food menu item. Returns action key or None.
+
+        If the food menu is open, checks for food item clicks first.
+        Clicks outside the food menu close it.
+        """
+        # Food menu item clicks
+        if self._food_menu_open:
+            if self._food_menu_rect:
+                fmx, fmy, fmw, fmh = self._food_menu_rect
+                if fmx <= mx < fmx + fmw and fmy <= my < fmy + fmh:
+                    item_h = 28
+                    idx = (my - fmy) // item_h
+                    self._select_food(idx)
+                    return "feed"
+            # Click outside food menu (or no rect yet) closes it
+            self._food_menu_open = False
+            return None
+
         for rx, ry, rw, rh, kind, key in self._tile_rects:
             if kind == "action" and rx <= mx < rx + rw and ry <= my < ry + rh:
-                return key
+                return self.handle_action_click(key)
         return None
 
     def handle_hover(self, mx: int, my: int) -> None:
@@ -197,6 +242,10 @@ class HUD:
         self._tile_rects.clear()
         self._render_top_bar(surface)
         self._render_sidebar(surface)
+
+        # Food dropdown (rendered on top of sidebar)
+        if self._food_menu_open and self._food_types:
+            self._render_food_menu(surface)
 
         # Tooltip
         if self._tooltip:
@@ -379,3 +428,50 @@ class HUD:
         pygame.draw.rect(surface, VOID_BG, (x, y, bw, bh))
         pygame.draw.rect(surface, Colors.BORDER[:3], (x, y, bw, bh), 1)
         surface.blit(tip_surf, (x + 4, y + 2))
+
+    def _render_food_menu(self, surface: pygame.Surface) -> None:
+        """Render food dropdown anchored to the right of the sidebar feed tile."""
+        if self._font is None or not self._food_types:
+            return
+
+        item_h = 28
+        menu_w = 120
+        menu_h = len(self._food_types) * item_h
+
+        # Find the feed tile rect to anchor the dropdown
+        feed_rect = None
+        for rx, ry, rw, rh, kind, key in self._tile_rects:
+            if key == "feed" and kind == "action":
+                feed_rect = (rx, ry, rw, rh)
+                break
+
+        if feed_rect is None:
+            # Fallback: anchor at sidebar edge
+            menu_x = self._layout.sidebar.w + 2
+            menu_y = self._layout.sidebar.y + 8
+        else:
+            menu_x = feed_rect[0] + feed_rect[2] + 4
+            menu_y = feed_rect[1]
+
+        self._food_menu_rect = (menu_x, menu_y, menu_w, menu_h)
+
+        # Background
+        menu_surf = pygame.Surface((menu_w, menu_h), pygame.SRCALPHA)
+        menu_surf.fill((*Colors.SURFACE_5[:3], 240))
+        surface.blit(menu_surf, (menu_x, menu_y))
+        pygame.draw.rect(
+            surface, Colors.BORDER[:3], (menu_x, menu_y, menu_w, menu_h), 1,
+        )
+
+        # Items
+        for i, food_name in enumerate(self._food_types):
+            iy = menu_y + i * item_h
+            label_surf = self._font.render(food_name, True, Colors.TEXT_90)
+            surface.blit(label_surf, (menu_x + 8, iy + (item_h - label_surf.get_height()) // 2))
+            # Separator
+            if i < len(self._food_types) - 1:
+                pygame.draw.line(
+                    surface, Colors.BORDER[:3],
+                    (menu_x + 4, iy + item_h - 1),
+                    (menu_x + menu_w - 4, iy + item_h - 1), 1,
+                )

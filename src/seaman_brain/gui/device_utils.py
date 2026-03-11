@@ -253,16 +253,18 @@ def list_kokoro_voices() -> list[tuple[str, str]]:
 
 
 _RIVA_FALLBACK_VOICES: list[tuple[str, str]] = [
-    # FastPitch HiFi-GAN (works on WSL2)
-    ("English-US.Male-1", "Male 1 (FastPitch)"),
-    ("English-US.Female-1", "Female 1 (FastPitch)"),
-    # Magpie Multilingual (requires native Linux — broken on WSL2)
-    ("Magpie-Multilingual.EN-US.Male.Male-1", "Male (Magpie)"),
-    ("Magpie-Multilingual.EN-US.Female.Female-1", "Female (Magpie)"),
+    # Magpie Multilingual (NIM 1.7.0 on RTX 5090)
+    ("Magpie-Multilingual.EN-US.Jason", "Jason (Magpie)"),
+    ("Magpie-Multilingual.EN-US.Jason.Angry", "Jason Angry (Magpie)"),
+    ("Magpie-Multilingual.EN-US.Leo", "Leo (Magpie)"),
+    ("Magpie-Multilingual.EN-US.Aria", "Aria (Magpie)"),
+    ("Magpie-Multilingual.EN-US.Mia", "Mia (Magpie)"),
+    ("Magpie-Multilingual.EN-US.Ray", "Ray (Magpie)"),
+    ("Magpie-Multilingual.EN-US.Sofia", "Sofia (Magpie)"),
 ]
 
 
-def list_riva_tts_voices(uri: str = "localhost:50051") -> list[tuple[str, str]]:
+def list_riva_tts_voices(uri: str = "") -> list[tuple[str, str]]:
     """Enumerate available Riva TTS voices via gRPC.
 
     Queries the Riva server for available voice models and parses the
@@ -276,6 +278,14 @@ def list_riva_tts_voices(uri: str = "localhost:50051") -> list[tuple[str, str]]:
         List of (voice_name, friendly_name) tuples with "" as first entry.
     """
     voices: list[tuple[str, str]] = [("", "Default")]
+    if not uri:
+        # Try to load from user config
+        try:
+            from seaman_brain.config import load_config
+            cfg = load_config()
+            uri = cfg.audio.riva_tts_uri or cfg.audio.riva_uri
+        except Exception:
+            uri = "localhost:50052"
     try:
         import riva.client  # type: ignore[import-untyped]
         import riva.client.proto.riva_tts_pb2 as tts_pb2  # type: ignore[import-untyped]

@@ -4,21 +4,31 @@
 
 The Python "brain" backend is **feature-complete**: 2838+ tests passing, ruff clean, all 52 user stories implemented across 14 subpackages (llm, personality, memory, creature, conversation, cli, audio, environment, needs, behavior, gui, api, vision). LLM-initiated vision via tool-use/function-calling is wired end-to-end. Full NVIDIA Riva TTS+STT working on RTX 5090 via NIM Magpie 1.7.0 (TTS) + Quickstart 2.19.0 (ASR). Legacy fallback chains removed — each audio provider stands alone (no silent degradation to lesser providers). Anthropic Claude tool use + prompt caching + extended thinking wired end-to-end.
 
-### GUI Rewrite: Modern Minimal (IN PROGRESS)
+### GUI Rewrite: Modern Minimal (MOSTLY COMPLETE)
 
-**Status:** Design spec and implementation plan complete. Execution not yet started.
+**Status:** Tasks 1-18 of 22 complete (14 commits on `gui-rewrite/modern-minimal` branch). Tasks 19-22 (polish) remain.
 
-The current Pygame GUI has systemic visual problems (terminal-debug aesthetic, broken settings panel, tiny creature, barren tank, cryptic status bars). A full GUI rewrite was designed collaboratively:
+The Pygame GUI was fully rewritten from a terminal-debug aesthetic to Modern Minimal:
 
 - **Design spec**: `docs/superpowers/specs/2026-03-10-gui-rewrite-modern-minimal-design.md`
 - **Implementation plan**: `docs/superpowers/plans/2026-03-10-gui-rewrite-modern-minimal.md`
-- **Visual direction**: Modern Minimal — dark void (#08080f), creature glow auras (mood-reactive), glassmorphism chat overlay, thin left sidebar with need/action tiles, slide-out settings drawer
-- **Scope**: 22 TDD tasks across 10 chunks. Rewrites 14 GUI files (~10.6K lines), creates 6 new modules (theme, layout, game_systems, scene_manager, render_engine, input_handler), drops pygame_gui dependency
+- **Visual direction**: Dark void (#08080f), creature glow auras (mood-reactive), glassmorphism chat overlay, thin left sidebar with need/action tiles, slide-out settings/lineage drawers
+- **What was done** (Tasks 1-18):
+  - 6 new architecture modules: theme.py, layout.py, game_systems.py, scene_manager.py, render_engine.py, input_handler.py
+  - 8 rewritten visual components: tank_renderer, sprites (2.5x + glow), hud (top bar + sidebar tiles), widgets (Button/Toggle/Slider/Dropdown), chat_panel (glass overlay + bubbles), settings_panel (slide-out drawer), lineage_panel (slide-out drawer), game_loop (thin orchestrator, 1985→250 lines)
+  - Dropped pygame_gui dependency entirely, deleted action_bar.py
+  - Net reduction: ~7,500 lines removed
+  - All tests passing (1463+), ruff clean
+- **Remaining** (Tasks 19-22, polish):
+  - Task 19: Food dropdown overlay on sidebar feed tile
+  - Task 20: Game-over + evolution overlays with void aesthetic
+  - Task 21: Audio indicator restyle (mic pulse, TTS waveform)
+  - Task 22: Creature glow pulse sync with mood transitions
+- **To finish**: Use `superpowers:executing-plans` skill with the plan document. Resume at Task 19.
 - **Backend unchanged**: All conversation, audio, creature, needs, behavior systems untouched
-- **To execute**: Use `superpowers:subagent-driven-development` or `superpowers:executing-plans` skill with the plan document. Start at Chunk 1, Task 1 (theme.py).
 
 - **Repo**: https://github.com/djbowles/seaman-reborn (private)
-- **Branch**: `ralph/ai-brain-core` (all work), `main` (base)
+- **Branch**: `gui-rewrite/modern-minimal` (GUI rewrite, 14 commits ahead of main), `ralph/ai-brain-core` (prior work), `main` (base)
 - **Entry points**: `python -m seaman_brain` (terminal), `--gui` (Pygame), `--api` (WebSocket server)
 - **Hardware**: RTX 5090 (32GB VRAM), Ollama with qwen3:8b + all-minilm:l6-v2 + qwen3-vl:8b
 
@@ -35,7 +45,7 @@ The current Pygame GUI has systemic visual problems (terminal-debug aesthetic, b
 | Environment simulation | Done | `environment/` — real-time clock, tank state |
 | Conversation orchestration | Done | `conversation/` — context assembly, full pipeline |
 | TTS/STT audio + full-duplex AEC | Done | `audio/` — pyttsx3/Kokoro/Riva TTS, SR/Faster-Whisper/Riva STT, NLMS AEC pipeline, barge-in debounce |
-| Pygame GUI | **Rewrite planned** | `gui/` — see "GUI Rewrite: Modern Minimal" above. Plan + spec in `docs/superpowers/` |
+| Pygame GUI | **Rewrite ~80% done** | `gui/` — Modern Minimal rewrite (Tasks 1-18 of 22 done). Polish tasks 19-22 remain. See above. |
 | **FastAPI WebSocket bridge** | **Done** | `api/` — **this is the UE5 connection point** |
 
 ## WebSocket API Contract (for UE5 Client)

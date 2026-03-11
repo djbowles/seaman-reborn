@@ -276,3 +276,63 @@ class TestEdgeCases:
         surface = MagicMock()
         surface.get_width.return_value = 1024
         hud.render(surface)  # No crash
+
+
+# ── Food Dropdown Tests ─────────────────────────────────────────────
+
+
+class TestFoodDropdown:
+    def test_feed_tile_click_opens_menu(self, layout):
+        hud = HUD(layout)
+        hud.set_food_types(["Flakes", "Pellets", "Worms"])
+        hud.handle_action_click("feed")
+        assert hud._food_menu_open is True
+
+    def test_non_feed_action_does_not_open_menu(self, layout):
+        hud = HUD(layout)
+        hud.set_food_types(["Flakes"])
+        hud.handle_action_click("clean")
+        assert hud._food_menu_open is False
+
+    def test_food_item_click_fires_callback(self, layout):
+        hud = HUD(layout)
+        cb = MagicMock()
+        hud.on_feed = cb
+        hud.set_food_types(["Flakes", "Pellets"])
+        hud._food_menu_open = True
+        hud._select_food(0)
+        cb.assert_called_once_with("Flakes")
+        assert hud._food_menu_open is False
+
+    def test_select_food_out_of_range_ignored(self, layout):
+        hud = HUD(layout)
+        cb = MagicMock()
+        hud.on_feed = cb
+        hud.set_food_types(["Flakes"])
+        hud._food_menu_open = True
+        hud._select_food(5)  # out of range
+        cb.assert_not_called()
+
+    def test_click_elsewhere_closes_menu(self, layout):
+        hud = HUD(layout)
+        hud.set_food_types(["Flakes"])
+        hud._food_menu_open = True
+        hud.handle_click(500, 400)  # click in tank area
+        assert hud._food_menu_open is False
+
+    def test_set_food_types_stores_list(self, layout):
+        hud = HUD(layout)
+        hud.set_food_types(["Flakes", "Pellets", "Worms"])
+        assert hud._food_types == ["Flakes", "Pellets", "Worms"]
+
+    def test_menu_starts_closed(self, layout):
+        hud = HUD(layout)
+        assert hud._food_menu_open is False
+
+    def test_render_with_food_menu_open(self, layout):
+        hud = HUD(layout)
+        hud.set_food_types(["Flakes", "Pellets"])
+        hud._food_menu_open = True
+        surface = MagicMock()
+        surface.get_width.return_value = 1024
+        hud.render(surface)  # No crash

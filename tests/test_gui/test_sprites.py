@@ -515,3 +515,49 @@ class TestGenomeDrivenRendering:
         for stage in CreatureStage:
             cr = CreatureRenderer(stage=stage, genome=genome)
             cr.render(_surface_mock)
+
+
+# ── Glow Pulse Tests ────────────────────────────────────────────────
+
+
+class TestGlowPulse:
+    def test_pulse_oscillates_intensity(self):
+        cr = CreatureRenderer()
+        cr.set_mood("neutral")
+        cr.update(0.1)
+        alpha_0 = cr._glow_alpha
+        cr.update(0.4)  # advance to ~0.5s (peak of sine)
+        alpha_1 = cr._glow_alpha
+        assert alpha_0 != alpha_1  # should oscillate
+
+    def test_glow_alpha_stays_in_range(self):
+        cr = CreatureRenderer()
+        cr.set_mood("neutral")
+        for i in range(40):
+            cr.update(0.1)
+            assert 0.0 <= cr._glow_alpha <= 1.0
+
+
+# ── Mood Transition Tests ──────────────────────────────────────────
+
+
+class TestMoodTransition:
+    def test_mood_change_starts_transition(self):
+        cr = CreatureRenderer()
+        cr.set_mood("neutral")
+        cr.set_mood("hostile")
+        assert cr._mood_transition_progress < 1.0
+
+    def test_transition_completes_after_duration(self):
+        cr = CreatureRenderer()
+        cr.set_mood("neutral")
+        cr.set_mood("hostile")
+        cr.update(1.5)  # past 1s transition
+        assert cr._mood_transition_progress >= 1.0
+
+    def test_same_mood_does_not_start_transition(self):
+        cr = CreatureRenderer()
+        cr.set_mood("neutral")
+        cr.update(2.0)  # complete any transition
+        cr.set_mood("neutral")
+        assert cr._mood_transition_progress >= 1.0

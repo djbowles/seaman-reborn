@@ -15,7 +15,13 @@ sys.modules["pygame_gui"] = MagicMock()
 
 import pytest  # noqa: E402
 
-from seaman_brain.gui.render_engine import GradientCache, ParticleSystem  # noqa: E402
+from seaman_brain.gui.render_engine import (  # noqa: E402
+    GradientCache,
+    NotificationManager,
+    ParticleSystem,
+    render_evolution,
+    render_game_over,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -72,3 +78,59 @@ class TestParticleSystem:
         ps.particles[0]["y"] = -5  # force off-screen
         ps.update(0.01)
         assert ps.particles[0]["y"] > 0  # respawned at bottom
+
+
+class TestGameOverOverlay:
+    def test_render_does_not_crash(self):
+        surface = MagicMock()
+        surface.get_width.return_value = 1024
+        surface.get_height.return_value = 768
+        render_game_over(surface, 1024, 768, cause="starvation")
+
+    def test_render_with_different_cause(self):
+        surface = MagicMock()
+        render_game_over(surface, 800, 600, cause="neglect")
+        assert surface.blit.called
+
+
+class TestEvolutionOverlay:
+    def test_render_does_not_crash(self):
+        surface = MagicMock()
+        render_evolution(surface, 1024, 768, stage_name="Gillman", progress=0.5)
+
+    def test_render_at_full_progress(self):
+        surface = MagicMock()
+        render_evolution(surface, 800, 600, stage_name="Podman", progress=1.0)
+        assert surface.blit.called
+
+
+class TestNotificationManager:
+    def test_add_notification(self):
+        nm = NotificationManager()
+        nm.add("Test notification")
+        assert len(nm._notifications) == 1
+
+    def test_notifications_expire(self):
+        nm = NotificationManager()
+        nm.add("Test")
+        nm.update(10.0)  # way past expiry
+        assert len(nm._notifications) == 0
+
+    def test_multiple_notifications_stack(self):
+        nm = NotificationManager()
+        nm.add("First")
+        nm.add("Second")
+        nm.add("Third")
+        assert len(nm._notifications) == 3
+
+    def test_render_does_not_crash(self):
+        nm = NotificationManager()
+        nm.add("Toast message")
+        surface = MagicMock()
+        nm.render(surface, 800, 600)
+
+    def test_max_notifications_enforced(self):
+        nm = NotificationManager()
+        for i in range(10):
+            nm.add(f"Msg {i}")
+        assert len(nm._notifications) <= 5

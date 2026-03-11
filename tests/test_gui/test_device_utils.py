@@ -6,7 +6,10 @@ hardware dependencies in CI.
 
 from __future__ import annotations
 
+import importlib
 from unittest.mock import MagicMock, patch
+
+from seaman_brain.gui import device_utils
 
 
 class TestListAudioOutputDevices:
@@ -15,9 +18,8 @@ class TestListAudioOutputDevices:
     def test_returns_system_default_when_no_sounddevice(self):
         """Returns only system default when sounddevice is unavailable."""
         with patch.dict("sys.modules", {"sounddevice": None}):
-            from seaman_brain.gui.device_utils import list_audio_output_devices
-
-            devices = list_audio_output_devices()
+            importlib.reload(device_utils)
+            devices = device_utils.list_audio_output_devices()
             assert len(devices) >= 1
             assert devices[0] == (0, "System Default")
 
@@ -33,11 +35,6 @@ class TestListAudioOutputDevices:
             {"name": "Mic", "max_output_channels": 0, "max_input_channels": 1, "hostapi": 0},
         ]
         with patch.dict("sys.modules", {"sounddevice": mock_sd}):
-            # Force re-import to pick up mock
-            import importlib
-
-            from seaman_brain.gui import device_utils
-
             importlib.reload(device_utils)
             devices = device_utils.list_audio_output_devices()
 
@@ -54,10 +51,6 @@ class TestListAudioOutputDevices:
         mock_sd.query_hostapis.side_effect = RuntimeError("No host APIs")
         mock_sd.query_devices.side_effect = RuntimeError("No devices")
         with patch.dict("sys.modules", {"sounddevice": mock_sd}):
-            import importlib
-
-            from seaman_brain.gui import device_utils
-
             importlib.reload(device_utils)
             devices = device_utils.list_audio_output_devices()
 
@@ -71,9 +64,8 @@ class TestListAudioInputDevices:
     def test_returns_system_default_when_no_sounddevice(self):
         """Returns only system default when sounddevice is unavailable."""
         with patch.dict("sys.modules", {"sounddevice": None}):
-            from seaman_brain.gui.device_utils import list_audio_input_devices
-
-            devices = list_audio_input_devices()
+            importlib.reload(device_utils)
+            devices = device_utils.list_audio_input_devices()
             assert len(devices) >= 1
             assert devices[0] == (0, "System Default")
 
@@ -88,10 +80,6 @@ class TestListAudioInputDevices:
             {"name": "Mic", "max_output_channels": 0, "max_input_channels": 1, "hostapi": 0},
         ]
         with patch.dict("sys.modules", {"sounddevice": mock_sd}):
-            import importlib
-
-            from seaman_brain.gui import device_utils
-
             importlib.reload(device_utils)
             devices = device_utils.list_audio_input_devices()
 
@@ -106,9 +94,8 @@ class TestListWebcams:
     def test_returns_system_default_when_no_cv2(self):
         """Returns only system default when OpenCV is unavailable."""
         with patch.dict("sys.modules", {"cv2": None}):
-            from seaman_brain.gui.device_utils import list_webcams
-
-            devices = list_webcams()
+            importlib.reload(device_utils)
+            devices = device_utils.list_webcams()
             assert len(devices) >= 1
             assert devices[0] == (-1, "System Default")
 
@@ -131,10 +118,6 @@ class TestListWebcams:
                 "pygrabber.dshow_graph": None,
             }),
         ):
-            import importlib
-
-            from seaman_brain.gui import device_utils
-
             importlib.reload(device_utils)
             devices = device_utils.list_webcams()
 
@@ -169,10 +152,6 @@ class TestListWebcams:
                 "pygrabber.dshow_graph": mock_dshow,
             }),
         ):
-            import importlib
-
-            from seaman_brain.gui import device_utils
-
             importlib.reload(device_utils)
             devices = device_utils.list_webcams()
 
@@ -186,16 +165,12 @@ class TestListTTSProviders:
 
     def test_always_returns_three_providers(self):
         """Always returns exactly three provider entries."""
-        from seaman_brain.gui.device_utils import list_tts_providers
-
-        providers = list_tts_providers()
+        providers = device_utils.list_tts_providers()
         assert len(providers) == 3
 
     def test_expected_keys_present(self):
         """All expected provider keys are present."""
-        from seaman_brain.gui.device_utils import list_tts_providers
-
-        providers = list_tts_providers()
+        providers = device_utils.list_tts_providers()
         keys = [key for key, _ in providers]
         assert "pyttsx3" in keys
         assert "kokoro" in keys
@@ -204,10 +179,6 @@ class TestListTTSProviders:
     def test_missing_lib_shows_not_installed(self):
         """Providers with missing libraries show '(not installed)' suffix."""
         with patch.dict("sys.modules", {"kokoro": None}):
-            import importlib
-
-            from seaman_brain.gui import device_utils
-
             importlib.reload(device_utils)
             providers = device_utils.list_tts_providers()
 
@@ -221,16 +192,12 @@ class TestListSTTProviders:
 
     def test_always_returns_three_providers(self):
         """Always returns exactly three provider entries."""
-        from seaman_brain.gui.device_utils import list_stt_providers
-
-        providers = list_stt_providers()
+        providers = device_utils.list_stt_providers()
         assert len(providers) == 3
 
     def test_expected_keys_present(self):
         """All expected provider keys are present."""
-        from seaman_brain.gui.device_utils import list_stt_providers
-
-        providers = list_stt_providers()
+        providers = device_utils.list_stt_providers()
         keys = [key for key, _ in providers]
         assert "speech_recognition" in keys
         assert "faster_whisper" in keys
@@ -239,10 +206,6 @@ class TestListSTTProviders:
     def test_missing_lib_shows_not_installed(self):
         """Providers with missing libraries show '(not installed)' suffix."""
         with patch.dict("sys.modules", {"faster_whisper": None}):
-            import importlib
-
-            from seaman_brain.gui import device_utils
-
             importlib.reload(device_utils)
             providers = device_utils.list_stt_providers()
 
@@ -257,9 +220,8 @@ class TestListTTSVoices:
     def test_returns_system_default_when_no_pyttsx3(self):
         """Returns only system default when pyttsx3 is unavailable."""
         with patch.dict("sys.modules", {"pyttsx3": None}):
-            from seaman_brain.gui.device_utils import list_tts_voices
-
-            voices = list_tts_voices()
+            importlib.reload(device_utils)
+            voices = device_utils.list_tts_voices()
             assert len(voices) >= 1
             assert voices[0] == ("", "System Default")
 
@@ -278,10 +240,6 @@ class TestListTTSVoices:
         mock_pyttsx3.init.return_value = mock_engine
 
         with patch.dict("sys.modules", {"pyttsx3": mock_pyttsx3}):
-            import importlib
-
-            from seaman_brain.gui import device_utils
-
             importlib.reload(device_utils)
             voices = device_utils.list_tts_voices()
 

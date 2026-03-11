@@ -164,6 +164,12 @@ class CreatureRenderer:
     # Glow aura
     _mood: str = field(default="neutral", repr=False)
     _glow_surface: pygame.Surface | None = field(default=None, repr=False)
+    _glow_alpha: float = field(default=1.0, repr=False)
+
+    # Mood transition
+    _prev_mood: str = field(default="neutral", repr=False)
+    _mood_transition_progress: float = field(default=1.0, repr=False)
+    _mood_transition_duration: float = field(default=1.0, repr=False)
 
     # Wander bounds
     _bounds_x: int = field(default=0, repr=False)
@@ -214,21 +220,39 @@ class CreatureRenderer:
         self.genome = genome
 
     def set_mood(self, mood: str) -> None:
-        """Set mood and rebuild glow aura surface."""
+        """Set mood and start glow color transition."""
+        if mood != self._mood:
+            self._prev_mood = self._mood
+            self._mood_transition_progress = 0.0
         self._mood = mood
         self._rebuild_glow()
 
     # ── Glow Aura ────────────────────────────────────────────────────
 
     def _rebuild_glow(self) -> None:
-        """Create a cached radial gradient surface for the glow aura."""
-        glow_r, glow_g, glow_b = mood_glow_color(self._mood)
+        """Create a cached radial gradient surface for the glow aura.
+
+        During mood transitions, interpolates between previous and current
+        mood glow colors. Applies pulse alpha modulation.
+        """
+        new_r, new_g, new_b = mood_glow_color(self._mood)
+
+        # Interpolate color during transition
+        if self._mood_transition_progress < 1.0:
+            old_r, old_g, old_b = mood_glow_color(self._prev_mood)
+            t = self._mood_transition_progress
+            glow_r = int(old_r + (new_r - old_r) * t)
+            glow_g = int(old_g + (new_g - old_g) * t)
+            glow_b = int(old_b + (new_b - old_b) * t)
+        else:
+            glow_r, glow_g, glow_b = new_r, new_g, new_b
+
         radius = self._body_width + 40
         size = radius * 2
         surf = pygame.Surface((size, size), pygame.SRCALPHA)
-        # Draw concentric circles with decreasing alpha for radial gradient
+        # Draw concentric circles with decreasing alpha, modulated by pulse
         for i in range(radius, 0, -2):
-            alpha = int(60 * (i / radius))
+            alpha = int(60 * (i / radius) * self._glow_alpha)
             pygame.draw.circle(
                 surf, (glow_r, glow_g, glow_b, alpha),
                 (radius, radius), i,
@@ -328,6 +352,16 @@ class CreatureRenderer:
     def update(self, dt: float) -> None:
         """Update animation state and position."""
         self._time += dt
+
+        # Glow pulse (sine wave ~2s period, range 0.5-1.0)
+        self._glow_alpha = 0.75 + 0.25 * math.sin(self._time * math.pi)
+
+        # Mood transition (0→1 over _mood_transition_duration)
+        if self._mood_transition_progress < 1.0:
+            self._mood_transition_progress = min(
+                1.0, self._mood_transition_progress + dt / self._mood_transition_duration,
+            )
+            self._rebuild_glow()
 
         # Position interpolation
         self.position.move_toward_target(dt)
