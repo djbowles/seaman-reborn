@@ -1,13 +1,12 @@
-"""Creature sprite and animation system - procedural art for 5 evolutionary stages.
+"""Creature sprite and animation system — Modern Minimal rewrite.
 
 Each stage has a distinct visual: Mushroomer (small spore with eye), Gillman (fish
 with human face), Podfish (fish with legs), Tadman (tadpole humanoid), Frogman
 (frog-man). All art is procedural Pygame draw calls — no external assets.
 
-Animation states: IDLE, SWIMMING, TALKING, EATING, SLEEPING.
-Smooth position interpolation, mouth sync, face tracking toward mouse cursor.
+2.5x larger creatures (100px base vs. old 40px), cached glow aura surface,
+mood-reactive glow color, sine-wave idle bob animation.
 """
-
 from __future__ import annotations
 
 import colorsys
@@ -18,8 +17,8 @@ from enum import Enum
 
 import pygame
 
-from seaman_brain.config import GUIConfig
 from seaman_brain.creature.genome import CreatureGenome
+from seaman_brain.gui.theme import mood_glow_color
 from seaman_brain.types import CreatureStage
 
 # ── Enums ─────────────────────────────────────────────────────────────
@@ -79,7 +78,7 @@ _STAGE_COLORS: dict[CreatureStage, dict[str, tuple[int, int, int]]] = {
     },
 }
 
-# Size multipliers per stage (relative to base 40px)
+# Size multipliers per stage (relative to base 100px)
 _STAGE_SIZES: dict[CreatureStage, float] = {
     CreatureStage.MUSHROOMER: 0.6,
     CreatureStage.GILLMAN: 1.0,
@@ -87,6 +86,8 @@ _STAGE_SIZES: dict[CreatureStage, float] = {
     CreatureStage.TADMAN: 1.3,
     CreatureStage.FROGMAN: 1.5,
 }
+
+_BASE_SIZE = 100
 
 
 # ── Position & Interpolation ─────────────────────────────────────────
@@ -139,41 +140,43 @@ class CreatureRenderer:
 
     All art is procedural (Pygame draw calls). Each of the 5 stages has a
     distinct visual representation. Supports animation states (idle, swimming,
-    talking, eating, sleeping) and face tracking toward the mouse cursor.
-
-    Attributes:
-        stage: Current evolutionary stage for visual selection.
-        position: Position with smooth interpolation.
-        animation_state: Current animation state.
-        gui_config: GUI configuration for sizing.
+    talking, eating, sleeping), face tracking toward mouse, cached glow aura,
+    and mood-reactive lighting.
     """
 
     stage: CreatureStage = CreatureStage.MUSHROOMER
     position: CreaturePosition = field(default_factory=CreaturePosition)
     animation_state: AnimationState = AnimationState.IDLE
-    gui_config: GUIConfig = field(default_factory=GUIConfig)
     genome: CreatureGenome | None = None
 
     # Animation timers
     _time: float = field(default=0.0, repr=False)
-    _mouth_open: float = field(default=0.0, repr=False)  # 0-1 for talking
+    _mouth_open: float = field(default=0.0, repr=False)
     _blink_timer: float = field(default=0.0, repr=False)
     _is_blinking: bool = field(default=False, repr=False)
     _idle_wander_timer: float = field(default=0.0, repr=False)
     _mouse_x: float = field(default=0.0, repr=False)
     _mouse_y: float = field(default=0.0, repr=False)
 
-    # Wander bounds (set from render area)
+    # Bob offset (sine wave idle animation)
+    _bob_offset: float = field(default=0.0, repr=False)
+
+    # Glow aura
+    _mood: str = field(default="neutral", repr=False)
+    _glow_surface: pygame.Surface | None = field(default=None, repr=False)
+
+    # Wander bounds
     _bounds_x: int = field(default=0, repr=False)
     _bounds_y: int = field(default=45, repr=False)
     _bounds_w: int = field(default=1024, repr=False)
     _bounds_h: int = field(default=723, repr=False)
 
     def __post_init__(self) -> None:
-        """Initialize bounds from config."""
-        self._bounds_w = self.gui_config.window_width
-        self._bounds_h = self.gui_config.window_height - 45  # HUD margin
-        # Start creature at center
+        """Initialize sizing and center position."""
+        self._base_size = _BASE_SIZE
+        self._body_width = int(
+            self._base_size * _STAGE_SIZES.get(self.stage, 1.0)
+        )
         if self.position.x == 0.0 and self.position.y == 0.0:
             self.position.x = self._bounds_w / 2
             self.position.y = self._bounds_y + self._bounds_h * 0.5
@@ -190,6 +193,10 @@ class CreatureRenderer:
     def set_stage(self, stage: CreatureStage) -> None:
         """Update the creature's evolutionary stage."""
         self.stage = stage
+        self._body_width = int(
+            self._base_size * _STAGE_SIZES.get(stage, 1.0)
+        )
+        self._glow_surface = None  # Invalidate glow for new size
 
     def set_animation(self, state: AnimationState) -> None:
         """Change the animation state."""
@@ -206,15 +213,34 @@ class CreatureRenderer:
         """Update the genome used for rendering parameters."""
         self.genome = genome
 
+    def set_mood(self, mood: str) -> None:
+        """Set mood and rebuild glow aura surface."""
+        self._mood = mood
+        self._rebuild_glow()
+
+    # ── Glow Aura ────────────────────────────────────────────────────
+
+    def _rebuild_glow(self) -> None:
+        """Create a cached radial gradient surface for the glow aura."""
+        glow_r, glow_g, glow_b = mood_glow_color(self._mood)
+        radius = self._body_width + 40
+        size = radius * 2
+        surf = pygame.Surface((size, size), pygame.SRCALPHA)
+        # Draw concentric circles with decreasing alpha for radial gradient
+        for i in range(radius, 0, -2):
+            alpha = int(60 * (i / radius))
+            pygame.draw.circle(
+                surf, (glow_r, glow_g, glow_b, alpha),
+                (radius, radius), i,
+            )
+        self._glow_surface = surf
+
     # ── Genome Helpers ────────────────────────────────────────────────
 
     def _genome_scale(
         self, trait: str, lo: float = 0.7, hi: float = 1.3
     ) -> float:
-        """Map a genome trait (0-1) to a scale factor.
-
-        When genome is None, returns 1.0. Trait value 0.5 maps to 1.0.
-        """
+        """Map a genome trait (0-1) to a scale factor."""
         if self.genome is None:
             return 1.0
         return lo + (hi - lo) * self.genome.traits.get(trait, 0.5)
@@ -265,7 +291,6 @@ class CreatureRenderer:
         if complexity <= 0.5:
             return
 
-        # Deterministic seed from genome for consistent patterns
         seed_val = int(sum(self.genome.traits.values()) * 1000)
         rng = random.Random(seed_val)
 
@@ -275,7 +300,7 @@ class CreatureRenderer:
             max(0, body_color[2] - 30),
         )
 
-        num_spots = int((complexity - 0.5) * 14)  # 0-7 spots
+        num_spots = int((complexity - 0.5) * 14)
         spot_r = max(1, int(base * 0.06))
         half_w = max(1, int(base * 0.4))
         half_h = max(1, int(base * 0.25))
@@ -301,15 +326,14 @@ class CreatureRenderer:
                 )
 
     def update(self, dt: float) -> None:
-        """Update animation state and position.
-
-        Args:
-            dt: Delta time in seconds since last frame.
-        """
+        """Update animation state and position."""
         self._time += dt
 
         # Position interpolation
         self.position.move_toward_target(dt)
+
+        # Bob offset (sine wave idle animation)
+        self._bob_offset = math.sin(self._time * 2.0) * 4.0
 
         # Blink timer
         self._blink_timer += dt
@@ -321,7 +345,7 @@ class CreatureRenderer:
             self._is_blinking = True
             self._blink_timer = 0.0
 
-        # Mouth animation for talking (face_expressiveness scales amplitude)
+        # Mouth animation for talking
         if self.animation_state == AnimationState.TALKING:
             expr = self._genome_scale("face_expressiveness", 0.5, 1.5)
             self._mouth_open = min(
@@ -331,7 +355,9 @@ class CreatureRenderer:
             self._mouth_open = max(0.0, self._mouth_open - dt * 4.0)
 
         # Idle wandering
-        if self.animation_state in (AnimationState.IDLE, AnimationState.SWIMMING):
+        if self.animation_state in (
+            AnimationState.IDLE, AnimationState.SWIMMING
+        ):
             self._idle_wander_timer += dt
             if self.position.at_target() and self._idle_wander_timer > 3.0:
                 self._idle_wander_timer = 0.0
@@ -355,11 +381,7 @@ class CreatureRenderer:
         self.position.set_target(tx, ty)
 
     def render(self, surface: pygame.Surface) -> None:
-        """Draw the creature on the surface.
-
-        Args:
-            surface: Pygame surface to draw on.
-        """
+        """Draw the creature on the surface with glow aura."""
         # Calculate eye direction toward mouse
         eye_dx = self._mouse_x - self.position.x
         eye_dy = self._mouse_y - self.position.y
@@ -372,8 +394,10 @@ class CreatureRenderer:
             eye_dir_y = 0.0
 
         # Base size from stage, scaled by genome body_size
-        base = 40 * _STAGE_SIZES.get(self.stage, 1.0) * self._genome_scale(
-            "body_size"
+        base = (
+            _BASE_SIZE
+            * _STAGE_SIZES.get(self.stage, 1.0)
+            * self._genome_scale("body_size")
         )
 
         # Sleeping bob
@@ -381,25 +405,45 @@ class CreatureRenderer:
         if self.animation_state == AnimationState.SLEEPING:
             sleep_y_offset = math.sin(self._time * 1.5) * 3.0
 
-        # Swimming bob
-        swim_y_offset = 0.0
-        if self.animation_state in (AnimationState.IDLE, AnimationState.SWIMMING):
-            swim_y_offset = math.sin(self._time * 2.0) * 4.0
+        # Idle bob from _bob_offset
+        idle_y_offset = 0.0
+        if self.animation_state in (
+            AnimationState.IDLE, AnimationState.SWIMMING
+        ):
+            idle_y_offset = self._bob_offset
 
         cx = int(self.position.x)
-        cy = int(self.position.y + swim_y_offset + sleep_y_offset)
+        cy = int(self.position.y + idle_y_offset + sleep_y_offset)
+
+        # Render glow aura behind creature
+        if self._glow_surface is not None:
+            gw = self._glow_surface.get_width()
+            gh = self._glow_surface.get_height()
+            surface.blit(
+                self._glow_surface, (cx - gw // 2, cy - gh // 2)
+            )
 
         # Dispatch to stage-specific renderer
         if self.stage == CreatureStage.MUSHROOMER:
-            self._render_mushroomer(surface, cx, cy, base, eye_dir_x, eye_dir_y)
+            self._render_mushroomer(
+                surface, cx, cy, base, eye_dir_x, eye_dir_y
+            )
         elif self.stage == CreatureStage.GILLMAN:
-            self._render_gillman(surface, cx, cy, base, eye_dir_x, eye_dir_y)
+            self._render_gillman(
+                surface, cx, cy, base, eye_dir_x, eye_dir_y
+            )
         elif self.stage == CreatureStage.PODFISH:
-            self._render_podfish(surface, cx, cy, base, eye_dir_x, eye_dir_y)
+            self._render_podfish(
+                surface, cx, cy, base, eye_dir_x, eye_dir_y
+            )
         elif self.stage == CreatureStage.TADMAN:
-            self._render_tadman(surface, cx, cy, base, eye_dir_x, eye_dir_y)
+            self._render_tadman(
+                surface, cx, cy, base, eye_dir_x, eye_dir_y
+            )
         elif self.stage == CreatureStage.FROGMAN:
-            self._render_frogman(surface, cx, cy, base, eye_dir_x, eye_dir_y)
+            self._render_frogman(
+                surface, cx, cy, base, eye_dir_x, eye_dir_y
+            )
 
         # Sleeping Z's
         if self.animation_state == AnimationState.SLEEPING:
@@ -430,7 +474,9 @@ class CreatureRenderer:
         # Mushroom cap — wider ellipse on top
         cap_w = int(r * 1.8)
         cap_h = int(r * 0.9)
-        cap_rect = pygame.Rect(cx - cap_w // 2, cy - r - cap_h // 2, cap_w, cap_h)
+        cap_rect = pygame.Rect(
+            cx - cap_w // 2, cy - r - cap_h // 2, cap_w, cap_h
+        )
         pygame.draw.ellipse(surface, colors["cap"], cap_rect)
 
         # Highlight on cap
@@ -439,7 +485,7 @@ class CreatureRenderer:
         )
         pygame.draw.ellipse(surface, colors["highlight"], hl_rect)
 
-        # Single large eye — centered on body (genome eye_size scales radius)
+        # Single large eye
         eye_r = int(r * 0.5 * self._genome_scale("eye_size"))
         self._draw_eye(
             surface, cx, cy - int(r * 0.1), eye_r, eye_dx, eye_dy, colors
@@ -456,8 +502,8 @@ class CreatureRenderer:
     ) -> None:
         """Gillman: fish body with human-like face, gill slits, dorsal fin."""
         colors = self._get_colors(CreatureStage.GILLMAN)
-        hw = int(base * 0.8)  # half-width
-        hh = int(base * 0.5)  # half-height
+        hw = int(base * 0.8)
+        hh = int(base * 0.5)
         fin_s = self._genome_scale("fin_length")
 
         # Main body — elongated oval
@@ -467,7 +513,7 @@ class CreatureRenderer:
         # Patterns on body
         self._render_patterns(surface, cx, cy, base, colors["body"])
 
-        # Tail fin (genome fin_length scales size)
+        # Tail fin
         tail_pts = [
             (cx + hw - 5, cy),
             (cx + hw + int(base * 0.4 * fin_s), cy - int(base * 0.3 * fin_s)),
@@ -475,7 +521,7 @@ class CreatureRenderer:
         ]
         pygame.draw.polygon(surface, colors["fin"], tail_pts)
 
-        # Dorsal fin (genome fin_length scales height)
+        # Dorsal fin
         dorsal_pts = [
             (cx - int(hw * 0.3), cy - hh),
             (cx, cy - hh - int(base * 0.3 * fin_s)),
@@ -483,7 +529,7 @@ class CreatureRenderer:
         ]
         pygame.draw.polygon(surface, colors["fin"], dorsal_pts)
 
-        # Gill slits (3 short lines on body side)
+        # Gill slits
         for i in range(3):
             gx = cx + int(hw * 0.2) + i * 6
             pygame.draw.line(
@@ -493,7 +539,7 @@ class CreatureRenderer:
                 2,
             )
 
-        # Eyes (two, human-like — genome eye_size scales radius)
+        # Eyes
         eye_r = int(base * 0.14 * self._genome_scale("eye_size"))
         self._draw_eye(
             surface, cx - int(hw * 0.35), cy - int(hh * 0.15),
@@ -535,7 +581,7 @@ class CreatureRenderer:
         # Patterns on body
         self._render_patterns(surface, cx, cy, base, colors["body"])
 
-        # Tail fin (genome fin_length scales)
+        # Tail fin
         tail_pts = [
             (cx + hw - 4, cy),
             (cx + hw + int(base * 0.3 * fin_s), cy - int(base * 0.25 * fin_s)),
@@ -543,7 +589,7 @@ class CreatureRenderer:
         ]
         pygame.draw.polygon(surface, colors["fin"], tail_pts)
 
-        # Stubby legs (genome limb_proportion scales height)
+        # Stubby legs
         leg_w = int(base * 0.08 * limb_s)
         leg_h = int(base * 0.25 * limb_s)
         for offset in [-int(hw * 0.4), int(hw * 0.2)]:
@@ -555,7 +601,7 @@ class CreatureRenderer:
             )
             pygame.draw.ellipse(surface, colors["leg"], leg_rect)
 
-        # Pectoral fins (genome fin_length scales)
+        # Pectoral fins
         fin_pts = [
             (cx - hw + 5, cy),
             (cx - hw - int(base * 0.15 * fin_s), cy + int(base * 0.1)),
@@ -563,7 +609,7 @@ class CreatureRenderer:
         ]
         pygame.draw.polygon(surface, colors["fin"], fin_pts)
 
-        # Eyes (genome eye_size scales radius)
+        # Eyes
         eye_r = int(base * 0.12 * self._genome_scale("eye_size"))
         self._draw_eye(
             surface, cx - int(hw * 0.3), cy - int(hh * 0.2),
@@ -597,7 +643,7 @@ class CreatureRenderer:
         fin_s = self._genome_scale("fin_length")
         limb_s = self._genome_scale("limb_proportion")
 
-        # Tail (behind body — genome fin_length scales)
+        # Tail (behind body)
         tail_pts = [
             (cx, cy + int(base * 0.2)),
             (cx + int(base * 0.8 * fin_s), cy + int(base * 0.5)),
@@ -617,18 +663,16 @@ class CreatureRenderer:
         # Patterns on body
         self._render_patterns(surface, cx, cy, base, colors["body"])
 
-        # Stubby arms (genome limb_proportion scales length/width)
+        # Stubby arms
         arm_len = int(base * 0.3 * limb_s)
         arm_w = int(base * 0.08 * limb_s)
         arm_wave = math.sin(self._time * 2.5) * 4.0
-        # Left arm
         pygame.draw.line(
             surface, colors["limb"],
             (cx - head_r + 3, cy + int(base * 0.1)),
             (cx - head_r - arm_len, cy + int(base * 0.15) + int(arm_wave)),
             max(2, arm_w),
         )
-        # Right arm
         pygame.draw.line(
             surface, colors["limb"],
             (cx + head_r - 3, cy + int(base * 0.1)),
@@ -636,7 +680,7 @@ class CreatureRenderer:
             max(2, arm_w),
         )
 
-        # Short legs (genome limb_proportion scales)
+        # Short legs
         leg_len = int(base * 0.2 * limb_s)
         leg_wave = math.sin(self._time * 3.0) * 3.0
         pygame.draw.line(
@@ -652,7 +696,7 @@ class CreatureRenderer:
             max(2, arm_w),
         )
 
-        # Eyes (genome eye_size scales radius)
+        # Eyes
         eye_r = int(base * 0.12 * self._genome_scale("eye_size"))
         self._draw_eye(
             surface, cx - int(head_r * 0.35), cy - int(head_r * 0.15),
@@ -686,18 +730,16 @@ class CreatureRenderer:
         body_h = int(base * 0.7)
         limb_s = self._genome_scale("limb_proportion")
 
-        # Legs (behind body — genome limb_proportion scales)
+        # Legs (behind body)
         leg_w = int(base * 0.1 * limb_s)
         leg_h = int(base * 0.45 * limb_s)
         leg_wave = math.sin(self._time * 2.0) * 4.0
-        # Left leg
         pygame.draw.line(
             surface, colors["limb"],
             (cx - int(body_w * 0.4), cy + body_h // 2),
             (cx - int(body_w * 0.6), cy + body_h // 2 + leg_h + int(leg_wave)),
             max(3, leg_w),
         )
-        # Right leg
         pygame.draw.line(
             surface, colors["limb"],
             (cx + int(body_w * 0.4), cy + body_h // 2),
@@ -706,7 +748,9 @@ class CreatureRenderer:
         )
 
         # Body (oval, upright)
-        body_rect = pygame.Rect(cx - body_w, cy - body_h // 2, body_w * 2, body_h)
+        body_rect = pygame.Rect(
+            cx - body_w, cy - body_h // 2, body_w * 2, body_h
+        )
         pygame.draw.ellipse(surface, colors["body"], body_rect)
 
         # Patterns on body
@@ -720,7 +764,7 @@ class CreatureRenderer:
         )
         pygame.draw.ellipse(surface, colors["belly"], belly_rect)
 
-        # Arms (genome limb_proportion scales)
+        # Arms
         arm_w = int(base * 0.08 * limb_s)
         arm_len = int(base * 0.35 * limb_s)
         arm_wave = math.sin(self._time * 1.8) * 5.0
@@ -737,7 +781,7 @@ class CreatureRenderer:
             max(3, arm_w),
         )
 
-        # Bulging eyes (on top of head — genome eye_size scales)
+        # Bulging eyes (on top of head)
         eye_r = int(base * 0.16 * self._genome_scale("eye_size"))
         eye_y = cy - body_h // 2 - int(eye_r * 0.3)
         self._draw_eye(
@@ -769,17 +813,8 @@ class CreatureRenderer:
         dir_y: float,
         colors: dict[str, tuple[int, int, int]],
     ) -> None:
-        """Draw an eye with pupil tracking toward (dir_x, dir_y).
-
-        Args:
-            surface: Pygame surface.
-            ex, ey: Eye center position.
-            radius: Eye radius.
-            dir_x, dir_y: Normalized direction for pupil offset.
-            colors: Color dict with "eye_white" and "eye" keys.
-        """
+        """Draw an eye with pupil tracking toward (dir_x, dir_y)."""
         if self._is_blinking:
-            # Draw closed eye (horizontal line)
             pygame.draw.line(
                 surface, colors["eye"],
                 (ex - radius, ey), (ex + radius, ey), 2,
@@ -807,16 +842,19 @@ class CreatureRenderer:
         z_phase = self._time * 1.2
         for i in range(3):
             offset = i * 0.8
-            alpha = max(0.0, min(1.0, 1.0 - ((z_phase + offset) % 3.0) / 3.0))
+            alpha = max(
+                0.0, min(1.0, 1.0 - ((z_phase + offset) % 3.0) / 3.0)
+            )
             if alpha < 0.05:
                 continue
             zx = cx + int(base * 0.3) + i * 12
-            zy = cy - int(base * 0.7) - int(((z_phase + offset) % 3.0) * 15)
+            zy = cy - int(base * 0.7) - int(
+                ((z_phase + offset) % 3.0) * 15
+            )
             size = 8 + i * 3
             brightness = int(200 * alpha)
             color = (brightness, brightness, min(255, brightness + 40))
 
-            # Draw a Z shape with lines
             pygame.draw.line(
                 surface, color, (zx, zy), (zx + size, zy), 2
             )
@@ -832,13 +870,7 @@ class CreatureRenderer:
     def render_eating_effect(
         self, surface: pygame.Surface, food_x: float, food_y: float
     ) -> None:
-        """Draw eating animation: food particles moving toward creature mouth.
-
-        Args:
-            surface: Pygame surface.
-            food_x, food_y: Position of the food.
-        """
-        # Simple food particles converging on creature
+        """Draw eating animation: food particles moving toward creature."""
         phase = (self._time * 5.0) % 1.0
         for i in range(4):
             t = (phase + i * 0.25) % 1.0
