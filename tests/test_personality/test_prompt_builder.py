@@ -519,3 +519,130 @@ class TestDestress:
         )
         assert "Be concise" in result or "under" in result.lower()
         assert "rant" not in result.lower()
+
+
+# ---------------------------------------------------------------------------
+# Cached prompt tests
+# ---------------------------------------------------------------------------
+
+class TestBuildCached:
+    """Tests for build_cached() — Anthropic prompt caching support."""
+
+    def test_build_cached_contains_marker(self, builder, default_traits):
+        """build_cached() output contains ---CACHE_BREAK--- marker."""
+        result = builder.build_cached(
+            CreatureStage.PODFISH,
+            default_traits,
+            creature_state={"mood": "sardonic", "trust_level": 0.5},
+        )
+        assert "---CACHE_BREAK---" in result
+
+    def test_build_cached_no_marker_without_dynamic_content(
+        self, builder, default_traits,
+    ):
+        """build_cached() without dynamic state has no marker."""
+        result = builder.build_cached(
+            CreatureStage.PODFISH,
+            default_traits,
+            creature_state={},
+        )
+        # No mood, no trust, no memories, no observations -> no suffix
+        assert "---CACHE_BREAK---" not in result
+
+    def test_build_cached_prefix_has_identity_and_constraints(
+        self, builder, default_traits,
+    ):
+        """Prefix section contains identity and negative constraints."""
+        result = builder.build_cached(
+            CreatureStage.PODFISH,
+            default_traits,
+            creature_state={"mood": "neutral", "trust_level": 0.3},
+        )
+        prefix, _ = result.split("---CACHE_BREAK---", 1)
+        assert "YOU ARE SEAMAN" in prefix
+        assert "NEVER" in prefix
+        assert 'NEVER say "As an AI"' in prefix
+
+    def test_build_cached_suffix_has_mood_and_memories(
+        self, builder, default_traits,
+    ):
+        """Suffix section contains mood and memory content."""
+        result = builder.build_cached(
+            CreatureStage.PODFISH,
+            default_traits,
+            memories=["User likes pizza"],
+            creature_state={"mood": "hostile", "trust_level": 0.1},
+        )
+        _, suffix = result.split("---CACHE_BREAK---", 1)
+        assert "HOSTILE" in suffix
+        assert "pizza" in suffix
+
+    def test_build_cached_all_sections(self, builder, default_traits):
+        """build_cached() includes all dynamic sections in suffix."""
+        result = builder.build_cached(
+            CreatureStage.PODFISH,
+            default_traits,
+            memories=["User is named Alice"],
+            creature_state={
+                "mood": "philosophical",
+                "trust_level": 0.9,
+                "hunger": 0.9,
+            },
+            observations=["User is smiling"],
+            vision_tool_available=False,
+        )
+        _, suffix = result.split("---CACHE_BREAK---", 1)
+        assert "PHILOSOPHICAL" in suffix
+        assert "Alice" in suffix
+        assert "WHAT YOU CAN SEE" in suffix
+        assert "STARVING" in suffix
+
+    def test_build_cached_vision_tool_hint(self, builder, default_traits):
+        """Vision tool hint appears in suffix when tool available."""
+        result = builder.build_cached(
+            CreatureStage.PODFISH,
+            default_traits,
+            creature_state={"mood": "neutral"},
+            vision_tool_available=True,
+        )
+        _, suffix = result.split("---CACHE_BREAK---", 1)
+        assert "VISION CAPABILITY" in suffix
+        assert "look_at_user" in suffix
+
+    def test_build_cached_destressed(self, tmp_path, default_traits):
+        """destressed=True in build_cached() produces vent instruction."""
+        config_dir = tmp_path / "cfg_cached"
+        stages_dir = config_dir / "stages"
+        stages_dir.mkdir(parents=True)
+        (stages_dir / "podfish.toml").write_text(
+            "[behavior]\nmax_response_words = 40\n"
+        )
+        b = PromptBuilder(config_dir=str(config_dir))
+        result = b.build_cached(
+            CreatureStage.PODFISH,
+            default_traits,
+            creature_state={"mood": "hostile"},
+            destressed=True,
+        )
+        prefix = result.split("---CACHE_BREAK---")[0]
+        assert "rant" in prefix.lower() or "vent" in prefix.lower()
+
+    def test_build_cached_prefix_stable_across_calls(
+        self, builder, default_traits,
+    ):
+        """Prefix is stable between calls with different dynamic content."""
+        result1 = builder.build_cached(
+            CreatureStage.PODFISH,
+            default_traits,
+            creature_state={"mood": "hostile", "trust_level": 0.1},
+            memories=["Fact A"],
+        )
+        result2 = builder.build_cached(
+            CreatureStage.PODFISH,
+            default_traits,
+            creature_state={"mood": "curious", "trust_level": 0.9},
+            memories=["Fact B"],
+        )
+        prefix1 = result1.split("---CACHE_BREAK---")[0]
+        prefix2 = result2.split("---CACHE_BREAK---")[0]
+        assert prefix1 == prefix2

@@ -6,6 +6,7 @@ import pytest
 
 import seaman_brain.config as _config_mod
 from seaman_brain.config import (
+    AudioConfig,
     PresetConfig,
     SeamanConfig,
     StageConfig,
@@ -588,3 +589,41 @@ class TestDebouncedSave:
         monkeypatch.setattr(_config_mod, "_pending_save_config", None)
         monkeypatch.setattr(_config_mod, "_pending_save_timer", None)
         _config_mod._flush_save()  # Should not raise
+
+    def test_flush_pending_save_cancels_timer(self, tmp_path, monkeypatch):
+        """flush_pending_save writes immediately and cancels any pending timer."""
+        settings_file = tmp_path / "data" / "user_settings.toml"
+        monkeypatch.setattr(_config_mod, "_USER_SETTINGS_PATH", settings_file)
+
+        cfg = SeamanConfig()
+        cfg.llm.model = "shutdown-flush-test"
+        # Simulate a pending debounced save
+        save_user_settings(cfg)
+
+        # Timer is pending — flush should write immediately
+        _config_mod.flush_pending_save()
+
+        assert settings_file.exists()
+        content = settings_file.read_text()
+        assert "shutdown-flush-test" in content
+
+        # Pending state should be cleared
+        assert _config_mod._pending_save_config is None
+        assert _config_mod._pending_save_timer is None
+
+
+# ── Audio config defaults ────────────────────────────────────────────
+
+
+class TestAudioConfigDefaults:
+    """Tests for AudioConfig default values (Phase 2 hardening)."""
+
+    def test_audio_config_barge_in_debounce_default(self):
+        """AudioConfig().barge_in_debounce_frames defaults to 3."""
+        cfg = AudioConfig()
+        assert cfg.barge_in_debounce_frames == 3
+
+    def test_audio_config_silence_threshold_default(self):
+        """AudioConfig().stt_silence_threshold defaults to 0.03."""
+        cfg = AudioConfig()
+        assert cfg.stt_silence_threshold == pytest.approx(0.03)

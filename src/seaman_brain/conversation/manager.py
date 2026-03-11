@@ -17,11 +17,13 @@ from typing import Any
 
 from seaman_brain.config import SeamanConfig
 from seaman_brain.conversation.context_assembler import ContextAssembler
+from seaman_brain.conversation.deduplicator import ResponseDeduplicator
 from seaman_brain.creature.evolution import EvolutionEngine
 from seaman_brain.creature.persistence import StatePersistence
 from seaman_brain.creature.state import CreatureState
-from seaman_brain.llm.base import LLMProvider, ToolCapableLLM
-from seaman_brain.llm.factory import create_provider
+from seaman_brain.llm.base import LLMProvider
+from seaman_brain.llm.factory import create_cloud_provider, create_provider
+from seaman_brain.llm.router import LLMRouter
 from seaman_brain.memory.embeddings import EmbeddingProvider
 from seaman_brain.memory.episodic import EpisodicMemory
 from seaman_brain.memory.extractor import MemoryExtractor
@@ -95,6 +97,7 @@ class ConversationManager:
         # Core subsystems — set during initialize() or injected.
         self._llm = llm
         self._creature_state = creature_state
+        self._router: LLMRouter | None = None
 
         # These are created during initialize().
         self._episodic: EpisodicMemory | None = None
@@ -111,6 +114,7 @@ class ConversationManager:
         self._vision_bridge: Any = None  # VisionBridge, set via set_vision_bridge()
         self._last_retrieval_time: float = 0.0
         self._last_memory_texts: list[str] = []
+        self._dedup = ResponseDeduplicator()
 
     @property
     def creature_state(self) -> CreatureState | None:
@@ -163,14 +167,30 @@ class ConversationManager:
             except (ImportError, ValueError) as exc:
                 logger.error("Failed to create LLM provider: %s", exc)
 
+        # Set up LLM router (wraps local + optional cloud provider)
+        if self._llm is not None:
+            cloud = create_cloud_provider(cfg.llm)
+            self._router = LLMRouter(
+                local=self._llm,
+                cloud=cloud,
+                mode=cfg.llm.routing_mode,
+            )
+            # Point self._llm at the router so all existing code paths use it
+            self._llm = self._router
+
         # Warmup: preload the model into VRAM so the first real call isn't slow
         if self._llm is not None:
             from seaman_brain.types import ChatMessage, MessageRole
 
             try:
                 warmup = ChatMessage(role=MessageRole.USER, content=".")
+                # Warmup the local provider directly (not through router)
+                local = (
+                    self._router.local_provider if self._router is not None
+                    else self._llm
+                )
                 await asyncio.wait_for(
-                    self._llm.chat([warmup]), timeout=_LLM_WARMUP_TIMEOUT
+                    local.chat([warmup]), timeout=_LLM_WARMUP_TIMEOUT
                 )
                 logger.info("LLM warmup complete")
             except Exception as exc:
@@ -208,9 +228,14 @@ class ConversationManager:
                 embeddings=self._embeddings,
                 config=cfg.memory,
             )
-            if self._llm is not None:
+            # Use the local provider for memory extraction (always local, not routed)
+            extractor_llm = (
+                self._router.local_provider if self._router is not None
+                else self._llm
+            )
+            if extractor_llm is not None:
                 self._extractor = MemoryExtractor(
-                    llm=self._llm,
+                    llm=extractor_llm,
                     embeddings=self._embeddings,
                     semantic=self._semantic,
                     config=cfg.memory,
@@ -253,6 +278,10 @@ class ConversationManager:
         assert self._prompt_builder is not None
         assert self._context_assembler is not None
         assert self._traits is not None
+
+        # Route user conversation to cloud in hybrid/cloud modes
+        if self._router is not None:
+            self._router.set_call_type("conversation")
 
         from seaman_brain.types import ChatMessage, MessageRole
 
@@ -299,21 +328,54 @@ class ConversationManager:
         memory_texts = self._last_memory_texts
 
         # 5. Build system prompt
+        # Check tool capability on the actual provider (not the router wrapper)
+        from seaman_brain.llm.base import ToolCapableLLM
+
+        actual_provider = (
+            self._router._pick_provider() if self._router is not None
+            else self._llm
+        )
         use_tools = (
             self._vision_bridge is not None
-            and isinstance(self._llm, ToolCapableLLM)
+            and isinstance(actual_provider, ToolCapableLLM)
         )
         state_dict = self._creature_state.to_dict()
         destressed = PromptBuilder.is_destressed(state_dict)
-        system_prompt = self._prompt_builder.build(
-            stage=self._creature_state.stage,
-            traits=self._traits,
-            memories=memory_texts if memory_texts else None,
-            creature_state=state_dict,
-            observations=self._vision_observations if self._vision_observations else None,
-            vision_tool_available=use_tools,
-            destressed=destressed,
+
+        # 5b. Use cached prompt if Anthropic provider is active
+        use_caching = (
+            self._config.llm.enable_prompt_caching
+            and self._router is not None
+            and self._router.cloud_provider is not None
+            and self._router.mode in ("hybrid", "cloud")
+            and self._router.current_call_type == "conversation"
         )
+        if use_caching:
+            system_prompt = self._prompt_builder.build_cached(
+                stage=self._creature_state.stage,
+                traits=self._traits,
+                memories=memory_texts if memory_texts else None,
+                creature_state=state_dict,
+                observations=(
+                    self._vision_observations
+                    if self._vision_observations else None
+                ),
+                vision_tool_available=use_tools,
+                destressed=destressed,
+            )
+        else:
+            system_prompt = self._prompt_builder.build(
+                stage=self._creature_state.stage,
+                traits=self._traits,
+                memories=memory_texts if memory_texts else None,
+                creature_state=state_dict,
+                observations=(
+                    self._vision_observations
+                    if self._vision_observations else None
+                ),
+                vision_tool_available=use_tools,
+                destressed=destressed,
+            )
 
         # 6. Assemble context
         episodic_messages = self._episodic.get_all()
@@ -323,10 +385,23 @@ class ConversationManager:
             retrieved_memories=None,  # Already injected into system prompt
         )
 
-        # 7. LLM chat (with optional tool loop for vision)
+        # 7. LLM chat (with optional tool loop for vision, or thinking)
+        use_thinking = (
+            self._config.llm.extended_thinking
+            and state_dict.get("mood", "").lower() == "philosophical"
+        )
         try:
             if use_tools:
                 raw_response = await self._tool_loop(context)
+            elif use_thinking:
+                raw_response = await asyncio.wait_for(
+                    self._llm.chat(
+                        context,
+                        thinking=True,
+                        thinking_budget=self._config.llm.thinking_budget,
+                    ),
+                    timeout=_LLM_CHAT_TIMEOUT,
+                )
             else:
                 raw_response = await asyncio.wait_for(
                     self._llm.chat(context), timeout=_LLM_CHAT_TIMEOUT
@@ -339,6 +414,34 @@ class ConversationManager:
         response = apply_constraints(
             raw_response, self._traits, destressed=destressed,
         )
+
+        # 8b. Deduplication — retry once with vary instruction if duplicate
+        if self._dedup.is_duplicate(response):
+            logger.info("Duplicate response detected, retrying with vary instruction")
+            vary = self._dedup.make_vary_instruction(previous_response=response)
+            context[0] = ChatMessage(
+                role=MessageRole.SYSTEM,
+                content=context[0].content + "\n\n" + vary,
+            )
+            # Temporarily boost temperature for variety
+            local = self._router.local_provider if self._router else self._llm
+            orig_temp = getattr(local, "temperature", None)
+            if orig_temp is not None:
+                local.temperature = min(orig_temp + 0.3, 1.5)
+            try:
+                raw_retry = await asyncio.wait_for(
+                    self._llm.chat(context), timeout=_LLM_CHAT_TIMEOUT
+                )
+                response = apply_constraints(
+                    raw_retry, self._traits, destressed=destressed,
+                )
+            except Exception as exc:
+                logger.warning("Dedup retry failed, using original: %s", exc)
+            finally:
+                if orig_temp is not None:
+                    local.temperature = orig_temp
+
+        self._dedup.record(response)
 
         # 9. Store assistant response in episodic memory
         assistant_msg = ChatMessage(role=MessageRole.ASSISTANT, content=response)
@@ -389,6 +492,10 @@ class ConversationManager:
         assert self._prompt_builder is not None
         assert self._context_assembler is not None
         assert self._traits is not None
+
+        # Route user conversation to cloud in hybrid/cloud modes
+        if self._router is not None:
+            self._router.set_call_type("conversation")
 
         from seaman_brain.types import ChatMessage, MessageRole
 
@@ -489,6 +596,10 @@ class ConversationManager:
             raw_response, self._traits, destressed=destressed,
         )
 
+        # 8b. Record for dedup (no retry on streaming — too slow to re-stream).
+        # The buffer prevents the NEXT call from producing the same response.
+        self._dedup.record(response)
+
         # 9. Store assistant response in episodic memory
         assistant_msg = ChatMessage(role=MessageRole.ASSISTANT, content=response)
         self._episodic.add(assistant_msg)
@@ -506,7 +617,11 @@ class ConversationManager:
         # 11. Save creature state
         self._save_state()
 
-    async def generate_autonomous_remark(self, situation: str) -> str | None:
+    async def generate_autonomous_remark(
+        self,
+        situation: str,
+        call_type: str = "autonomous",
+    ) -> str | None:
         """Generate an unprompted in-character remark using the full personality pipeline.
 
         Unlike :meth:`process_input`, this does NOT:
@@ -524,6 +639,7 @@ class ConversationManager:
 
         Args:
             situation: A description of what the creature is reacting to.
+            call_type: Router call type — "autonomous" (default) or "reaction".
 
         Returns:
             The generated remark, or None if unavailable.
@@ -536,6 +652,10 @@ class ConversationManager:
         assert self._context_assembler is not None
         assert self._traits is not None
         assert self._episodic is not None
+
+        # Route to appropriate provider based on call type
+        if self._router is not None:
+            self._router.set_call_type(call_type)
 
         from seaman_brain.types import ChatMessage, MessageRole
 
@@ -606,6 +726,50 @@ class ConversationManager:
         # 6. Apply personality constraints
         response = apply_constraints(raw_response, self._traits)
 
+        # 6b. Dedup — retry once with stronger vary instruction
+        if self._dedup.is_duplicate(response):
+            logger.info("Duplicate autonomous remark detected, retrying")
+            vary = self._dedup.make_vary_instruction(previous_response=response)
+            context[0] = ChatMessage(
+                role=MessageRole.SYSTEM,
+                content=context[0].content + "\n\n" + vary,
+            )
+            # Also rewrite the USER directive to break the pattern
+            import random
+            angles = [
+                "Be sarcastic about it.",
+                "Comment on something completely unrelated instead.",
+                "Make an observation about your owner.",
+                "Complain about something specific.",
+                "Say something philosophical.",
+                "Be unusually brief — 5 words or less.",
+                "Reference a memory or past event.",
+                "Express suspicion about your owner's motives.",
+            ]
+            angle = random.choice(angles)
+            context[-1] = ChatMessage(
+                role=MessageRole.USER,
+                content=f"CURRENT SITUATION: {situation}\n{angle}",
+            )
+            # Temporarily boost temperature for variety
+            local = self._router.local_provider if self._router else self._llm
+            orig_temp = getattr(local, "temperature", None)
+            if orig_temp is not None:
+                local.temperature = min(orig_temp + 0.3, 1.5)
+            try:
+                raw_retry = await asyncio.wait_for(
+                    self._llm.chat(context), timeout=_LLM_CHAT_TIMEOUT
+                )
+                if raw_retry and raw_retry.strip():
+                    response = apply_constraints(raw_retry, self._traits)
+            except Exception as exc:
+                logger.warning("Dedup retry failed for autonomous remark: %s", exc)
+            finally:
+                if orig_temp is not None:
+                    local.temperature = orig_temp
+
+        self._dedup.record(response)
+
         # 7. Store ONLY the assistant response in episodic memory (no user message)
         assistant_msg = ChatMessage(role=MessageRole.ASSISTANT, content=response)
         self._episodic.add(assistant_msg)
@@ -615,15 +779,42 @@ class ConversationManager:
     def update_llm_settings(self, model: str, temperature: float) -> None:
         """Hot-swap LLM model and temperature on the live provider.
 
+        Updates the local provider's model and temperature. If a router
+        is active, targets the local provider directly.
+
         Args:
             model: New model name (e.g. "qwen3-coder:30b").
             temperature: New sampling temperature.
         """
-        if self._llm is not None and hasattr(self._llm, "model"):
-            self._llm.model = model
-        if self._llm is not None and hasattr(self._llm, "temperature"):
-            self._llm.temperature = temperature
+        target = self._router.local_provider if self._router is not None else self._llm
+        if target is not None and hasattr(target, "model"):
+            target.model = model
+        if target is not None and hasattr(target, "temperature"):
+            target.temperature = temperature
         logger.info("LLM settings updated: model=%s, temperature=%.2f", model, temperature)
+
+    def set_routing_mode(self, mode: str) -> None:
+        """Change the LLM routing mode at runtime.
+
+        Args:
+            mode: One of "local", "hybrid", "cloud".
+        """
+        if self._router is not None:
+            self._router.mode = mode
+            logger.info("LLM routing mode set to: %s", mode)
+        else:
+            logger.warning("No LLM router available — routing mode ignored")
+
+    def set_cloud_provider(self, provider: LLMProvider | None) -> None:
+        """Set or replace the cloud LLM provider at runtime.
+
+        Args:
+            provider: A cloud LLMProvider instance, or None to clear.
+        """
+        if self._router is not None:
+            self._router.cloud_provider = provider
+        else:
+            logger.warning("No LLM router available — cloud provider ignored")
 
     def switch_bloodline(self, name: str, new_state: CreatureState) -> None:
         """Switch to a different bloodline, updating persistence and creature state.
@@ -686,7 +877,6 @@ class ConversationManager:
         Returns:
             The final text response from the LLM.
         """
-        assert isinstance(self._llm, ToolCapableLLM)
         from seaman_brain.types import ChatMessage, MessageRole
 
         messages = list(context)

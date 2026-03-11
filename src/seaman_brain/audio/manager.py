@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -22,7 +23,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_TTS_FALLBACK_THRESHOLD = 3
 _LISTEN_TIMEOUT = 15.0  # seconds for full-duplex utterance wait
 
 
@@ -48,9 +48,6 @@ class AudioManager:
         self._stt: STTProvider = stt_provider or create_stt_provider(self._config)
         self._sounds_dir = Path(sounds_dir) if sounds_dir else Path("assets/sounds")
 
-        # TTS failure tracking for auto-fallback
-        self._tts_fail_count: int = 0
-
         # Per-channel enable/disable (runtime toggle)
         self._tts_enabled: bool = self._config.tts_enabled
         self._stt_enabled: bool = self._config.stt_enabled
@@ -60,7 +57,7 @@ class AudioManager:
         # Echo suppression: pause STT while TTS is playing + cooldown after
         self._is_speaking: bool = False
         self._speaking_until: float = 0.0  # monotonic time; STT blocked until past
-        self._echo_cooldown: float = 0.5  # seconds to keep STT paused after TTS ends
+        self._echo_cooldown: float = 0.3  # seconds to keep STT paused after TTS ends
 
         # Lock for thread-safe SFX playback
         self._sfx_lock = asyncio.Lock()
@@ -68,11 +65,25 @@ class AudioManager:
         # Lock for serializing TTS speak calls (prevents overlapping playback)
         self._speak_lock = asyncio.Lock()
 
+        # Threading lock for sounddevice output (play/stop/wait) to prevent
+        # PortAudio crashes when barge-in cancel races with TTS playback.
+        self._sd_lock = threading.Lock()
+        self._sd_cancelled = threading.Event()
+        self._tts_cancelled = threading.Event()
+
         # Full-duplex pipeline (created when aec_enabled=True)
         self._pipeline: AudioIOPipeline | None = None
         self._pending_utterance: asyncio.Queue[str] | None = None
-        self._barge_in_event: asyncio.Event | None = None
+        # threading.Event (not asyncio.Event) — accessed from both
+        # the pipeline background thread and the main GUI thread.
+        self._barge_in_event: threading.Event | None = None
         self._async_loop: asyncio.AbstractEventLoop | None = None
+
+        # Pipeline restart backoff — prevents infinite restart spam when
+        # the audio device is unavailable.
+        self._pipeline_restart_count: int = 0
+        self._pipeline_max_restarts: int = 3
+        self._pipeline_backoff_until: float = 0.0
 
         if self._config.aec_enabled:
             self._init_pipeline()
@@ -134,31 +145,6 @@ class AudioManager:
         logger.info("STT provider upgraded to %s", type(provider).__name__)
         return True
 
-    def _try_fallback_tts(self) -> None:
-        """Switch to pyttsx3 after repeated TTS failures from any provider."""
-        if self._tts_fail_count < _TTS_FALLBACK_THRESHOLD:
-            return
-        # Already on pyttsx3 — nowhere to fall back to
-        if type(self._tts).__name__ == "Pyttsx3TTSProvider":
-            return
-        provider_name = type(self._tts).__name__
-        logger.warning(
-            "%s TTS failed %d times, falling back to pyttsx3",
-            provider_name,
-            self._tts_fail_count,
-        )
-        try:
-            from seaman_brain.audio.tts import Pyttsx3TTSProvider
-            fallback = Pyttsx3TTSProvider(self._config)
-            if fallback.available:
-                self._tts = fallback
-                self._tts_fail_count = 0
-                logger.info("TTS provider switched to pyttsx3 (fallback)")
-            else:
-                logger.warning("pyttsx3 fallback also unavailable")
-        except Exception as exc:
-            logger.warning("pyttsx3 fallback creation failed: %s", exc)
-
     def swap_tts_provider(self, config: AudioConfig) -> str:
         """Replace the TTS provider at runtime using the factory.
 
@@ -170,7 +156,6 @@ class AudioManager:
         """
         self._config = config
         self._tts = create_tts_provider(config)
-        self._tts_fail_count = 0
         name = type(self._tts).__name__
         logger.info("TTS provider swapped to %s", name)
         return name
@@ -189,6 +174,8 @@ class AudioManager:
         name = type(self._stt).__name__
         logger.info("STT provider swapped to %s", name)
         return name
+
+
 
     def toggle_aec(
         self,
@@ -218,17 +205,27 @@ class AudioManager:
     def set_input_device(self, device_name: str) -> None:
         """Change the STT microphone device at runtime.
 
+        Updates both the STT provider and restarts the full-duplex
+        pipeline so it captures from the correct physical device.
+
         Args:
             device_name: Device name from settings.
         """
+        self._config.audio_input_device = device_name
         self._stt.set_input_device(device_name)
+        # Restart pipeline so it opens the new input device
+        if self._pipeline is not None:
+            loop = self._async_loop
+            self.stop_pipeline()
+            self._pipeline = None
+            self._init_pipeline()
+            self.start_pipeline(loop=loop)
+            logger.info("Pipeline restarted for new input device: %s", device_name)
 
     def update_tts_voice(self, voice_name: str) -> None:
         """Update the TTS voice at runtime.
 
         Normalizes "System Default" to empty string (engine default).
-        Updates both the manager config and the provider config so the
-        next speak/synthesize call picks up the new voice.
 
         Args:
             voice_name: Display name of the voice, or "System Default".
@@ -238,13 +235,33 @@ class AudioManager:
         # Also update the provider's config if it's pyttsx3
         from seaman_brain.audio.tts import Pyttsx3TTSProvider
         if isinstance(self._tts, Pyttsx3TTSProvider):
-            self._tts._config.tts_voice = normalized
-        logger.info("TTS voice updated to %r", normalized or "(system default)")
+            self._tts._config.tts_voice = self._config.tts_voice
+        logger.info("TTS voice updated to %r", self._config.tts_voice or "(system default)")
+
+    def set_mood(self, mood: str) -> None:
+        """Set the creature's current mood on the TTS provider.
+
+        Uses duck-typing: only forwards if the provider has ``set_mood``.
+
+        Args:
+            mood: Mood string (e.g. "hostile", "sardonic", "content").
+        """
+        if hasattr(self._tts, "set_mood"):
+            self._tts.set_mood(mood)
 
     @property
     def is_speaking(self) -> bool:
-        """Whether TTS is playing or cooldown is active (for echo suppression)."""
-        return self._is_speaking or time.monotonic() < self._speaking_until
+        """Whether TTS is playing or cooldown is active (for echo suppression).
+
+        In full-duplex mode, also checks the pipeline's reference queue
+        (TTS frames waiting to be played through AEC).
+        """
+        if self._is_speaking or time.monotonic() < self._speaking_until:
+            return True
+        # Full-duplex: pipeline has TTS reference frames queued
+        if self._pipeline is not None and self._pipeline._tts_playing:
+            return True
+        return False
 
     @property
     def sfx_enabled(self) -> bool:
@@ -282,29 +299,27 @@ class AudioManager:
             return
 
         async with self._speak_lock:
+            self._tts_cancelled.clear()
+
             # Full-duplex: synthesize -> feed reference -> play
             if self._pipeline is not None:
                 try:
                     wav_bytes = await self._tts.synthesize(text)
-                    self._tts_fail_count = 0
+                    if self._tts_cancelled.is_set():
+                        return
                     if wav_bytes and len(wav_bytes) > 44:
                         self._pipeline.feed_reference(wav_bytes)
                         await self._play_wav_async(wav_bytes)
                 except Exception as exc:
                     logger.warning("TTS speak failed (full-duplex): %s", exc)
-                    self._tts_fail_count += 1
-                    self._try_fallback_tts()
                 return
 
             # Half-duplex: original behavior
             self._is_speaking = True
             try:
                 await self._tts.speak(text)
-                self._tts_fail_count = 0
             except Exception as exc:
                 logger.warning("TTS speak failed: %s", exc)
-                self._tts_fail_count += 1
-                self._try_fallback_tts()
             finally:
                 self._is_speaking = False
                 # Keep STT paused briefly after TTS stops so residual speaker
@@ -328,13 +343,9 @@ class AudioManager:
         if not text or not text.strip():
             return b""
         try:
-            result = await self._tts.synthesize(text)
-            self._tts_fail_count = 0
-            return result
+            return await self._tts.synthesize(text)
         except Exception as exc:
             logger.warning("TTS synthesize failed: %s", exc)
-            self._tts_fail_count += 1
-            self._try_fallback_tts()
             return b""
 
     async def listen(self) -> str:
@@ -380,7 +391,7 @@ class AudioManager:
         from seaman_brain.audio.pipeline import AudioIOPipeline
 
         self._pending_utterance = asyncio.Queue()
-        self._barge_in_event = asyncio.Event()
+        self._barge_in_event = threading.Event()
         self._pipeline = AudioIOPipeline(
             config=self._config,
             on_utterance=self._on_pipeline_utterance,
@@ -419,6 +430,9 @@ class AudioManager:
                     except RuntimeError:
                         self._async_loop = None
             self._pipeline.start()
+            # Reset restart backoff on explicit start (user action / init)
+            self._pipeline_restart_count = 0
+            self._pipeline_backoff_until = 0.0
             logger.info("Full-duplex audio pipeline started (loop=%s)", self._async_loop)
 
     def stop_pipeline(self) -> None:
@@ -427,15 +441,68 @@ class AudioManager:
             self._pipeline.stop()
             logger.info("Full-duplex audio pipeline stopped")
 
+    def check_pipeline_health(self) -> None:
+        """Auto-restart the pipeline if its background thread has died.
+
+        Called periodically from the game loop to recover from transient
+        audio errors without requiring a full application restart.
+
+        Uses exponential backoff to prevent infinite restart loops when
+        the audio device is permanently unavailable (e.g. unplugged mic).
+        Resets the counter on a successful restart that stays alive.
+        """
+        if self._pipeline is None:
+            return
+        if self._pipeline.is_alive:
+            # Pipeline is healthy — reset backoff state
+            if self._pipeline_restart_count > 0:
+                self._pipeline_restart_count = 0
+                self._pipeline_backoff_until = 0.0
+            return
+        # Respect backoff window
+        now = time.monotonic()
+        if now < self._pipeline_backoff_until:
+            return
+        if self._pipeline_restart_count >= self._pipeline_max_restarts:
+            # Already exhausted retries — wait for long backoff
+            if self._pipeline_backoff_until == 0.0:
+                self._pipeline_backoff_until = now + 60.0
+                logger.warning(
+                    "Pipeline restart limit reached (%d), "
+                    "backing off for 60s",
+                    self._pipeline_restart_count,
+                )
+            return
+        self._pipeline_restart_count += 1
+        # Exponential backoff: 2s, 4s, 8s ...
+        backoff = 2.0 ** self._pipeline_restart_count
+        self._pipeline_backoff_until = now + backoff
+        logger.warning(
+            "Pipeline thread died — restart attempt %d/%d (next retry in %.0fs)",
+            self._pipeline_restart_count,
+            self._pipeline_max_restarts,
+            backoff,
+        )
+        self._pipeline.stop()
+        self._pipeline = None
+        self._init_pipeline()
+        self._pipeline.start()
+
     def cancel_tts(self) -> None:
         """Cancel current TTS playback and clear pipeline reference."""
+        self._tts_cancelled.set()
         if self._pipeline is not None:
             self._pipeline.clear_reference()
-        try:
-            import sounddevice as sd
-            sd.stop()
-        except Exception:
-            pass
+        # Signal cancellation first, then acquire lock to stop safely.
+        # _play_wav_sd checks _sd_cancelled before calling sd.wait(),
+        # so it can exit early instead of blocking.
+        self._sd_cancelled.set()
+        with self._sd_lock:
+            try:
+                import sounddevice as sd
+                sd.stop()
+            except Exception:
+                pass
         self._is_speaking = False
         logger.debug("TTS cancelled")
 
@@ -443,6 +510,11 @@ class AudioManager:
         """Callback from pipeline thread: transcribe and enqueue result."""
         if self._pending_utterance is None:
             return
+
+        if self._pipeline is not None and not self._pipeline.is_alive:
+            logger.warning(
+                "Pipeline utterance callback fired but pipeline thread is dead"
+            )
 
         logger.debug(
             "Pipeline utterance received: %d bytes, stt=%s, has_transcribe=%s",
@@ -478,9 +550,9 @@ class AudioManager:
                 logger.info("Pipeline STT result: %r", text.strip())
                 await self._pending_utterance.put(text.strip())
             else:
-                logger.debug("Pipeline STT returned empty/blank")
+                logger.info("Pipeline STT returned empty (noise or unintelligible)")
         except Exception as exc:
-            logger.warning("Pipeline transcription failed: %s", exc, exc_info=True)
+            logger.warning("Pipeline transcription failed: %s", exc)
 
     def _on_pipeline_barge_in(self) -> None:
         """Callback from pipeline thread: signal barge-in event."""
@@ -490,12 +562,16 @@ class AudioManager:
 
     async def _play_wav_async(self, wav_bytes: bytes) -> None:
         """Play WAV bytes via sounddevice in executor."""
+        self._sd_cancelled.clear()
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, self._play_wav_sd, wav_bytes)
 
-    @staticmethod
-    def _play_wav_sd(wav_bytes: bytes) -> None:
-        """Synchronous WAV playback via sounddevice."""
+    def _play_wav_sd(self, wav_bytes: bytes) -> None:
+        """Synchronous WAV playback via sounddevice.
+
+        Uses ``_sd_lock`` to prevent races with ``cancel_tts()``, and
+        checks ``_sd_cancelled`` before blocking on ``sd.wait()``.
+        """
         try:
             import io as _io
             import wave as _wave
@@ -508,7 +584,13 @@ class AudioManager:
                 raw = wf.readframes(wf.getnframes())
                 rate = wf.getframerate()
             data = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
-            sd.play(data, rate)
+
+            with self._sd_lock:
+                if self._sd_cancelled.is_set():
+                    return
+                sd.play(data, rate)
+
+            # Wait outside lock so cancel_tts can acquire it to call sd.stop()
             sd.wait()
         except Exception as exc:
             logger.warning("sounddevice playback failed: %s", exc)
@@ -591,17 +673,45 @@ class AudioManager:
         else:
             raise ValueError(f"Unknown audio channel: {channel!r}")
 
-    def get_status(self) -> dict[str, bool]:
-        """Return the enabled/disabled status of all channels.
+    def get_status(self) -> dict[str, bool | str]:
+        """Return the enabled/disabled status of all channels plus provider info.
 
         Returns:
-            Dict with keys "tts", "stt", "sfx" and boolean values.
+            Dict with channel enable flags and active provider names.
         """
         return {
             "tts": self._tts_enabled,
             "stt": self._stt_enabled,
             "sfx": self._sfx_enabled,
+            "tts_provider": type(self._tts).__name__,
+            "stt_provider": type(self._stt).__name__,
+            "full_duplex": self._pipeline is not None,
         }
+
+    def get_provider_status(self) -> dict[str, str]:
+        """Return detailed provider health for HUD display.
+
+        Returns:
+            Dict with ``tts_label`` and ``stt_label`` (e.g. "Kokoro",
+            "Riva (down)", "pyttsx3") for display in the GUI.
+        """
+        tts_name = type(self._tts).__name__.replace("TTSProvider", "").replace("Tts", "")
+        stt_name = type(self._stt).__name__.replace("STTProvider", "").replace("Stt", "")
+
+        # Check availability via property
+        tts_avail = getattr(self._tts, "available", True)
+        stt_avail = getattr(self._stt, "available", True)
+
+        tts_label = tts_name if tts_avail else f"{tts_name} (down)"
+        stt_label = stt_name if stt_avail else f"{stt_name} (down)"
+
+        # Clean up noop labels
+        if tts_name == "Noop":
+            tts_label = "Off"
+        if stt_name == "Noop":
+            stt_label = "Off"
+
+        return {"tts_label": tts_label, "stt_label": stt_label}
 
 
 def create_audio_manager(

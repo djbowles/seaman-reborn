@@ -534,6 +534,38 @@ class TestSetInputDevice:
         manager.set_input_device("Test Mic")
         mock_stt.set_input_device.assert_called_once_with("Test Mic")
 
+    def test_restarts_pipeline_on_device_change(self, sounds_dir):
+        """Changing input device restarts the full-duplex pipeline."""
+        config = AudioConfig(aec_enabled=False)
+        mock_tts = MagicMock()
+        mock_stt = MagicMock()
+        mock_stt.set_input_device = MagicMock()
+        manager = AudioManager(
+            config=config,
+            tts_provider=mock_tts,
+            stt_provider=mock_stt,
+            sounds_dir=sounds_dir,
+        )
+        # Simulate an active pipeline
+        mock_pipeline = MagicMock()
+        manager._pipeline = mock_pipeline
+        manager._async_loop = MagicMock()
+
+        with patch("seaman_brain.audio.manager.AudioManager._init_pipeline"):
+            manager.set_input_device("Portacapture X6")
+
+        # Old pipeline should have been stopped
+        mock_pipeline.stop.assert_called_once()
+        # Config should be updated
+        assert config.audio_input_device == "Portacapture X6"
+
+    def test_no_pipeline_restart_when_no_pipeline(self, manager, mock_stt):
+        """No restart attempt when pipeline is not active."""
+        mock_stt.set_input_device = MagicMock()
+        assert manager._pipeline is None
+        manager.set_input_device("Some Mic")
+        mock_stt.set_input_device.assert_called_once_with("Some Mic")
+
 
 # ── Fix #10: STT upgrade returns bool and resets on failure ──────────
 
@@ -608,61 +640,21 @@ class TestSTTUpgradeReturnsBool:
         assert manager.stt_enabled is False
 
 
-# ── Fix #6: Kokoro auto-fallback to pyttsx3 ──────────────────────────
+# ── TTS/STT failure handling (no cross-provider fallback) ─────────────
 
 
-class TestTTSAutoFallback:
-    """Test TTS failure tracking and auto-fallback from Kokoro to pyttsx3."""
+class TestTTSFailureHandling:
+    """Test TTS failure logging without cross-provider fallback."""
 
-    async def test_fallback_after_consecutive_failures(self, mock_stt, sounds_dir):
-        """AudioManager switches from Kokoro to pyttsx3 after 3 failures."""
-        from seaman_brain.audio.tts import KokoroTTSProvider, Pyttsx3TTSProvider
-
-        mock_kokoro = MagicMock(spec=KokoroTTSProvider)
-        mock_kokoro.speak = AsyncMock(side_effect=RuntimeError("synth error"))
+    async def test_speak_failure_does_not_switch_provider(self, mock_stt, sounds_dir):
+        """TTS failures are logged but provider is NOT swapped."""
+        failing_tts = AsyncMock()
+        failing_tts.speak = AsyncMock(side_effect=RuntimeError("synth error"))
 
         config = AudioConfig()
         mgr = AudioManager(
             config=config,
-            tts_provider=mock_kokoro,
-            stt_provider=mock_stt,
-            sounds_dir=sounds_dir,
-        )
-        mgr._tts_enabled = True
-
-        mock_pyttsx3 = MagicMock(spec=Pyttsx3TTSProvider)
-        mock_pyttsx3.available = True
-
-        with patch(
-            "seaman_brain.audio.tts.Pyttsx3TTSProvider",
-            return_value=mock_pyttsx3,
-        ):
-            # First two failures — no fallback yet
-            await mgr.speak("test1")
-            await mgr.speak("test2")
-            assert isinstance(mgr._tts, KokoroTTSProvider)
-
-            # Third failure triggers fallback
-            await mgr.speak("test3")
-            assert mgr._tts is mock_pyttsx3
-            assert mgr._tts_fail_count == 0
-
-    async def test_no_fallback_for_pyttsx3(self, mock_stt, sounds_dir):
-        """Fallback does not trigger when already on pyttsx3."""
-        # Create a mock whose type().__name__ == "Pyttsx3TTSProvider"
-        class Pyttsx3TTSProvider:
-            async def speak(self, text):
-                raise RuntimeError("error")
-
-            async def synthesize(self, text):
-                return b""
-
-        mock_tts = Pyttsx3TTSProvider()
-
-        config = AudioConfig()
-        mgr = AudioManager(
-            config=config,
-            tts_provider=mock_tts,
+            tts_provider=failing_tts,
             stt_provider=mock_stt,
             sounds_dir=sounds_dir,
         )
@@ -671,14 +663,13 @@ class TestTTSAutoFallback:
         for _ in range(5):
             await mgr.speak("test")
 
-        # Still the original provider (already pyttsx3, no fallback)
-        assert mgr._tts is mock_tts
+        # Provider stays the same — no fallback chain
+        assert mgr._tts is failing_tts
 
-    async def test_success_resets_fail_count(self, mock_stt, sounds_dir):
-        """Successful TTS call resets failure counter."""
-        from seaman_brain.audio.tts import KokoroTTSProvider
-
-        mock_kokoro = MagicMock(spec=KokoroTTSProvider)
+    async def test_speak_failure_still_functional_after_recovery(
+        self, mock_stt, sounds_dir
+    ):
+        """TTS works again when provider recovers from transient errors."""
         call_count = 0
 
         async def flaky_speak(text):
@@ -687,25 +678,23 @@ class TestTTSAutoFallback:
             if call_count <= 2:
                 raise RuntimeError("transient error")
 
-        mock_kokoro.speak = flaky_speak
+        flaky_tts = AsyncMock()
+        flaky_tts.speak = flaky_speak
 
         config = AudioConfig()
         mgr = AudioManager(
             config=config,
-            tts_provider=mock_kokoro,
+            tts_provider=flaky_tts,
             stt_provider=mock_stt,
             sounds_dir=sounds_dir,
         )
         mgr._tts_enabled = True
 
-        # Two failures
+        # Two failures then success — no provider swap
         await mgr.speak("fail1")
         await mgr.speak("fail2")
-        assert mgr._tts_fail_count == 2
-
-        # Success resets counter
         await mgr.speak("success")
-        assert mgr._tts_fail_count == 0
+        assert mgr._tts is flaky_tts
 
 
 # ─── Full-duplex mode ─────────────────────────────────────────────
@@ -889,17 +878,6 @@ class TestSwapTTSProvider:
         assert result == type(mock_new).__name__
         assert manager._tts is mock_new
 
-    def test_swap_resets_fail_count(self, manager):
-        """swap_tts_provider resets the failure counter."""
-        manager._tts_fail_count = 5
-        mock_new = MagicMock()
-        with patch(
-            "seaman_brain.audio.manager.create_tts_provider",
-            return_value=mock_new,
-        ):
-            manager.swap_tts_provider(AudioConfig())
-        assert manager._tts_fail_count == 0
-
     def test_swap_updates_config(self, manager):
         """swap_tts_provider updates the manager's config reference."""
         new_config = AudioConfig(tts_provider="kokoro")
@@ -972,3 +950,275 @@ class TestToggleAEC:
         manager._pipeline.stop = MagicMock()
         manager.toggle_aec(False)
         assert manager.full_duplex is False
+
+
+# ─── Mood forwarding ────────────────────────────────────────────
+
+
+class TestSetMood:
+    """Test AudioManager.set_mood() forwarding to TTS provider."""
+
+    def test_forwards_to_provider_with_set_mood(self, manager, mock_tts):
+        """set_mood() calls provider.set_mood() when available."""
+        mock_tts.set_mood = MagicMock()
+        manager.set_mood("hostile")
+        mock_tts.set_mood.assert_called_once_with("hostile")
+
+    def test_safe_without_set_mood(self, mock_stt, sounds_dir):
+        """set_mood() is a no-op when provider lacks set_mood."""
+        bare_tts = AsyncMock(spec=["synthesize", "speak"])
+        mgr = AudioManager(
+            config=AudioConfig(),
+            tts_provider=bare_tts,
+            stt_provider=mock_stt,
+            sounds_dir=sounds_dir,
+        )
+        # Should not raise even though bare_tts has no set_mood
+        mgr.set_mood("hostile")
+
+    def test_forwards_multiple_moods(self, manager, mock_tts):
+        """set_mood() forwards different mood values correctly."""
+        mock_tts.set_mood = MagicMock()
+        manager.set_mood("sardonic")
+        manager.set_mood("content")
+        assert mock_tts.set_mood.call_count == 2
+        mock_tts.set_mood.assert_any_call("sardonic")
+        mock_tts.set_mood.assert_any_call("content")
+
+
+# ─── is_speaking with pipeline ──────────────────────────────────
+
+
+class TestIsSpeakingWithPipeline:
+    """Test is_speaking covers full-duplex pipeline TTS state."""
+
+    def test_is_speaking_false_by_default(self, manager):
+        """Default state: not speaking."""
+        assert manager.is_speaking is False
+
+    def test_is_speaking_true_half_duplex(self, manager):
+        """Half-duplex _is_speaking flag."""
+        manager._is_speaking = True
+        assert manager.is_speaking is True
+
+    def test_is_speaking_true_when_pipeline_tts_playing(self, manager):
+        """Full-duplex: pipeline _tts_playing makes is_speaking True."""
+        mock_pipeline = MagicMock()
+        mock_pipeline._tts_playing = True
+        manager._pipeline = mock_pipeline
+        assert manager.is_speaking is True
+
+    def test_is_speaking_false_when_pipeline_tts_idle(self, manager):
+        """Full-duplex: pipeline _tts_playing=False doesn't trigger."""
+        mock_pipeline = MagicMock()
+        mock_pipeline._tts_playing = False
+        manager._pipeline = mock_pipeline
+        assert manager.is_speaking is False
+
+
+# ─── Pipeline auto-restart ──────────────────────────────────────
+
+
+class TestPipelineAutoRestart:
+    """Test check_pipeline_health() auto-restart with backoff."""
+
+    def test_no_restart_when_no_pipeline(self, manager):
+        """check_pipeline_health() is a no-op without a pipeline."""
+        manager.check_pipeline_health()
+        assert manager._pipeline is None
+
+    def test_no_restart_when_alive(self, mock_tts, mock_stt, sounds_dir):
+        """check_pipeline_health() does nothing when pipeline is alive."""
+        config = AudioConfig(aec_enabled=True)
+        mgr = AudioManager(
+            config=config,
+            tts_provider=mock_tts,
+            stt_provider=mock_stt,
+            sounds_dir=sounds_dir,
+        )
+        original_pipeline = mgr._pipeline
+        # Simulate alive: _running=True and thread alive
+        original_pipeline._running = True
+        original_pipeline._thread = MagicMock(is_alive=MagicMock(return_value=True))
+        mgr.check_pipeline_health()
+        assert mgr._pipeline is original_pipeline
+
+    def test_restart_when_dead(self, mock_tts, mock_stt, sounds_dir):
+        """check_pipeline_health() restarts a dead pipeline (first attempt)."""
+        config = AudioConfig(aec_enabled=True)
+        mgr = AudioManager(
+            config=config,
+            tts_provider=mock_tts,
+            stt_provider=mock_stt,
+            sounds_dir=sounds_dir,
+        )
+        original_pipeline = mgr._pipeline
+        # Simulate dead: _running=True but thread is dead
+        original_pipeline._running = True
+        original_pipeline._thread = MagicMock(is_alive=MagicMock(return_value=False))
+        original_pipeline.stop = MagicMock()
+
+        mgr.check_pipeline_health()
+
+        assert mgr._pipeline is not original_pipeline
+        assert mgr._pipeline is not None
+        original_pipeline.stop.assert_called_once()
+        assert mgr._pipeline_restart_count == 1
+
+    def test_backoff_prevents_immediate_retry(self, mock_tts, mock_stt, sounds_dir):
+        """Second check within backoff window does not restart again."""
+        config = AudioConfig(aec_enabled=True)
+        mgr = AudioManager(
+            config=config,
+            tts_provider=mock_tts,
+            stt_provider=mock_stt,
+            sounds_dir=sounds_dir,
+        )
+        # Simulate dead
+        mgr._pipeline._running = True
+        mgr._pipeline._thread = MagicMock(is_alive=MagicMock(return_value=False))
+        mgr._pipeline.stop = MagicMock()
+
+        mgr.check_pipeline_health()  # attempt 1
+        p_after_first = mgr._pipeline
+        # Simulate the new pipeline also dies immediately
+        p_after_first._running = True
+        p_after_first._thread = MagicMock(is_alive=MagicMock(return_value=False))
+        p_after_first.stop = MagicMock()
+
+        mgr.check_pipeline_health()  # within backoff — should not restart
+        assert mgr._pipeline is p_after_first  # no change
+        assert mgr._pipeline_restart_count == 1  # still 1
+
+    def test_max_restarts_stops_retrying(self, mock_tts, mock_stt, sounds_dir):
+        """After max restarts, stops retrying until long backoff expires."""
+        config = AudioConfig(aec_enabled=True)
+        mgr = AudioManager(
+            config=config,
+            tts_provider=mock_tts,
+            stt_provider=mock_stt,
+            sounds_dir=sounds_dir,
+        )
+        mgr._pipeline_max_restarts = 2
+
+        for _ in range(3):
+            mgr._pipeline._running = True
+            mgr._pipeline._thread = MagicMock(is_alive=MagicMock(return_value=False))
+            mgr._pipeline.stop = MagicMock()
+            mgr._pipeline_backoff_until = 0.0  # bypass backoff for test
+            mgr.check_pipeline_health()
+
+        assert mgr._pipeline_restart_count == 2  # capped at max
+
+    def test_alive_resets_restart_count(self, mock_tts, mock_stt, sounds_dir):
+        """A healthy pipeline resets the restart counter."""
+        config = AudioConfig(aec_enabled=True)
+        mgr = AudioManager(
+            config=config,
+            tts_provider=mock_tts,
+            stt_provider=mock_stt,
+            sounds_dir=sounds_dir,
+        )
+        mgr._pipeline_restart_count = 2  # simulate prior failures
+        # Simulate alive
+        mgr._pipeline._running = True
+        mgr._pipeline._thread = MagicMock(is_alive=MagicMock(return_value=True))
+
+        mgr.check_pipeline_health()
+        assert mgr._pipeline_restart_count == 0
+
+
+# ─── Transcription failure handling ──────────────────────────────
+
+
+class TestTranscribeFailureHandling:
+    """Test _transcribe_and_enqueue handles errors without fallback."""
+
+    async def test_transcription_failure_logs_and_drops(self, mock_tts, sounds_dir):
+        """Failed transcription is logged, utterance dropped (no retry)."""
+        stt = AsyncMock()
+        stt.transcribe = AsyncMock(side_effect=ConnectionError("gRPC down"))
+
+        config = AudioConfig(aec_enabled=True, stt_enabled=True)
+        mgr = AudioManager(
+            config=config,
+            tts_provider=mock_tts,
+            stt_provider=stt,
+            sounds_dir=sounds_dir,
+        )
+
+        await mgr._transcribe_and_enqueue(b"\x00\x00" * 100)
+
+        # Only one call — no retry with fallback
+        assert stt.transcribe.await_count == 1
+        assert mgr._pending_utterance.empty()
+
+    async def test_successful_transcription_enqueued(self, mock_tts, sounds_dir):
+        """Successful transcription is put in the utterance queue."""
+        stt = AsyncMock()
+        stt.transcribe = AsyncMock(return_value="hello from riva")
+
+        config = AudioConfig(aec_enabled=True, stt_enabled=True)
+        mgr = AudioManager(
+            config=config,
+            tts_provider=mock_tts,
+            stt_provider=stt,
+            sounds_dir=sounds_dir,
+        )
+
+        await mgr._transcribe_and_enqueue(b"\x00\x00" * 1600)
+
+        result = mgr._pending_utterance.get_nowait()
+        assert result == "hello from riva"
+
+
+# ─── TTS cancellation prevents pending playback ──────────────
+
+
+class TestCancelTtsPreventsPlayback:
+    """Test that cancel_tts prevents queued speak() from playing."""
+
+    async def test_cancel_tts_prevents_pending_playback(
+        self, mock_stt, sounds_dir
+    ):
+        """Speak() skips playback when _tts_cancelled is set before feed."""
+        import io
+        import wave
+
+        # Create realistic WAV data
+        buf = io.BytesIO()
+        with wave.open(buf, "wb") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(16000)
+            wf.writeframes(b"\x00\x00" * 1600)
+        wav_bytes = buf.getvalue()
+
+        slow_tts = AsyncMock()
+
+        async def _slow_synthesize(text: str) -> bytes:
+            # Simulate cancel arriving during synthesis
+            mgr._tts_cancelled.set()
+            return wav_bytes
+
+        slow_tts.synthesize = _slow_synthesize
+
+        config = AudioConfig(aec_enabled=True)
+        mgr = AudioManager(
+            config=config,
+            tts_provider=slow_tts,
+            stt_provider=mock_stt,
+            sounds_dir=sounds_dir,
+        )
+        mgr._tts_enabled = True
+
+        # Mock the pipeline's feed_reference and playback
+        mgr._pipeline.feed_reference = MagicMock()
+        play_mock = AsyncMock()
+        mgr._play_wav_async = play_mock
+
+        await mgr.speak("Hello but cancelled")
+
+        # feed_reference and playback should NOT have been called
+        mgr._pipeline.feed_reference.assert_not_called()
+        play_mock.assert_not_awaited()

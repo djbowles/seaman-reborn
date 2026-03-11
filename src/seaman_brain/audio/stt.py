@@ -193,10 +193,9 @@ class SpeechRecognitionSTTProvider:
             elif backend in ("google", "speech_recognition"):
                 text = self._recognizer.recognize_google(audio)
             else:
-                # Default to Google as fallback recognizer
-                logger.warning(
-                    "Unknown STT backend %r, falling back to google", backend
-                )
+                # SpeechRecognition is the final fallback — it may inherit
+                # a config.stt_provider of "riva" or "faster_whisper" from
+                # the fallback chain. Use Google as the recognizer backend.
                 text = self._recognizer.recognize_google(audio)
         except sr.UnknownValueError:
             logger.debug("STT: speech unintelligible")
@@ -209,6 +208,44 @@ class SpeechRecognitionSTTProvider:
             return ""
 
         return text.strip() if text else ""
+
+    def _transcribe_sync(self, pcm_bytes: bytes) -> str:
+        """Transcribe pre-captured PCM audio (16kHz 16-bit mono).
+
+        Converts raw PCM bytes to AudioData for the configured recognizer.
+
+        Args:
+            pcm_bytes: Raw 16kHz 16-bit mono PCM bytes.
+
+        Returns:
+            Transcribed text, or empty string on failure.
+        """
+        if not self._available:
+            return ""
+        sr = self._sr
+        try:
+            audio = sr.AudioData(pcm_bytes, sample_rate=16000, sample_width=2)
+            return self._recognize(audio)
+        except Exception as exc:
+            logger.warning("SpeechRecognition transcribe failed: %s", exc)
+            return ""
+
+    async def transcribe(self, pcm_bytes: bytes) -> str:
+        """Transcribe pre-captured PCM audio asynchronously.
+
+        Used by the full-duplex pipeline to transcribe utterances that
+        have already been captured and segmented.
+
+        Args:
+            pcm_bytes: Raw 16kHz 16-bit mono PCM bytes.
+
+        Returns:
+            Transcribed text, or empty string on failure.
+        """
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            _stt_executor, self._transcribe_sync, pcm_bytes
+        )
 
     async def listen(self) -> str:
         """Listen for speech and return transcribed text asynchronously.
@@ -426,6 +463,9 @@ class RivaSTTProvider:
     and transcribes speech via gRPC. Supports both live microphone
     recording (``listen()``) and pre-captured audio (``transcribe()``).
 
+    Includes a circuit breaker: after a connection failure, the provider
+    is marked unavailable for ``_retry_interval`` seconds before retrying.
+
     Requires: ``nvidia-riva-client`` and ``grpcio``.
     """
 
@@ -435,29 +475,70 @@ class RivaSTTProvider:
         self._init_error: str = ""
         self._auth: object | None = None
         self._service: object | None = None
+        self._last_failure_time: float = 0.0
+        self._retry_interval: float = 30.0
         self._initialize()
 
     def _initialize(self) -> None:
-        """Connect to the Riva ASR service."""
+        """Connect to the Riva ASR service and verify reachability."""
         try:
+            import grpc
             import riva.client
 
             self._auth = riva.client.Auth(uri=self._config.riva_uri)
             self._service = riva.client.ASRService(self._auth)
+
+            # Verify the gRPC server is actually reachable. Without this,
+            # Auth() and Service() succeed even when the server is down
+            # (gRPC connects lazily), causing the factory to skip fallbacks.
+            channel = grpc.insecure_channel(self._config.riva_uri)
+            try:
+                grpc.channel_ready_future(channel).result(timeout=2)
+            except grpc.FutureTimeoutError:
+                raise ConnectionError(
+                    f"Riva server at {self._config.riva_uri} not reachable"
+                )
+            finally:
+                channel.close()
+
             self._available = True
         except ImportError as exc:
             self._available = False
             self._init_error = f"nvidia-riva-client not installed: {exc}"
             logger.warning("Riva STT unavailable: %s", self._init_error)
         except Exception as exc:
+            import time as _time
             self._available = False
             self._init_error = str(exc)
+            self._last_failure_time = _time.monotonic()
             logger.warning("Riva STT init failed: %s", exc)
 
     @property
     def available(self) -> bool:
         """Whether the Riva ASR service is reachable."""
         return self._available
+
+    def check_health(self) -> bool:
+        """Non-blocking health check — ping Riva gRPC with short timeout."""
+        try:
+            import grpc
+
+            channel = grpc.insecure_channel(self._config.riva_uri)
+            try:
+                grpc.channel_ready_future(channel).result(timeout=1)
+                if not self._available:
+                    logger.info("Riva STT reconnected at %s", self._config.riva_uri)
+                self._available = True
+                self._last_failure_time = 0.0
+                return True
+            except grpc.FutureTimeoutError:
+                self._available = False
+                return False
+            finally:
+                channel.close()
+        except Exception:
+            self._available = False
+            return False
 
     def set_input_device(self, device_name: str) -> None:
         """Change the microphone device at runtime."""
@@ -467,6 +548,9 @@ class RivaSTTProvider:
     def _transcribe_sync(self, pcm_bytes: bytes) -> str:
         """Transcribe pre-captured PCM audio via Riva gRPC.
 
+        Includes circuit breaker: if the last failure was recent, returns
+        empty immediately without hitting the network.
+
         Args:
             pcm_bytes: Raw 16kHz 16-bit mono PCM bytes.
 
@@ -474,7 +558,16 @@ class RivaSTTProvider:
             Transcribed text, or empty string on failure.
         """
         if not self._available or self._service is None:
-            return ""
+            # Circuit breaker: skip retry if last failure was recent
+            import time as _time
+            if self._last_failure_time and (
+                _time.monotonic() - self._last_failure_time < self._retry_interval
+            ):
+                return ""
+            # Try reconnecting
+            self._initialize()
+            if not self._available:
+                return ""
 
         try:
             import riva.client
@@ -489,12 +582,16 @@ class RivaSTTProvider:
             )
             response = self._service.offline_recognize(pcm_bytes, config)
 
+            self._last_failure_time = 0.0  # Success — reset circuit breaker
             texts = []
             for result in response.results:
                 if result.alternatives:
                     texts.append(result.alternatives[0].transcript)
             return " ".join(texts).strip()
         except Exception as exc:
+            import time as _time
+            self._last_failure_time = _time.monotonic()
+            self._available = False
             logger.warning("Riva transcribe failed: %s", exc)
             return ""
 
@@ -543,7 +640,8 @@ class RivaSTTProvider:
 def create_stt_provider(config: AudioConfig | None = None) -> STTProvider:
     """Create an STT provider based on configuration.
 
-    Falls back to NoopSTTProvider if the configured provider is unavailable.
+    Each provider is independent — no cross-provider fallback chains.
+    If the configured provider is unavailable, returns NoopSTTProvider.
 
     Args:
         config: Audio configuration. Uses defaults if None.
@@ -564,10 +662,10 @@ def create_stt_provider(config: AudioConfig | None = None) -> STTProvider:
         if riva_provider.available:
             logger.info("STT initialized: riva (uri=%s)", config.riva_uri)
             return riva_provider
-        logger.warning("Riva STT unavailable, falling back to faster_whisper")
-        # Fall through to faster_whisper
+        logger.warning("Riva STT unavailable — check server status")
+        return NoopSTTProvider()
 
-    if provider_name in ("faster_whisper", "riva"):
+    if provider_name == "faster_whisper":
         fw_provider = FasterWhisperSTTProvider(config)
         fw_provider._initialize()
         if fw_provider.available:
@@ -575,13 +673,16 @@ def create_stt_provider(config: AudioConfig | None = None) -> STTProvider:
                 "STT initialized: faster-whisper (model=%s)", config.stt_model
             )
             return fw_provider
-        logger.warning("Faster-Whisper unavailable, falling back to speech_recognition")
-        # Fall through to speech_recognition
+        logger.warning("Faster-Whisper STT unavailable")
+        return NoopSTTProvider()
 
-    provider = SpeechRecognitionSTTProvider(config)
-    if provider.available:
-        logger.info("STT initialized: speech_recognition (backend=%s)", config.stt_provider)
-        return provider
+    if provider_name in ("speech_recognition", "google", "vosk"):
+        provider = SpeechRecognitionSTTProvider(config)
+        if provider.available:
+            logger.info("STT initialized: speech_recognition (backend=%s)", provider_name)
+            return provider
+        logger.warning("SpeechRecognition STT unavailable")
+        return NoopSTTProvider()
 
-    logger.warning("STT unavailable, falling back to silent mode")
+    logger.warning("Unknown STT provider %r", provider_name)
     return NoopSTTProvider()

@@ -5,11 +5,13 @@ from __future__ import annotations
 import io
 import sys
 import wave
+from contextlib import contextmanager
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from seaman_brain.audio.tts import (
+    MOOD_TTS_PARAMS,
     KokoroTTSProvider,
     NoopTTSProvider,
     Pyttsx3TTSProvider,
@@ -566,6 +568,79 @@ class TestKokoroTTSProviderSynthesize:
             )
 
 
+class TestKokoroVoiceWarning:
+    """Test that the invalid Kokoro voice warning only fires once per voice."""
+
+    @pytest.mark.asyncio
+    async def test_warning_fires_once_for_same_invalid_voice(self):
+        """Repeated calls with same invalid voice log warning only once."""
+        config = AudioConfig(tts_voice="Some Voice")
+        mock_kokoro, mock_pipeline = _mock_kokoro()
+        mock_sf = _mock_soundfile()
+
+        with patch.dict(sys.modules, {
+            "kokoro": mock_kokoro,
+            "soundfile": mock_sf,
+        }):
+            provider = KokoroTTSProvider(config)
+            with patch("seaman_brain.audio.tts.logger") as mock_logger:
+                await provider.synthesize("First call")
+                await provider.synthesize("Second call")
+                await provider.synthesize("Third call")
+
+                # Warning should have been logged exactly once
+                warning_calls = [
+                    c for c in mock_logger.warning.call_args_list
+                    if "Invalid Kokoro voice" in str(c)
+                ]
+                assert len(warning_calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_warning_fires_again_for_different_invalid_voice(self):
+        """Changing to a different invalid voice triggers a new warning."""
+        config = AudioConfig(tts_voice="Bad Voice 1")
+        mock_kokoro, mock_pipeline = _mock_kokoro()
+        mock_sf = _mock_soundfile()
+
+        with patch.dict(sys.modules, {
+            "kokoro": mock_kokoro,
+            "soundfile": mock_sf,
+        }):
+            provider = KokoroTTSProvider(config)
+            with patch("seaman_brain.audio.tts.logger") as mock_logger:
+                await provider.synthesize("First call")
+                # Change to a different invalid voice
+                provider._config = AudioConfig(tts_voice="Bad Voice 2")
+                await provider.synthesize("Second call")
+
+                warning_calls = [
+                    c for c in mock_logger.warning.call_args_list
+                    if "Invalid Kokoro voice" in str(c)
+                ]
+                assert len(warning_calls) == 2
+
+    @pytest.mark.asyncio
+    async def test_no_warning_for_valid_voice(self):
+        """Valid Kokoro voice (xx_name pattern) does not trigger warning."""
+        config = AudioConfig(tts_voice="af_heart")
+        mock_kokoro, mock_pipeline = _mock_kokoro()
+        mock_sf = _mock_soundfile()
+
+        with patch.dict(sys.modules, {
+            "kokoro": mock_kokoro,
+            "soundfile": mock_sf,
+        }):
+            provider = KokoroTTSProvider(config)
+            with patch("seaman_brain.audio.tts.logger") as mock_logger:
+                await provider.synthesize("Hello")
+
+                warning_calls = [
+                    c for c in mock_logger.warning.call_args_list
+                    if "Invalid Kokoro voice" in str(c)
+                ]
+                assert len(warning_calls) == 0
+
+
 class TestKokoroTTSProviderSpeak:
     """Test speak with mocked kokoro + sounddevice."""
 
@@ -598,20 +673,10 @@ class TestKokoroTTSFactory:
             provider = create_tts_provider(config)
             assert isinstance(provider, KokoroTTSProvider)
 
-    def test_factory_falls_back_to_pyttsx3(self):
-        """Factory falls back to pyttsx3 when kokoro not installed."""
+    def test_factory_kokoro_unavailable_returns_noop(self):
+        """Factory returns noop when kokoro not installed (no fallback chain)."""
         config = AudioConfig(tts_provider="kokoro")
-        mock_pyttsx3, _ = _mock_pyttsx3()
-        with patch.dict(sys.modules, {"kokoro": None, "pyttsx3": mock_pyttsx3}):
-            provider = create_tts_provider(config)
-            assert isinstance(provider, Pyttsx3TTSProvider)
-
-    def test_factory_falls_back_to_noop(self):
-        """Factory falls back to noop when both kokoro and pyttsx3 unavailable."""
-        config = AudioConfig(tts_provider="kokoro")
-        mock_pyttsx3 = MagicMock()
-        mock_pyttsx3.init.side_effect = RuntimeError("No audio")
-        with patch.dict(sys.modules, {"kokoro": None, "pyttsx3": mock_pyttsx3}):
+        with patch.dict(sys.modules, {"kokoro": None}):
             provider = create_tts_provider(config)
             assert isinstance(provider, NoopTTSProvider)
 
@@ -851,6 +916,19 @@ class TestEmptyWAVDetection:
 # ─── RivaTTSProvider ─────────────────────────────────────────────
 
 
+@contextmanager
+def _grpc_reachable():
+    """Mock gRPC connectivity check to report server as reachable."""
+    mock_channel = MagicMock()
+    mock_future = MagicMock()
+    mock_future.result.return_value = None
+    with (
+        patch("grpc.insecure_channel", return_value=mock_channel),
+        patch("grpc.channel_ready_future", return_value=mock_future),
+    ):
+        yield
+
+
 def _mock_riva_tts():
     """Create mock riva.client module for TTS tests."""
     mock_riva = MagicMock()
@@ -881,7 +959,10 @@ class TestRivaTTSProviderInit:
     def test_init_success(self):
         """Successful init marks provider as available."""
         mock_riva, mock_client, _ = _mock_riva_tts()
-        with patch.dict(sys.modules, {"riva": mock_riva, "riva.client": mock_client}):
+        with (
+            patch.dict(sys.modules, {"riva": mock_riva, "riva.client": mock_client}),
+            _grpc_reachable(),
+        ):
             provider = RivaTTSProvider()
             assert provider.available is True
 
@@ -900,6 +981,22 @@ class TestRivaTTSProviderInit:
             provider = RivaTTSProvider()
             assert provider.available is False
 
+    def test_init_grpc_unreachable(self):
+        """gRPC connectivity timeout marks provider unavailable."""
+        import grpc
+
+        mock_riva, mock_client, _ = _mock_riva_tts()
+        mock_future = MagicMock()
+        mock_future.result.side_effect = grpc.FutureTimeoutError()
+        with (
+            patch.dict(sys.modules, {"riva": mock_riva, "riva.client": mock_client}),
+            patch("grpc.insecure_channel", return_value=MagicMock()),
+            patch("grpc.channel_ready_future", return_value=mock_future),
+        ):
+            provider = RivaTTSProvider()
+            assert provider.available is False
+            assert "not reachable" in provider._init_error
+
 
 class TestRivaTTSProviderSynthesize:
     """Test Riva TTS synthesis."""
@@ -913,7 +1010,10 @@ class TestRivaTTSProviderSynthesize:
         mock_resp.audio = b"\x00\x00" * 1600  # 0.1s at 16kHz
         mock_service.synthesize.return_value = mock_resp
 
-        with patch.dict(sys.modules, {"riva": mock_riva, "riva.client": mock_client}):
+        with (
+            patch.dict(sys.modules, {"riva": mock_riva, "riva.client": mock_client}),
+            _grpc_reachable(),
+        ):
             provider = RivaTTSProvider()
             data = await provider.synthesize("Hello")
             assert isinstance(data, bytes)
@@ -931,7 +1031,10 @@ class TestRivaTTSProviderSynthesize:
     async def test_synthesize_empty_text(self):
         """synthesize() returns empty WAV for blank input."""
         mock_riva, mock_client, _ = _mock_riva_tts()
-        with patch.dict(sys.modules, {"riva": mock_riva, "riva.client": mock_client}):
+        with (
+            patch.dict(sys.modules, {"riva": mock_riva, "riva.client": mock_client}),
+            _grpc_reachable(),
+        ):
             provider = RivaTTSProvider()
             data = await provider.synthesize("")
             assert isinstance(data, bytes)
@@ -958,42 +1061,215 @@ class TestRivaTTSFactory:
         """Factory creates RivaTTSProvider when provider='riva' and installed."""
         config = AudioConfig(tts_provider="riva")
         mock_riva, mock_client, _ = _mock_riva_tts()
-        with patch.dict(sys.modules, {"riva": mock_riva, "riva.client": mock_client}):
+        with (
+            patch.dict(sys.modules, {"riva": mock_riva, "riva.client": mock_client}),
+            _grpc_reachable(),
+        ):
             provider = create_tts_provider(config)
             assert isinstance(provider, RivaTTSProvider)
 
-    def test_factory_riva_falls_back_to_kokoro(self):
-        """Factory falls back to kokoro when Riva unavailable."""
+    def test_factory_riva_unavailable_returns_noop(self):
+        """Factory returns noop when Riva unavailable (no fallback chain)."""
         config = AudioConfig(tts_provider="riva")
-        mock_kokoro, _ = _mock_kokoro()
         with patch.dict(sys.modules, {
             "riva": None, "riva.client": None,
-            "kokoro": mock_kokoro,
-        }):
-            provider = create_tts_provider(config)
-            assert isinstance(provider, KokoroTTSProvider)
-
-    def test_factory_riva_falls_back_to_pyttsx3(self):
-        """Factory falls back to pyttsx3 when Riva and Kokoro unavailable."""
-        config = AudioConfig(tts_provider="riva")
-        mock_pyttsx3, _ = _mock_pyttsx3()
-        with patch.dict(sys.modules, {
-            "riva": None, "riva.client": None,
-            "kokoro": None,
-            "pyttsx3": mock_pyttsx3,
-        }):
-            provider = create_tts_provider(config)
-            assert isinstance(provider, Pyttsx3TTSProvider)
-
-    def test_factory_riva_falls_back_to_noop(self):
-        """Factory falls back to noop when all unavailable."""
-        config = AudioConfig(tts_provider="riva")
-        mock_pyttsx3 = MagicMock()
-        mock_pyttsx3.init.side_effect = RuntimeError("No audio")
-        with patch.dict(sys.modules, {
-            "riva": None, "riva.client": None,
-            "kokoro": None,
-            "pyttsx3": mock_pyttsx3,
         }):
             provider = create_tts_provider(config)
             assert isinstance(provider, NoopTTSProvider)
+
+
+# ─── Mood-based TTS parameters ───────────────────────────────────
+
+
+class TestMoodTTSParams:
+    """Test the mood-to-TTS parameter mapping."""
+
+    def test_all_known_moods_present(self):
+        """MOOD_TTS_PARAMS has entries for every CreatureMood value."""
+        expected_moods = {
+            "hostile", "irritated", "sardonic", "neutral",
+            "curious", "amused", "philosophical", "content",
+        }
+        assert set(MOOD_TTS_PARAMS.keys()) == expected_moods
+
+    def test_neutral_is_identity(self):
+        """Neutral mood applies no scaling."""
+        params = MOOD_TTS_PARAMS["neutral"]
+        assert params["rate_scale"] == 1.0
+        assert params["volume_scale"] == 1.0
+        assert params["pitch_shift"] == 0.0
+
+    def test_each_mood_has_required_keys(self):
+        """Every mood entry has rate_scale, volume_scale, pitch_shift."""
+        for mood, params in MOOD_TTS_PARAMS.items():
+            assert "rate_scale" in params, f"{mood} missing rate_scale"
+            assert "volume_scale" in params, f"{mood} missing volume_scale"
+            assert "pitch_shift" in params, f"{mood} missing pitch_shift"
+
+    def test_rate_scales_are_positive(self):
+        """All rate_scale values are positive floats."""
+        for mood, params in MOOD_TTS_PARAMS.items():
+            assert params["rate_scale"] > 0, f"{mood} has non-positive rate_scale"
+
+
+# ─── Mood set_mood on providers ──────────────────────────────────
+
+
+class TestPyttsx3MoodAdjustment:
+    """Test that Pyttsx3TTSProvider.set_mood adjusts engine rate."""
+
+    def test_set_mood_hostile_adjusts_rate(self):
+        """Hostile mood increases speech rate."""
+        config = AudioConfig(tts_rate=200)
+        mock_mod, mock_engine = _mock_pyttsx3()
+        with patch.dict(sys.modules, {"pyttsx3": mock_mod}):
+            provider = Pyttsx3TTSProvider(config)
+            provider.set_mood("hostile")
+            engine = provider._create_engine()
+            # hostile rate_scale=1.15, so 200*1.15=230
+            engine.setProperty.assert_any_call("rate", 230)
+
+    def test_set_mood_philosophical_slows_rate(self):
+        """Philosophical mood decreases speech rate."""
+        config = AudioConfig(tts_rate=200)
+        mock_mod, mock_engine = _mock_pyttsx3()
+        with patch.dict(sys.modules, {"pyttsx3": mock_mod}):
+            provider = Pyttsx3TTSProvider(config)
+            provider.set_mood("philosophical")
+            engine = provider._create_engine()
+            # philosophical rate_scale=0.9, so 200*0.9=180
+            engine.setProperty.assert_any_call("rate", 180)
+
+    def test_set_mood_hostile_adjusts_volume(self):
+        """Hostile mood increases volume."""
+        config = AudioConfig(tts_volume=0.8)
+        mock_mod, mock_engine = _mock_pyttsx3()
+        with patch.dict(sys.modules, {"pyttsx3": mock_mod}):
+            provider = Pyttsx3TTSProvider(config)
+            provider.set_mood("hostile")
+            engine = provider._create_engine()
+            # hostile volume_scale=1.1, so 0.8*1.1=0.88
+            engine.setProperty.assert_any_call(
+                "volume", pytest.approx(0.88, abs=0.01)
+            )
+
+    def test_set_mood_neutral_no_scaling(self):
+        """Neutral mood applies base rate and volume unchanged."""
+        config = AudioConfig(tts_rate=200, tts_volume=0.8)
+        mock_mod, mock_engine = _mock_pyttsx3()
+        with patch.dict(sys.modules, {"pyttsx3": mock_mod}):
+            provider = Pyttsx3TTSProvider(config)
+            provider.set_mood("neutral")
+            engine = provider._create_engine()
+            engine.setProperty.assert_any_call("rate", 200)
+            engine.setProperty.assert_any_call("volume", 0.8)
+
+    def test_set_mood_unknown_defaults_to_neutral(self):
+        """Unknown mood string falls back to neutral."""
+        config = AudioConfig(tts_rate=200)
+        mock_mod, mock_engine = _mock_pyttsx3()
+        with patch.dict(sys.modules, {"pyttsx3": mock_mod}):
+            provider = Pyttsx3TTSProvider(config)
+            provider.set_mood("confused_and_bewildered")
+            assert provider._current_mood == "neutral"
+            engine = provider._create_engine()
+            engine.setProperty.assert_any_call("rate", 200)
+
+    def test_default_mood_is_neutral(self):
+        """Provider starts with neutral mood."""
+        mock_mod, _ = _mock_pyttsx3()
+        with patch.dict(sys.modules, {"pyttsx3": mock_mod}):
+            provider = Pyttsx3TTSProvider()
+            assert provider._current_mood == "neutral"
+
+
+class TestKokoroMoodAdjustment:
+    """Test that KokoroTTSProvider.set_mood adjusts speed."""
+
+    @pytest.mark.asyncio
+    async def test_hostile_mood_increases_speed(self):
+        """Hostile mood scales Kokoro speed up."""
+        config = AudioConfig(tts_voice="af_heart", tts_speed=1.0)
+        mock_kokoro, mock_pipeline = _mock_kokoro()
+        mock_sf = _mock_soundfile()
+        with patch.dict(sys.modules, {
+            "kokoro": mock_kokoro,
+            "soundfile": mock_sf,
+        }):
+            provider = KokoroTTSProvider(config)
+            provider.set_mood("hostile")
+            await provider.synthesize("Test")
+            # hostile rate_scale=1.15, so speed=1.0*1.15=1.15
+            mock_pipeline.assert_called_once_with(
+                "Test", voice="af_heart", speed=pytest.approx(1.15, abs=0.01)
+            )
+
+    @pytest.mark.asyncio
+    async def test_philosophical_mood_slows_speed(self):
+        """Philosophical mood scales Kokoro speed down."""
+        config = AudioConfig(tts_voice="af_heart", tts_speed=1.0)
+        mock_kokoro, mock_pipeline = _mock_kokoro()
+        mock_sf = _mock_soundfile()
+        with patch.dict(sys.modules, {
+            "kokoro": mock_kokoro,
+            "soundfile": mock_sf,
+        }):
+            provider = KokoroTTSProvider(config)
+            provider.set_mood("philosophical")
+            await provider.synthesize("Test")
+            # philosophical rate_scale=0.9, so speed=1.0*0.9=0.9
+            mock_pipeline.assert_called_once_with(
+                "Test", voice="af_heart", speed=pytest.approx(0.9, abs=0.01)
+            )
+
+    def test_set_mood_unknown_defaults_to_neutral(self):
+        """Unknown mood string falls back to neutral."""
+        provider = KokoroTTSProvider()
+        provider.set_mood("completely_baffled")
+        assert provider._current_mood == "neutral"
+
+    def test_default_mood_is_neutral(self):
+        """Provider starts with neutral mood."""
+        provider = KokoroTTSProvider()
+        assert provider._current_mood == "neutral"
+
+
+class TestRivaMoodAdjustment:
+    """Test that RivaTTSProvider.set_mood adjusts synthesis parameters."""
+
+    def test_set_mood_changes_current_mood(self):
+        """set_mood updates _current_mood."""
+        with patch.dict(sys.modules, {
+            "riva": MagicMock(), "riva.client": MagicMock(),
+        }):
+            provider = RivaTTSProvider()
+            provider.set_mood("hostile")
+            assert provider._current_mood == "hostile"
+
+    def test_set_mood_unknown_defaults_to_neutral(self):
+        """Unknown mood string falls back to neutral."""
+        with patch.dict(sys.modules, {
+            "riva": MagicMock(), "riva.client": MagicMock(),
+        }):
+            provider = RivaTTSProvider()
+            provider.set_mood("totally_bogus")
+            assert provider._current_mood == "neutral"
+
+    def test_default_mood_is_neutral(self):
+        """Provider starts with neutral mood."""
+        with patch.dict(sys.modules, {
+            "riva": MagicMock(), "riva.client": MagicMock(),
+        }):
+            provider = RivaTTSProvider()
+            assert provider._current_mood == "neutral"
+
+
+class TestNoopMood:
+    """Test that NoopTTSProvider.set_mood is a no-op."""
+
+    def test_set_mood_exists_and_does_nothing(self):
+        """NoopTTSProvider.set_mood accepts any mood without error."""
+        provider = NoopTTSProvider()
+        provider.set_mood("hostile")
+        provider.set_mood("content")
+        provider.set_mood("nonexistent_mood")

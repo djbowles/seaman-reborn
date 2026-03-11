@@ -43,8 +43,11 @@ class NLMSEchoCanceller:
 
         # Adaptive filter weights (float64 for numerical stability)
         self._weights = np.zeros(filter_length, dtype=np.float64)
-        # Reference signal buffer (sliding window of past reference samples)
+        # Reference signal circular buffer (replaces O(N) np.roll per sample)
         self._ref_buffer = np.zeros(filter_length, dtype=np.float64)
+        self._ref_idx = 0  # Write pointer into circular buffer
+        # Running power estimate (avoids recomputing dot product each sample)
+        self._ref_power = 0.0
 
     @property
     def filter_length(self) -> int:
@@ -72,26 +75,60 @@ class NLMSEchoCanceller:
         """
         n_samples = len(mic_frame)
         output = np.empty(n_samples, dtype=np.float64)
+        fl = self._filter_length
+        buf = self._ref_buffer
+        weights = self._weights
+        idx = self._ref_idx
+        power = self._ref_power
+        mu = self._step_size
+        eps = self._eps
 
         for i in range(n_samples):
-            # Shift reference buffer and insert new sample
-            self._ref_buffer = np.roll(self._ref_buffer, 1)
-            self._ref_buffer[0] = ref_frame[i]
+            # Insert new sample into circular buffer (O(1), replaces np.roll)
+            old_val = buf[idx]
+            new_val = ref_frame[i]
+            buf[idx] = new_val
+            # Update running power incrementally
+            power += new_val * new_val - old_val * old_val
+            idx = (idx + 1) % fl
 
-            # Estimate echo: w^T * x
-            echo_estimate = np.dot(self._weights, self._ref_buffer)
+            # Compute echo estimate via dot product on circular buffer.
+            # weights[0] aligns with newest sample (buf[idx-1]), weights[fl-1]
+            # with oldest (buf[idx]). Split into two reversed slices.
+            n_recent = idx  # buf[0..idx-1] (recent samples)
+            n_old = fl - idx  # buf[idx..fl-1] (older samples)
 
-            # Error = mic - estimated echo
+            echo_estimate = 0.0
+            if n_recent > 0:
+                echo_estimate += np.dot(
+                    weights[:n_recent], buf[idx - 1::-1]
+                )
+            if n_old > 0:
+                echo_estimate += np.dot(
+                    weights[n_recent:], buf[fl - 1:idx - 1:-1] if idx > 0 else buf[::-1]
+                )
+
             error = mic_frame[i] - echo_estimate
             output[i] = error
 
             # Update weights: w += mu * error * x / (x^T*x + eps)
-            power = np.dot(self._ref_buffer, self._ref_buffer) + self._eps
-            self._weights += (self._step_size * error / power) * self._ref_buffer
+            norm_power = max(power, 0.0) + eps
+            step = mu * error / norm_power
+            if n_recent > 0:
+                weights[:n_recent] += step * buf[idx - 1::-1]
+            if n_old > 0:
+                if idx > 0:
+                    weights[n_recent:] += step * buf[fl - 1:idx - 1:-1]
+                else:
+                    weights[n_recent:] += step * buf[::-1]
 
+        self._ref_idx = idx
+        self._ref_power = power
         return output
 
     def reset(self) -> None:
         """Clear filter state (call when audio config changes)."""
         self._weights[:] = 0.0
         self._ref_buffer[:] = 0.0
+        self._ref_idx = 0
+        self._ref_power = 0.0

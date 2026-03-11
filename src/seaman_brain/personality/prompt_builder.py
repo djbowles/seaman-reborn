@@ -358,6 +358,106 @@ class PromptBuilder:
 
         return "\n\n".join(sections)
 
+    def build_cached(
+        self,
+        stage: CreatureStage,
+        traits: TraitProfile,
+        memories: list[str] | None = None,
+        creature_state: dict[str, Any] | None = None,
+        observations: list[str] | None = None,
+        vision_tool_available: bool = False,
+        destressed: bool = False,
+    ) -> str:
+        """Build system prompt with cache breakpoint for Anthropic prompt caching.
+
+        Separates the prompt into:
+        - Cacheable prefix: identity + speech style + response limits +
+          trait instructions + constraints (stable per stage, changes rarely)
+        - Dynamic suffix: mood/trust + vision + needs + memories
+          (changes every call)
+
+        Returns a single string with ``---CACHE_BREAK---`` marker between
+        the two parts. The AnthropicProvider splits on this marker and
+        attaches ``cache_control`` to the prefix block.
+
+        Args:
+            stage: Current creature evolutionary stage.
+            traits: Current trait profile governing personality tone.
+            memories: List of remembered facts about the user.
+            creature_state: Optional state dict (mood, trust_level, etc.).
+            observations: Recent vision observations.
+            vision_tool_available: Whether the look_at_user tool is available.
+            destressed: Whether the creature is in destress soliloquy mode.
+
+        Returns:
+            System prompt string, optionally containing a cache break marker.
+        """
+        state = creature_state or {}
+
+        # ---- Cacheable prefix (stable per stage) ----
+        prefix_sections: list[str] = []
+        prefix_sections.append("YOU ARE SEAMAN.")
+        prefix_sections.append(_get_stage_description(stage, self._config_dir))
+
+        speech = _STAGE_SPEECH.get(stage)
+        if speech:
+            prefix_sections.append(speech)
+
+        max_words = _get_max_response_words(stage, self._config_dir)
+        if max_words:
+            if destressed:
+                prefix_sections.append(
+                    "RESPONSE LENGTH: You may rant, monologue, or vent "
+                    "at length. Express your frustration fully."
+                )
+            else:
+                prefix_sections.append(
+                    f"RESPONSE LENGTH: Keep every reply under {max_words} "
+                    "words. Be concise. One to three sentences maximum."
+                )
+
+        tone = _trait_tone_instructions(traits)
+        if tone:
+            prefix_sections.append(tone)
+
+        prefix_sections.append(_NEGATIVE_CONSTRAINTS)
+
+        # ---- Dynamic suffix (changes every call) ----
+        suffix_sections: list[str] = []
+
+        mood_text = _mood_section(
+            mood=state.get("mood"), trust=state.get("trust_level"),
+        )
+        if mood_text:
+            suffix_sections.append(mood_text)
+
+        vision_text = _vision_section(observations or [])
+        if vision_text:
+            suffix_sections.append(vision_text)
+        elif vision_tool_available:
+            suffix_sections.append(
+                "VISION CAPABILITY:\n"
+                "You have the ability to look at the user through a webcam "
+                "by using the look_at_user tool. Use it when you are curious "
+                "about what the user looks like, what they are doing, or "
+                "when they ask you to look at them."
+            )
+
+        needs_text = self._needs_hints(state)
+        if needs_text:
+            suffix_sections.append(needs_text)
+
+        mem_text = _memories_section(memories or [])
+        if mem_text:
+            suffix_sections.append(mem_text)
+
+        prefix = "\n\n".join(prefix_sections)
+        suffix = "\n\n".join(suffix_sections) if suffix_sections else ""
+
+        if suffix:
+            return f"{prefix}\n\n---CACHE_BREAK---\n\n{suffix}"
+        return prefix
+
     @staticmethod
     def _needs_hints(state: dict[str, Any]) -> str:
         """Generate behavioral hints from creature needs."""

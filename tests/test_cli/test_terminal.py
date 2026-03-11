@@ -243,8 +243,12 @@ class TestTerminalRun:
         terminal._get_input = AsyncMock(side_effect=["hello", "/quit"])
         await terminal.run()
 
-        # LLM should have been called
-        assert terminal.manager._llm.chat.called
+        # LLM should have been called (router wraps the mock, access via _local)
+        llm = terminal.manager._llm
+        if hasattr(llm, '_local'):
+            assert llm._local.chat.called
+        else:
+            assert llm.chat.called
 
     async def test_command_output_displayed(self, tmp_path):
         """Command results are displayed."""

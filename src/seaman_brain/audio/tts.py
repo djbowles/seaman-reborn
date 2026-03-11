@@ -24,6 +24,21 @@ logger = logging.getLogger(__name__)
 # Shared thread pool for TTS operations (CPU-bound, keep off event loop)
 _tts_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="tts")
 
+# Mood-to-TTS parameter mapping — adjusts rate, volume, and pitch per mood.
+# rate_scale: multiplier on base speech rate (>1 = faster)
+# volume_scale: multiplier on base volume (>1 = louder)
+# pitch_shift: semitone-like offset (positive = higher, negative = lower)
+MOOD_TTS_PARAMS: dict[str, dict[str, float]] = {
+    "hostile": {"rate_scale": 1.15, "volume_scale": 1.1, "pitch_shift": -0.05},
+    "irritated": {"rate_scale": 1.1, "volume_scale": 1.05, "pitch_shift": 0.0},
+    "sardonic": {"rate_scale": 0.95, "volume_scale": 0.95, "pitch_shift": 0.0},
+    "neutral": {"rate_scale": 1.0, "volume_scale": 1.0, "pitch_shift": 0.0},
+    "curious": {"rate_scale": 1.05, "volume_scale": 1.0, "pitch_shift": 0.05},
+    "amused": {"rate_scale": 1.0, "volume_scale": 1.0, "pitch_shift": 0.03},
+    "philosophical": {"rate_scale": 0.9, "volume_scale": 0.9, "pitch_shift": -0.02},
+    "content": {"rate_scale": 0.95, "volume_scale": 0.95, "pitch_shift": 0.0},
+}
+
 _TTS_TIMEOUT = 30.0  # seconds before TTS executor call is abandoned
 
 
@@ -59,6 +74,9 @@ class TTSProvider(Protocol):
 class NoopTTSProvider:
     """Silent TTS provider used as fallback when no TTS engine is available."""
 
+    def set_mood(self, mood: str) -> None:
+        """Ignore mood — silent provider has no voice to modulate."""
+
     async def synthesize(self, text: str) -> bytes:
         """Return empty WAV bytes."""
         buf = io.BytesIO()
@@ -87,6 +105,7 @@ class Pyttsx3TTSProvider:
         self._engine_factory: Callable | None = None
         self._available = False
         self._init_error: str = ""
+        self._current_mood: str = "neutral"
         self._initialize()
 
     def _initialize(self) -> None:
@@ -108,6 +127,16 @@ class Pyttsx3TTSProvider:
         """Whether the TTS engine is operational."""
         return self._available
 
+    def set_mood(self, mood: str) -> None:
+        """Set the current mood for voice modulation.
+
+        Unknown moods fall back to "neutral".
+
+        Args:
+            mood: Mood string (e.g. "hostile", "sardonic", "content").
+        """
+        self._current_mood = mood if mood in MOOD_TTS_PARAMS else "neutral"
+
     def _create_engine(self):
         """Create and configure a fresh pyttsx3 engine."""
         import pyttsx3
@@ -123,8 +152,15 @@ class Pyttsx3TTSProvider:
                     engine.setProperty("voice", voice.id)
                     break
 
-        engine.setProperty("rate", self._config.tts_rate)
-        engine.setProperty("volume", max(0.0, min(1.0, self._config.tts_volume)))
+        # Apply mood-based rate and volume adjustments
+        params = MOOD_TTS_PARAMS.get(self._current_mood, MOOD_TTS_PARAMS["neutral"])
+        adjusted_rate = round(self._config.tts_rate * params["rate_scale"])
+        adjusted_volume = max(
+            0.0, min(1.0, self._config.tts_volume * params["volume_scale"])
+        )
+
+        engine.setProperty("rate", adjusted_rate)
+        engine.setProperty("volume", adjusted_volume)
 
         return engine
 
@@ -246,6 +282,18 @@ class KokoroTTSProvider:
         self._pipeline: object | None = None
         self._last_failure_time: float = 0.0
         self._retry_interval: float = 60.0
+        self._current_mood: str = "neutral"
+        self._last_warned_voice: str = ""
+
+    def set_mood(self, mood: str) -> None:
+        """Set the current mood for voice modulation.
+
+        Unknown moods fall back to "neutral".
+
+        Args:
+            mood: Mood string (e.g. "hostile", "sardonic", "content").
+        """
+        self._current_mood = mood if mood in MOOD_TTS_PARAMS else "neutral"
 
     def _initialize(self) -> None:
         """Lazy-load Kokoro pipeline on first use."""
@@ -318,9 +366,17 @@ class KokoroTTSProvider:
             # Reject anything else (stale pyttsx3 names, placeholders)
             # to avoid 404s downloading non-existent .pt files.
             if not re.match(r"^[a-z]{2}_[a-z]+$", voice):
-                logger.warning("Invalid Kokoro voice %r, falling back to af_heart", voice)
+                if voice != self._last_warned_voice:
+                    logger.warning("Invalid Kokoro voice %r, falling back to af_heart", voice)
+                    self._last_warned_voice = voice
                 voice = "af_heart"
-            speed = max(0.5, min(2.0, self._config.tts_speed))
+            # Apply mood-based speed adjustment
+            params = MOOD_TTS_PARAMS.get(
+                self._current_mood, MOOD_TTS_PARAMS["neutral"]
+            )
+            speed = max(
+                0.5, min(2.0, self._config.tts_speed * params["rate_scale"])
+            )
             text = self._clean_for_tts(text)
 
             if not text:
@@ -444,6 +500,10 @@ class RivaTTSProvider:
     for high-quality neural speech. Audio is returned as 44.1kHz 16-bit
     PCM wrapped in WAV format.
 
+    Includes a circuit breaker: after a connection failure, the provider
+    is marked unavailable for ``_retry_interval`` seconds before retrying.
+    This prevents flooding logs and wasting gRPC calls on a dead server.
+
     Requires: ``nvidia-riva-client`` and ``grpcio``.
     """
 
@@ -453,29 +513,91 @@ class RivaTTSProvider:
         self._init_error: str = ""
         self._auth: object | None = None
         self._service: object | None = None
+        self._last_failure_time: float = 0.0
+        self._retry_interval: float = 30.0  # seconds before retrying dead server
+        self._current_mood: str = "neutral"
         self._initialize()
 
+    def set_mood(self, mood: str) -> None:
+        """Set the current mood for voice modulation.
+
+        Unknown moods fall back to "neutral".
+
+        Args:
+            mood: Mood string (e.g. "hostile", "sardonic", "content").
+        """
+        self._current_mood = mood if mood in MOOD_TTS_PARAMS else "neutral"
+
+    @property
+    def _tts_uri(self) -> str:
+        """Resolve TTS gRPC URI — prefer dedicated NIM URI, fall back to shared."""
+        return self._config.riva_tts_uri or self._config.riva_uri
+
     def _initialize(self) -> None:
-        """Connect to the Riva TTS service."""
+        """Connect to the Riva TTS service and verify reachability."""
         try:
+            import grpc
             import riva.client
 
-            self._auth = riva.client.Auth(uri=self._config.riva_uri)
+            uri = self._tts_uri
+            self._auth = riva.client.Auth(uri=uri)
             self._service = riva.client.SpeechSynthesisService(self._auth)
+
+            # Verify the gRPC server is actually reachable. Without this,
+            # Auth() and Service() succeed even when the server is down
+            # (gRPC connects lazily), causing the factory to skip fallbacks.
+            channel = grpc.insecure_channel(uri)
+            try:
+                grpc.channel_ready_future(channel).result(timeout=2)
+            except grpc.FutureTimeoutError:
+                raise ConnectionError(
+                    f"Riva TTS server at {uri} not reachable"
+                )
+            finally:
+                channel.close()
+
             self._available = True
         except ImportError as exc:
             self._available = False
             self._init_error = f"nvidia-riva-client not installed: {exc}"
             logger.warning("Riva TTS unavailable: %s", self._init_error)
         except Exception as exc:
+            import time as _time
             self._available = False
             self._init_error = str(exc)
+            self._last_failure_time = _time.monotonic()
             logger.warning("Riva TTS init failed: %s", exc)
 
     @property
     def available(self) -> bool:
         """Whether the Riva TTS service is reachable."""
         return self._available
+
+    def check_health(self) -> bool:
+        """Non-blocking health check — ping Riva gRPC with short timeout.
+
+        Returns True if reachable, False otherwise. Updates ``_available``.
+        """
+        try:
+            import grpc
+
+            uri = self._tts_uri
+            channel = grpc.insecure_channel(uri)
+            try:
+                grpc.channel_ready_future(channel).result(timeout=1)
+                if not self._available:
+                    logger.info("Riva TTS reconnected at %s", uri)
+                self._available = True
+                self._last_failure_time = 0.0
+                return True
+            except grpc.FutureTimeoutError:
+                self._available = False
+                return False
+            finally:
+                channel.close()
+        except Exception:
+            self._available = False
+            return False
 
     @staticmethod
     def _pcm_to_wav(pcm_data: bytes, sample_rate: int = 16000) -> bytes:
@@ -489,23 +611,44 @@ class RivaTTSProvider:
         return buf.getvalue()
 
     def _synthesize_sync(self, text: str) -> bytes:
-        """Synchronous synthesis via Riva gRPC."""
+        """Synchronous synthesis via Riva gRPC.
+
+        Includes circuit breaker: if the last failure was recent, raises
+        immediately without hitting the network.
+        """
         if not self._available or self._service is None:
-            raise RuntimeError(f"Riva TTS unavailable: {self._init_error}")
+            # Circuit breaker: skip retry if last failure was recent
+            import time as _time
+            if self._last_failure_time and (
+                _time.monotonic() - self._last_failure_time < self._retry_interval
+            ):
+                raise RuntimeError(f"Riva TTS unavailable (circuit open): {self._init_error}")
+            # Try reconnecting
+            self._initialize()
+            if not self._available:
+                raise RuntimeError(f"Riva TTS unavailable: {self._init_error}")
 
         if not text or not text.strip():
             return self._pcm_to_wav(b"")
 
         import riva.client
 
-        resp = self._service.synthesize(
-            text=text.strip(),
-            voice_name=self._config.riva_tts_voice or None,
-            language_code=self._config.riva_tts_language,
-            encoding=riva.client.AudioEncoding.LINEAR_PCM,
-            sample_rate_hz=44100,
-        )
-        return self._pcm_to_wav(resp.audio, 44100)
+        try:
+            base_rate = self._config.riva_tts_sample_rate
+            resp = self._service.synthesize(
+                text=text.strip(),
+                voice_name=self._config.riva_tts_voice or None,
+                language_code=self._config.riva_tts_language,
+                encoding=riva.client.AudioEncoding.LINEAR_PCM,
+                sample_rate_hz=base_rate,
+            )
+            self._last_failure_time = 0.0  # Success — reset circuit breaker
+            return self._pcm_to_wav(resp.audio, base_rate)
+        except Exception:
+            import time as _time
+            self._last_failure_time = _time.monotonic()
+            self._available = False
+            raise
 
     def _speak_sync(self, text: str) -> None:
         """Synchronous speak — synthesize then play via sounddevice."""
@@ -559,7 +702,8 @@ class RivaTTSProvider:
 def create_tts_provider(config: AudioConfig | None = None) -> TTSProvider:
     """Create a TTS provider based on configuration.
 
-    Falls back to NoopTTSProvider if the configured provider is unavailable.
+    Each provider is independent — no cross-provider fallback chains.
+    If the configured provider is unavailable, returns NoopTTSProvider.
 
     Args:
         config: Audio configuration. Uses defaults if None.
@@ -578,28 +722,28 @@ def create_tts_provider(config: AudioConfig | None = None) -> TTSProvider:
     if provider_name == "riva":
         riva_provider = RivaTTSProvider(config)
         if riva_provider.available:
-            logger.info("TTS initialized: riva (uri=%s)", config.riva_uri)
+            tts_uri = config.riva_tts_uri or config.riva_uri
+            logger.info("TTS initialized: riva (uri=%s)", tts_uri)
             return riva_provider
-        logger.warning("Riva TTS unavailable, falling back to kokoro")
-        # Fall through to kokoro
+        logger.warning("Riva TTS unavailable — check server status")
+        return NoopTTSProvider()
 
-    if provider_name in ("kokoro", "riva"):
+    if provider_name == "kokoro":
         kokoro_provider = KokoroTTSProvider(config)
-        # Trigger lazy init to check availability
         kokoro_provider._initialize()
         if kokoro_provider.available:
             logger.info("TTS initialized: kokoro (voice=%s)", config.tts_voice or "af_heart")
             return kokoro_provider
-        logger.warning("Kokoro unavailable, falling back to pyttsx3")
-        # Fall through to pyttsx3
+        logger.warning("Kokoro TTS unavailable")
+        return NoopTTSProvider()
 
-    if provider_name in ("pyttsx3", "kokoro", "riva"):
+    if provider_name == "pyttsx3":
         pyttsx3_provider = Pyttsx3TTSProvider(config)
         if pyttsx3_provider.available:
             logger.info("TTS initialized: pyttsx3")
             return pyttsx3_provider
-        logger.warning("pyttsx3 unavailable, falling back to silent mode")
+        logger.warning("pyttsx3 unavailable")
         return NoopTTSProvider()
 
-    logger.warning("Unknown TTS provider %r, falling back to silent mode", provider_name)
+    logger.warning("Unknown TTS provider %r", provider_name)
     return NoopTTSProvider()

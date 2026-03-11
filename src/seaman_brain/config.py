@@ -38,6 +38,17 @@ class LLMConfig(BaseModel):
     max_response_tokens: int = 4096  # Ollama num_predict (output token limit)
     base_url: str = "http://localhost:11434"
 
+    # Cloud routing settings
+    routing_mode: str = "local"  # "local", "hybrid", or "cloud"
+    cloud_provider: str = ""  # "anthropic" or "openai"
+    cloud_model: str = ""  # e.g. "claude-sonnet-4-20250514" or "gpt-4o"
+    cloud_api_key: str = ""  # API key (reads env var if empty)
+
+    # Anthropic Claude superpowers
+    enable_prompt_caching: bool = True  # Cache stable system prompt prefix
+    extended_thinking: bool = False  # Enable extended thinking for Anthropic
+    thinking_budget: int = 4096  # Token budget for extended thinking
+
 
 class EmbeddingsConfig(BaseModel):
     """Embedding model configuration."""
@@ -117,14 +128,18 @@ class AudioConfig(BaseModel):
     audio_output_device: str = ""  # empty = system default
     audio_input_device: str = ""  # empty = system default
     stt_model: str = "large-v3-turbo"  # Faster-Whisper model size
-    stt_silence_threshold: float = 0.01  # RMS below this = silence
-    stt_silence_duration: float = 1.5  # seconds of silence before auto-submit
+    stt_silence_threshold: float = 0.03  # RMS below this = silence
+    stt_silence_duration: float = 1.0  # seconds of silence before auto-submit
 
     # Riva settings
-    riva_uri: str = "localhost:50051"
-    riva_tts_voice: str = "English-US.Male-1"
+    riva_uri: str = "localhost:50051"  # ASR (Quickstart) gRPC endpoint
+    riva_tts_uri: str = ""  # TTS (NIM) gRPC endpoint; empty = use riva_uri
+    riva_tts_voice: str = "Magpie-Multilingual.EN-US.Jason"
     riva_tts_language: str = "en-US"
+    riva_tts_sample_rate: int = 22050  # Magpie native rate
     riva_asr_language: str = "en-US"
+    riva_auto_start: bool = False  # Auto-start Riva Docker via WSL2 on launch
+    riva_wsl_distro: str = "Ubuntu-22.04"  # WSL2 distro with Docker + Riva
 
     # AEC / full-duplex settings
     aec_enabled: bool = False
@@ -132,6 +147,7 @@ class AudioConfig(BaseModel):
     aec_filter_length: int = 2048  # NLMS taps
     aec_step_size: float = 0.01  # NLMS learning rate
     barge_in_enabled: bool = False
+    barge_in_debounce_frames: int = 3  # consecutive speech frames before barge-in fires
 
     @model_validator(mode="after")
     def _sanitize_kokoro_voice(self) -> AudioConfig:
@@ -325,12 +341,24 @@ def save_user_settings(config: SeamanConfig) -> None:
         _pending_save_timer.start()
 
 
+def flush_pending_save() -> None:
+    """Immediately flush any pending debounced save to disk.
+
+    Call this during shutdown to ensure settings aren't lost when the
+    debounce timer hasn't fired yet. Safe to call even when nothing is
+    pending — it simply no-ops.
+    """
+    _flush_save()
+
+
 def _flush_save() -> None:
     """Actually write the pending config to disk (called by debounce timer)."""
     global _pending_save_timer, _pending_save_config
 
     with _save_lock:
         config = _pending_save_config
+        if _pending_save_timer is not None:
+            _pending_save_timer.cancel()
         _pending_save_timer = None
         _pending_save_config = None
 
@@ -350,6 +378,9 @@ def _do_save(config: SeamanConfig) -> None:
     lines.append("[llm]")
     lines.append(f'model = "{config.llm.model}"')
     lines.append(f"temperature = {config.llm.temperature}")
+    lines.append(f'routing_mode = "{config.llm.routing_mode}"')
+    lines.append(f'cloud_provider = "{config.llm.cloud_provider}"')
+    lines.append(f'cloud_model = "{config.llm.cloud_model}"')
     lines.append("")
 
     # Personality traits
@@ -375,6 +406,8 @@ def _do_save(config: SeamanConfig) -> None:
     lines.append(f'audio_input_device = "{config.audio.audio_input_device}"')
     lines.append(f"aec_enabled = {str(config.audio.aec_enabled).lower()}")
     lines.append(f"barge_in_enabled = {str(config.audio.barge_in_enabled).lower()}")
+    lines.append(f"riva_auto_start = {str(config.audio.riva_auto_start).lower()}")
+    lines.append(f'riva_wsl_distro = "{config.audio.riva_wsl_distro}"')
     lines.append("")
 
     # Vision

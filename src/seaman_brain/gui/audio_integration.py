@@ -226,7 +226,7 @@ class PygameAudioBridge:
         """Whether ambient sound is currently looping."""
         return self._ambient_playing
 
-    def play_voice(self, text: str) -> None:
+    def play_voice(self, text: str, mood: str = "neutral") -> None:
         """Play creature voice via TTS.
 
         Prefers AudioManager.speak() which uses pyttsx3's native audio output
@@ -235,11 +235,15 @@ class PygameAudioBridge:
 
         Args:
             text: The text for the creature to speak.
+            mood: Creature mood string for voice modulation (e.g. "hostile").
         """
         if not text or not text.strip():
             return
         if self._audio_manager is None or self._shutting_down:
             return
+
+        # Set mood on the audio manager so TTS provider adjusts voice
+        self._audio_manager.set_mood(mood)
 
         if self._async_loop is not None:
             try:

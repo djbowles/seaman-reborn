@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+from contextlib import contextmanager
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -517,24 +518,10 @@ class TestFasterWhisperSTTFactory:
             provider = create_stt_provider(config)
             assert isinstance(provider, FasterWhisperSTTProvider)
 
-    def test_factory_falls_back_to_speech_recognition(self):
-        """Factory falls back to speech_recognition when faster-whisper unavailable."""
+    def test_factory_faster_whisper_unavailable_returns_noop(self):
+        """Factory returns noop when faster-whisper unavailable (no fallback chain)."""
         config = AudioConfig(stt_enabled=True, stt_provider="faster_whisper")
-        mock_sr_mod, _ = _mock_sr()
-        with patch.dict(sys.modules, {
-            "faster_whisper": None,
-            "speech_recognition": mock_sr_mod,
-        }):
-            provider = create_stt_provider(config)
-            assert isinstance(provider, SpeechRecognitionSTTProvider)
-
-    def test_factory_falls_back_to_noop(self):
-        """Factory falls back to noop when all providers unavailable."""
-        config = AudioConfig(stt_enabled=True, stt_provider="faster_whisper")
-        with patch.dict(sys.modules, {
-            "faster_whisper": None,
-            "speech_recognition": None,
-        }):
+        with patch.dict(sys.modules, {"faster_whisper": None}):
             provider = create_stt_provider(config)
             assert isinstance(provider, NoopSTTProvider)
 
@@ -635,6 +622,19 @@ class TestFasterWhisperTranscribe:
 # ─── RivaSTTProvider ──────────────────────────────────────────────
 
 
+@contextmanager
+def _grpc_reachable():
+    """Mock gRPC connectivity check to report server as reachable."""
+    mock_channel = MagicMock()
+    mock_future = MagicMock()
+    mock_future.result.return_value = None
+    with (
+        patch("grpc.insecure_channel", return_value=mock_channel),
+        patch("grpc.channel_ready_future", return_value=mock_future),
+    ):
+        yield
+
+
 def _mock_riva_stt():
     """Create mock riva.client module for STT tests."""
     mock_riva = MagicMock()
@@ -663,7 +663,10 @@ class TestRivaSTTProviderInit:
 
     def test_init_success(self):
         mock_riva, mock_client, _ = _mock_riva_stt()
-        with patch.dict(sys.modules, {"riva": mock_riva, "riva.client": mock_client}):
+        with (
+            patch.dict(sys.modules, {"riva": mock_riva, "riva.client": mock_client}),
+            _grpc_reachable(),
+        ):
             provider = RivaSTTProvider()
             assert provider.available is True
 
@@ -679,6 +682,22 @@ class TestRivaSTTProviderInit:
         with patch.dict(sys.modules, {"riva": mock_riva, "riva.client": mock_client}):
             provider = RivaSTTProvider()
             assert provider.available is False
+
+    def test_init_grpc_unreachable(self):
+        """gRPC connectivity timeout marks provider unavailable."""
+        import grpc
+
+        mock_riva, mock_client, _ = _mock_riva_stt()
+        mock_future = MagicMock()
+        mock_future.result.side_effect = grpc.FutureTimeoutError()
+        with (
+            patch.dict(sys.modules, {"riva": mock_riva, "riva.client": mock_client}),
+            patch("grpc.insecure_channel", return_value=MagicMock()),
+            patch("grpc.channel_ready_future", return_value=mock_future),
+        ):
+            provider = RivaSTTProvider()
+            assert provider.available is False
+            assert "not reachable" in provider._init_error
 
     def test_set_input_device(self):
         """set_input_device stores device name."""
@@ -704,7 +723,10 @@ class TestRivaSTTProviderTranscribe:
         mock_resp.results = [mock_result]
         mock_service.offline_recognize.return_value = mock_resp
 
-        with patch.dict(sys.modules, {"riva": mock_riva, "riva.client": mock_client}):
+        with (
+            patch.dict(sys.modules, {"riva": mock_riva, "riva.client": mock_client}),
+            _grpc_reachable(),
+        ):
             provider = RivaSTTProvider()
             result = await provider.transcribe(b"\x00\x00" * 1600)
             assert result == "hello riva"
@@ -721,7 +743,10 @@ class TestRivaSTTProviderTranscribe:
         mock_riva, mock_client, mock_service = _mock_riva_stt()
         mock_service.offline_recognize.side_effect = RuntimeError("gRPC error")
 
-        with patch.dict(sys.modules, {"riva": mock_riva, "riva.client": mock_client}):
+        with (
+            patch.dict(sys.modules, {"riva": mock_riva, "riva.client": mock_client}),
+            _grpc_reachable(),
+        ):
             provider = RivaSTTProvider()
             result = await provider.transcribe(b"\x00\x00" * 100)
             assert result == ""
@@ -733,37 +758,18 @@ class TestRivaSTTFactory:
     def test_factory_creates_riva_when_available(self):
         config = AudioConfig(stt_enabled=True, stt_provider="riva")
         mock_riva, mock_client, _ = _mock_riva_stt()
-        with patch.dict(sys.modules, {"riva": mock_riva, "riva.client": mock_client}):
+        with (
+            patch.dict(sys.modules, {"riva": mock_riva, "riva.client": mock_client}),
+            _grpc_reachable(),
+        ):
             provider = create_stt_provider(config)
             assert isinstance(provider, RivaSTTProvider)
 
-    def test_factory_riva_falls_back_to_faster_whisper(self):
-        config = AudioConfig(stt_enabled=True, stt_provider="riva")
-        mock_fw, _ = _mock_faster_whisper()
-        with patch.dict(sys.modules, {
-            "riva": None, "riva.client": None,
-            "faster_whisper": mock_fw,
-        }):
-            provider = create_stt_provider(config)
-            assert isinstance(provider, FasterWhisperSTTProvider)
-
-    def test_factory_riva_falls_back_to_speech_recognition(self):
-        config = AudioConfig(stt_enabled=True, stt_provider="riva")
-        mock_sr_mod, _ = _mock_sr()
-        with patch.dict(sys.modules, {
-            "riva": None, "riva.client": None,
-            "faster_whisper": None,
-            "speech_recognition": mock_sr_mod,
-        }):
-            provider = create_stt_provider(config)
-            assert isinstance(provider, SpeechRecognitionSTTProvider)
-
-    def test_factory_riva_falls_back_to_noop(self):
+    def test_factory_riva_unavailable_returns_noop(self):
+        """Factory returns noop when Riva unavailable (no fallback chain)."""
         config = AudioConfig(stt_enabled=True, stt_provider="riva")
         with patch.dict(sys.modules, {
             "riva": None, "riva.client": None,
-            "faster_whisper": None,
-            "speech_recognition": None,
         }):
             provider = create_stt_provider(config)
             assert isinstance(provider, NoopSTTProvider)

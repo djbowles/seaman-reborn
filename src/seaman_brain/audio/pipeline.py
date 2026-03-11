@@ -14,6 +14,7 @@ from __future__ import annotations
 import io
 import logging
 import threading
+import time
 import wave
 from collections import deque
 from collections.abc import Callable
@@ -26,8 +27,10 @@ from seaman_brain.config import AudioConfig
 
 logger = logging.getLogger(__name__)
 
-_SILENCE_FRAMES_DEFAULT = 150  # 1.5s at 10ms/frame
-_ECHO_COOLDOWN_FRAMES = 50  # 0.5s at 10ms/frame
+_SILENCE_FRAMES_DEFAULT = 100  # 1.0s at 10ms/frame
+_ECHO_COOLDOWN_FRAMES = 30  # 0.3s at 10ms/frame
+_TTS_PLAYING_TIMEOUT = 30.0  # seconds — max plausible TTS duration
+_DIAG_INTERVAL = 30.0  # seconds between diagnostic log lines
 
 
 class AudioIOPipeline:
@@ -73,7 +76,9 @@ class AudioIOPipeline:
 
         # TTS playback state (for barge-in detection)
         self._tts_playing = False
+        self._tts_started_at: float = 0.0
         self._barge_in_fired = False
+        self._barge_in_count = 0
 
         # Utterance segmentation
         silence_frames = int(config.stt_silence_duration / 0.01)  # 10ms per frame
@@ -87,6 +92,13 @@ class AudioIOPipeline:
 
         # RMS fallback threshold for VAD
         self._rms_threshold = config.stt_silence_threshold
+
+        # Diagnostics
+        self._diag_frame_count: int = 0
+        self._diag_speech_count: int = 0
+        self._diag_utterance_count: int = 0
+        self._diag_suppressed_count: int = 0
+        self._diag_last_log: float = 0.0
 
     def _init_vad(self) -> None:
         """Try to initialize webrtcvad."""
@@ -102,12 +114,35 @@ class AudioIOPipeline:
             self._vad_available = False
             logger.warning("webrtcvad init failed: %s", exc)
 
+    @property
+    def is_alive(self) -> bool:
+        """Whether the pipeline thread is running and processing frames."""
+        return (
+            self._running
+            and self._thread is not None
+            and self._thread.is_alive()
+        )
+
+    def get_diagnostics(self) -> dict[str, int | bool]:
+        """Return pipeline health metrics for external monitoring."""
+        return {
+            "alive": self.is_alive,
+            "frames_processed": self._diag_frame_count,
+            "speech_frames": self._diag_speech_count,
+            "utterances_emitted": self._diag_utterance_count,
+            "suppressed_frames": self._diag_suppressed_count,
+            "tts_playing": self._tts_playing,
+            "ref_queue_depth": len(self._ref_queue),
+            "echo_cooldown": self._echo_cooldown_remaining,
+        }
+
     def start(self) -> None:
         """Open continuous microphone input stream in a daemon thread."""
         if self._running:
             return
 
         self._running = True
+        self._diag_last_log = time.monotonic()
         self._thread = threading.Thread(
             target=self._processing_loop,
             name="audio-pipeline",
@@ -136,23 +171,37 @@ class AudioIOPipeline:
         Resamples to 16kHz if needed, then chops into FRAME_SAMPLES-sized
         chunks and enqueues them for the processing loop.
 
+        Decode and resample happen OUTSIDE the lock so the mic processing
+        thread is not blocked by potentially slow scipy resampling.
+
         Args:
             wav_bytes: Raw WAV audio bytes from TTS synthesis.
         """
         try:
+            # Decode and resample outside the lock (can be slow with scipy)
             pcm, src_rate = self._decode_wav(wav_bytes)
             if src_rate != SAMPLE_RATE:
                 pcm = self._resample(pcm, src_rate, SAMPLE_RATE)
 
-            # Chop into frames
+            # Chop into frames (outside lock — pure computation)
             frames = []
             for i in range(0, len(pcm) - FRAME_SAMPLES + 1, FRAME_SAMPLES):
                 frames.append(pcm[i:i + FRAME_SAMPLES].astype(np.float64))
 
+            # Only hold the lock for the queue update
             with self._ref_lock:
-                self._ref_queue.extend(frames)
-                self._tts_playing = True
-                self._barge_in_fired = False
+                if frames:
+                    self._ref_queue.extend(frames)
+                    self._tts_playing = True
+                    self._tts_started_at = time.monotonic()
+                    self._barge_in_fired = False
+                else:
+                    logger.warning(
+                        "feed_reference: WAV too short for any frames "
+                        "(pcm_len=%d, frame_size=%d), skipping",
+                        len(pcm), FRAME_SAMPLES,
+                    )
+                    return
 
             # Clear any partial speech buffer to prevent mixed utterances
             self._reset_segmentation()
@@ -166,6 +215,7 @@ class AudioIOPipeline:
             self._ref_queue.clear()
             self._tts_playing = False
             self._barge_in_fired = False
+            self._barge_in_count = 0
 
     @staticmethod
     def _decode_wav(wav_bytes: bytes) -> tuple[np.ndarray, int]:
@@ -224,9 +274,31 @@ class AudioIOPipeline:
         try:
             import sounddevice as sd
 
-            # Verify a valid default input device exists before opening stream
+            # Resolve configured input device name to a sounddevice index
+            device_index = None
+            device_name = self._config.audio_input_device
+            if device_name and device_name != "System Default":
+                devices = sd.query_devices()
+                for i, dev in enumerate(devices):
+                    if (
+                        device_name in dev["name"]
+                        and dev["max_input_channels"] > 0
+                    ):
+                        device_index = i
+                        break
+                if device_index is None:
+                    logger.warning(
+                        "Configured input device %r not found in %d devices",
+                        device_name,
+                        len(devices),
+                    )
+
+            # Verify a valid input device exists before opening stream
             try:
-                sd.query_devices(kind="input")
+                sd.query_devices(
+                    device_index if device_index is not None else None,
+                    kind="input",
+                )
             except sd.PortAudioError as exc:
                 logger.warning("No valid input device found: %s", exc)
                 return
@@ -236,6 +308,7 @@ class AudioIOPipeline:
                 channels=1,
                 dtype="float32",
                 blocksize=FRAME_SAMPLES,
+                device=device_index,
             )
             self._stream.start()
 
@@ -256,19 +329,43 @@ class AudioIOPipeline:
                     # VAD
                     is_speech = self._detect_speech(cleaned)
 
-                    # Barge-in detection
+                    # Barge-in detection with debounce
                     if (
                         is_speech
                         and self._tts_playing
                         and self._config.barge_in_enabled
                         and not self._barge_in_fired
                     ):
-                        self._barge_in_fired = True
-                        if self._on_barge_in is not None:
-                            self._on_barge_in()
+                        self._barge_in_count += 1
+                        if self._barge_in_count >= self._config.barge_in_debounce_frames:
+                            self._barge_in_fired = True
+                            if self._on_barge_in is not None:
+                                self._on_barge_in()
+                    elif not is_speech:
+                        self._barge_in_count = 0
 
                     # Utterance segmentation
                     self._segment_utterance(cleaned, is_speech)
+
+                    # Periodic diagnostics
+                    self._diag_frame_count += 1
+                    if is_speech:
+                        self._diag_speech_count += 1
+                    now = time.monotonic()
+                    if now - self._diag_last_log >= _DIAG_INTERVAL:
+                        self._diag_last_log = now
+                        logger.info(
+                            "Pipeline: frames=%d speech=%d "
+                            "utterances=%d suppressed=%d "
+                            "tts_playing=%s ref_q=%d cooldown=%d",
+                            self._diag_frame_count,
+                            self._diag_speech_count,
+                            self._diag_utterance_count,
+                            self._diag_suppressed_count,
+                            self._tts_playing,
+                            len(self._ref_queue),
+                            self._echo_cooldown_remaining,
+                        )
 
                 except Exception as exc:
                     if self._running:
@@ -293,6 +390,19 @@ class AudioIOPipeline:
                     self._tts_playing = False
                     self._echo_cooldown_remaining = _ECHO_COOLDOWN_FRAMES
                 return frame
+            # Safety valve: force-reset if _tts_playing stuck with empty queue
+            if self._tts_playing:
+                elapsed = time.monotonic() - self._tts_started_at
+                if elapsed > _TTS_PLAYING_TIMEOUT:
+                    logger.warning(
+                        "Pipeline: _tts_playing stuck True for %.1fs "
+                        "with empty ref queue — force-resetting",
+                        elapsed,
+                    )
+                    self._tts_playing = False
+                    self._echo_cooldown_remaining = _ECHO_COOLDOWN_FRAMES
+                    if self._on_barge_in is not None:
+                        self._on_barge_in()
         return np.zeros(FRAME_SAMPLES, dtype=np.float64)
 
     def _detect_speech(self, frame: np.ndarray) -> bool:
@@ -316,11 +426,15 @@ class AudioIOPipeline:
         own speech from being transcribed back as user input.
         """
         # Suppress echo: skip buffering during TTS playback + cooldown
+        # Read shared state under lock for thread safety
         if not self._config.barge_in_enabled:
-            if self._tts_playing:
-                return
-            if self._echo_cooldown_remaining > 0:
-                self._echo_cooldown_remaining -= 1
+            with self._ref_lock:
+                playing = self._tts_playing
+                cooldown = self._echo_cooldown_remaining
+                if cooldown > 0:
+                    self._echo_cooldown_remaining = cooldown - 1
+            if playing or cooldown > 0:
+                self._diag_suppressed_count += 1
                 return
 
         if is_speech:
@@ -340,6 +454,7 @@ class AudioIOPipeline:
             self._reset_segmentation()
             return
 
+        self._diag_utterance_count += 1
         audio = np.concatenate(self._speech_buffer)
         # Convert to 16-bit PCM bytes
         pcm_int16 = (audio * 32768.0).clip(-32768, 32767).astype(np.int16)
@@ -358,3 +473,4 @@ class AudioIOPipeline:
         self._speech_buffer.clear()
         self._silence_count = 0
         self._in_utterance = False
+        self._barge_in_count = 0
