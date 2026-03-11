@@ -2,7 +2,20 @@
 
 ## Project Status
 
-The Python "brain" backend is **feature-complete**: 2678 tests passing, ruff clean, all 52 user stories implemented across 14 subpackages (llm, personality, memory, creature, conversation, cli, audio, environment, needs, behavior, gui, api, vision). LLM-initiated vision via tool-use/function-calling is wired end-to-end.
+The Python "brain" backend is **feature-complete**: 2838+ tests passing, ruff clean, all 52 user stories implemented across 14 subpackages (llm, personality, memory, creature, conversation, cli, audio, environment, needs, behavior, gui, api, vision). LLM-initiated vision via tool-use/function-calling is wired end-to-end. Full NVIDIA Riva TTS+STT working on RTX 5090 via NIM Magpie 1.7.0 (TTS) + Quickstart 2.19.0 (ASR). Legacy fallback chains removed — each audio provider stands alone (no silent degradation to lesser providers). Anthropic Claude tool use + prompt caching + extended thinking wired end-to-end.
+
+### GUI Rewrite: Modern Minimal (IN PROGRESS)
+
+**Status:** Design spec and implementation plan complete. Execution not yet started.
+
+The current Pygame GUI has systemic visual problems (terminal-debug aesthetic, broken settings panel, tiny creature, barren tank, cryptic status bars). A full GUI rewrite was designed collaboratively:
+
+- **Design spec**: `docs/superpowers/specs/2026-03-10-gui-rewrite-modern-minimal-design.md`
+- **Implementation plan**: `docs/superpowers/plans/2026-03-10-gui-rewrite-modern-minimal.md`
+- **Visual direction**: Modern Minimal — dark void (#08080f), creature glow auras (mood-reactive), glassmorphism chat overlay, thin left sidebar with need/action tiles, slide-out settings drawer
+- **Scope**: 22 TDD tasks across 10 chunks. Rewrites 14 GUI files (~10.6K lines), creates 6 new modules (theme, layout, game_systems, scene_manager, render_engine, input_handler), drops pygame_gui dependency
+- **Backend unchanged**: All conversation, audio, creature, needs, behavior systems untouched
+- **To execute**: Use `superpowers:subagent-driven-development` or `superpowers:executing-plans` skill with the plan document. Start at Chunk 1, Task 1 (theme.py).
 
 - **Repo**: https://github.com/djbowles/seaman-reborn (private)
 - **Branch**: `ralph/ai-brain-core` (all work), `main` (base)
@@ -13,7 +26,7 @@ The Python "brain" backend is **feature-complete**: 2678 tests passing, ruff cle
 
 | Subsystem | Status | Key Files |
 |-----------|--------|-----------|
-| LLM inference (Ollama, Anthropic, OpenAI) | Done | `llm/` — factory pattern, streaming support |
+| LLM inference (Ollama, Anthropic, OpenAI) | Done | `llm/` — factory, streaming, router, Anthropic tool use + prompt caching + extended thinking |
 | 5-stage personality evolution | Done | `personality/` — traits, constraints, prompt_builder |
 | Hybrid RAG memory (episodic + semantic) | Done | `memory/` — LanceDB vectors, embedding pipeline |
 | Creature state + genome + genetics | Done | `creature/` — state, evolution, genome, lineage |
@@ -21,8 +34,8 @@ The Python "brain" backend is **feature-complete**: 2678 tests passing, ruff cle
 | Autonomous behavior + mood engine | Done | `behavior/` — mood calculation, idle behaviors |
 | Environment simulation | Done | `environment/` — real-time clock, tank state |
 | Conversation orchestration | Done | `conversation/` — context assembly, full pipeline |
-| TTS/STT audio + full-duplex AEC | Done | `audio/` — pyttsx3/Kokoro/Riva TTS, SR/Faster-Whisper/Riva STT, NLMS AEC pipeline |
-| Pygame GUI (playable) | Done | `gui/` — tank, sprites, chat, HUD, action bar |
+| TTS/STT audio + full-duplex AEC | Done | `audio/` — pyttsx3/Kokoro/Riva TTS, SR/Faster-Whisper/Riva STT, NLMS AEC pipeline, barge-in debounce |
+| Pygame GUI | **Rewrite planned** | `gui/` — see "GUI Rewrite: Modern Minimal" above. Plan + spec in `docs/superpowers/` |
 | **FastAPI WebSocket bridge** | **Done** | `api/` — **this is the UE5 connection point** |
 
 ## WebSocket API Contract (for UE5 Client)
@@ -926,3 +939,369 @@ Fixed critical bug: creature's TTS output was picked up by the mic and transcrib
 | Barge-in bypass | When `barge_in_enabled=True`, suppression is skipped so user can still interrupt |
 
 **4 new tests** in `tests/test_audio/test_pipeline.py` — 2678 total, all passing.
+
+## Riva Resilience + Barge-In Crash Fix (2026-03-08)
+
+Thorough investigation and hardening of the Riva/audio fallback pipeline. Ollama GPU detection was also broken (RTX 5090 Blackwell not recognized by Ollama 0.17.5).
+
+### Ollama GPU Fix
+
+Ollama 0.17.5 couldn't detect the RTX 5090 (Blackwell, compute capability 12.0). All models ran on **100% CPU** — inference was ~100x slower. Updated to Ollama 0.17.6 via `winget upgrade Ollama.Ollama`, which restored GPU detection. Server log confirmed: `total_vram="0 B"` → `100% GPU`.
+
+### Riva gRPC Connectivity Check (tts.py, stt.py)
+
+**Root cause**: `RivaTTSProvider._initialize()` and `RivaSTTProvider._initialize()` created `riva.client.Auth()` and service objects, which succeed even when the Riva server is down (gRPC connects lazily). This set `available=True`, causing the factory to select Riva and **skip the entire fallback chain**. Every subsequent TTS/STT call failed with `UNAVAILABLE: Connection refused`.
+
+**Fix**: Both `_initialize()` methods now perform a 2-second gRPC channel connectivity check (`grpc.insecure_channel` + `grpc.channel_ready_future`) before marking `available=True`. If the server is unreachable, `available=False` and the factory falls through to Kokoro/Faster-Whisper/pyttsx3/SpeechRecognition as designed.
+
+### TTS Fallback Chain Improvement (manager.py)
+
+`_try_fallback_tts()` previously jumped straight to pyttsx3 after 3 failures. Now walks the full chain: **Kokoro → pyttsx3**. Connection errors (gRPC `UNAVAILABLE`) trigger **immediate** fallback (threshold=1) instead of waiting for 3 failures.
+
+### STT Runtime Fallback (manager.py)
+
+**Previously missing**: STT had zero runtime fallback. If Riva STT was selected and went down, every listen/transcribe call silently returned empty strings forever.
+
+**Added**: `_try_fallback_stt()` mirroring the TTS pattern — tracks `_stt_fail_count`, falls back through **Faster-Whisper → SpeechRecognition**. Connection errors trigger immediate fallback.
+
+### SpeechRecognition `transcribe()` (stt.py)
+
+The full-duplex pipeline duck-types `transcribe(pcm_bytes)` on the STT provider. `SpeechRecognitionSTTProvider` lacked this method, so when it was the fallback STT in AEC mode, **all pipeline utterances were silently dropped**. Added `_transcribe_sync()` and `transcribe()` methods that convert PCM bytes to `AudioData` and run the configured recognizer.
+
+### Barge-In Crash Fix (manager.py)
+
+**Symptom**: Game crashed hard (no traceback, no shutdown log) when barge-in was enabled and the creature was speaking.
+
+**Three bugs fixed**:
+
+| Bug | Details | Fix |
+|-----|---------|-----|
+| **`asyncio.Event` cross-thread** | `barge_in_event` was `asyncio.Event`, accessed from pipeline thread (`.set()`) and main GUI thread (`.is_set()`, `.clear()`). Not designed for cross-thread use. | Changed to `threading.Event` |
+| **sounddevice race** | `cancel_tts()` called `sd.stop()` from main thread while `_play_wav_sd()` had `sd.play()`+`sd.wait()` blocking in executor. PortAudio WASAPI crash on Windows. | Added `_sd_lock` (threading.Lock) + `_sd_cancelled` (threading.Event). Playback acquires lock for `sd.play()`, releases before `sd.wait()`. Cancel signals cancellation, acquires lock, then calls `sd.stop()`. |
+| **Kokoro voice name spam** | Riva voice `"Magpie-Multilingual.EN-US.Male.Male-1"` persisted in config after provider swap, causing a warning on every TTS call. | Added `_normalize_voice_for_provider()` — resets incompatible voice names on provider swap/fallback (Kokoro→`af_heart`, pyttsx3→`""`) |
+
+### Files Changed
+
+| File | Changes |
+|------|---------|
+| `audio/tts.py` | Riva gRPC connectivity check in `_initialize()` |
+| `audio/stt.py` | Riva gRPC connectivity check; `SpeechRecognitionSTTProvider.transcribe()` |
+| `audio/manager.py` | `threading.Event` for barge-in; `_sd_lock`/`_sd_cancelled` for sounddevice safety; `_is_connection_error()` helper; `_try_fallback_stt()`; improved `_try_fallback_tts()` with Kokoro step; `_normalize_voice_for_provider()` |
+| `tests/test_audio/test_tts.py` | `_grpc_reachable()` mock helper; `test_init_grpc_unreachable` |
+| `tests/test_audio/test_stt.py` | `_grpc_reachable()` mock helper; `test_init_grpc_unreachable` |
+| `tests/test_audio/test_manager.py` | Updated fallback test for Kokoro-first chain |
+
+**15 new tests** — 2693 total at that commit, ruff clean.
+
+### Confirmed Working (from runtime log)
+
+- Riva connectivity check detected server down, fell through to Kokoro TTS + SpeechRecognition STT
+- Full-duplex pipeline + AEC captured speech and transcribed via Google API
+- LLM inference on GPU (100% GPU after Ollama update)
+- Ollama qwen3:8b: ~22ms for 5 tokens (was ~1.7s on CPU)
+
+### Known Limitations
+
+- **Riva TTS broken on RTX 5090**: FastPitch ensemble "Streaming timed out" during inference. All TTS models removed from `riva-model-repo` volume. Config: `tts_provider=kokoro`, `stt_provider=riva`. Riva used for ASR only.
+- **`OLLAMA_CONTEXT_LENGTH=65536`**: Set in user environment, exceeds qwen3:8b's 40960 training max. The project config `context_window=4096` overrides at the API level but Ollama still warns.
+- **Barge-in echo**: When `barge_in_enabled=True`, pipeline suppression is bypassed (by design). TTS audio leaking through the mic may be captured and transcribed. Full AEC cancellation depends on NLMS filter convergence.
+
+---
+
+## Pipeline Reliability & Conversational Flow (2026-03-09)
+
+### STT "Only First Statement Works" — Root Cause Diagnosis
+
+Runtime log analysis reveals **two distinct failure modes** that appear as "STT dies after first statement":
+
+**Session 1 failure (no mic):** Portacapture X6 not connected at startup. `SpeechRecognitionSTTProvider._initialize()` fails with "No Default Input Device Available" → falls to `NoopSTTProvider`. Pipeline also can't open `sd.InputStream` → thread exits immediately. The `check_pipeline_health()` auto-restart (introduced this session) then created an **infinite restart loop** — hundreds of restart/die cycles per second, spamming the log.
+
+**Session 2 behavior (mic available):** Pipeline IS working correctly:
+- `frames=14968, speech=5252, utterances=5, suppressed=7468` over 2.5 minutes
+- 1 of 5 utterances transcribed successfully (Google Speech API)
+- 4 of 5 returned empty (noise/unintelligible — logged at DEBUG, invisible)
+- **Suppression ratio: 50%** — creature talks non-stop (feed/drain reaction remarks), mic suppressed the entire time with `barge_in_enabled=false`
+
+The pipeline captures speech between TTS playback windows. The "only first statement" perception comes from:
+1. User speaks → STT captures and transcribes → creature responds via TTS
+2. User interacts (feed/drain/tap) → each triggers autonomous reaction remark → each remark triggers TTS
+3. TTS suppresses mic for entire duration of each remark (correct with barge_in=false)
+4. Between remarks, gaps are too short for user speech to register
+5. User gives up before the creature finishes its monologue
+
+### Fixes Applied
+
+| Fix | File | Details |
+|-----|------|---------|
+| **Auto-restart backoff** | `manager.py` | `check_pipeline_health()` now uses exponential backoff (2s, 4s, 8s) with max 3 retries, then 60s long backoff. Prevents infinite restart loops when device is unavailable. Resets on successful restart. |
+| **Device not-found logging** | `pipeline.py` | Logs configured device name and device count when name lookup fails (was silently falling through to default) |
+| **Empty transcription visibility** | `manager.py` | "Pipeline STT returned empty" upgraded from DEBUG to INFO — now visible in logs to diagnose why utterances don't produce results |
+| **`_tts_playing` stuck-True guard** | `pipeline.py` | `feed_reference()` only sets `_tts_playing=True` when frames > 0. Zero-frame WAV (too short to chop) no longer permanently kills the pipeline. |
+| **30s timeout safety valve** | `pipeline.py` | `_get_ref_frame()` force-resets `_tts_playing` if stuck True with empty ref queue for >30 seconds |
+| **Diagnostic logging** | `pipeline.py` | Every 30s at INFO: frames processed, speech frames, utterances emitted, suppressed frames, tts_playing state, ref queue depth, echo cooldown |
+| **Pipeline auto-restart** | `manager.py` | `check_pipeline_health()` called per-frame from game loop. Detects dead pipeline thread, recreates and restarts with backoff. |
+| **STT fallback retry** | `manager.py` | `_transcribe_and_enqueue()` retries failed utterance with the new fallback provider instead of silently dropping it |
+| **Settings persistence** | `config.py`, `game_loop.py`, `conftest.py` | `flush_pending_save()` called on shutdown. Test suite isolated from real `user_settings.toml` via autouse fixture. |
+| **Silence duration** | `config.py`, `pipeline.py` | Default 1.5s → 1.0s (100 frames) for snappier turn-taking |
+| **Echo cooldown** | `pipeline.py`, `manager.py` | Default 0.5s → 0.3s (30 frames) — AEC handles echo removal, cooldown is just safety margin |
+| **STT debounce** | `game_loop.py` | Default 0.5s → 0.2s — pipeline already handles silence detection |
+| **TTS-speaking gate** | `game_loop.py`, `manager.py` | `_request_interaction_reaction()` and `_request_autonomous_remark()` now skip LLM generation when `AudioManager.is_speaking` is True. Shows canned fallback emote instead. `is_speaking` also covers full-duplex pipeline `_tts_playing` state. Prevents back-to-back TTS stacking that suppressed mic for 30+ seconds. |
+
+### Remaining Issues
+
+| Issue | Severity | Details |
+|-------|----------|---------|
+| **Low STT hit rate** | Medium | Only 1/5 pipeline utterances produced recognized text via Google Speech API. Likely caused by short noise bursts passing RMS VAD threshold (webrtcvad not installed). |
+| **webrtcvad not installed** | Low | Pipeline uses RMS fallback (threshold 0.01) for VAD. Prone to false positives from ambient noise. `pip install webrtcvad-wheels` would improve utterance quality. |
+| **WSL2 idle shutdown** | Fixed | WSL2 VM terminates when no sessions active, killing Riva Docker container. `riva_launcher.py` now starts `sleep infinity` keepalive process (killed on atexit). |
+
+### Recommended Next Steps for Conversational Flow
+
+1. **Install webrtcvad**: `pip install webrtcvad-wheels` — reduces false-positive utterances from noise
+2. **Consider barge-in for power users**: With `barge_in_enabled=true`, AEC processes mic during TTS and user speech triggers barge-in (cancels creature speech). This is the "conversational" mode.
+3. **Riva auto-starts on launch**: When `stt_provider=riva` and `riva_auto_start=true`, the app auto-starts the Docker container in WSL2 with a keepalive process. Kokoro handles TTS (Riva TTS broken on RTX 5090 Blackwell).
+
+### Test Count
+
+**2842 tests passing** (up from 2829), ruff clean. New tests cover TTS-speaking gate, WSL keepalive, Riva launcher orchestration, auto-restart backoff, transcription retry on fallback.
+
+---
+
+## Superpowers Integration (2026-03-10)
+
+Three independent integration phases implemented in parallel: pygame-gui migration (fixes GUI bugs), audio pipeline hardening (fixes barge-in false positives), and Anthropic Claude superpowers (tool use, prompt caching, extended thinking).
+
+### Phase 0: Dependencies
+
+- `pygame-gui>=0.6.12` added to core dependencies in `pyproject.toml`
+- `webrtcvad-wheels` already in `[aec]` optional deps — `pip install -e ".[aec]"`
+- `anthropic>=0.40` already in `[cloud]` optional deps — supports tools, caching, thinking
+
+### Phase 1: pygame-gui Migration
+
+**Problem**: Chat scrollbar rendered but had zero mouse handling (thumb math inverted, no click/drag/wheel routing). Settings dropdowns expanded below trigger rect with no z-order — occluded by panels rendered later.
+
+**Solution**: Migrate from hand-rolled `widgets.py` to `pygame-gui` UIManager with native scrollbar, dropdown z-order, and event-driven input handling. Dual-mode architecture: pygame-gui widgets when UIManager available, fallback to hand-rolled widgets in tests (where pygame is mocked).
+
+| File | Changes |
+|------|---------|
+| `config/theme.json` | **New** — pygame-gui JSON theme matching dark/teal palette (BG `#192337`, border `#3C506E`, text `#C8DCF0`, accent `#50A0DC`, toggle-on `#3CC864`) |
+| `gui/window.py` | UIManager initialization in `initialize()`, `ui_manager` property, `process_events()`/`update()`/`draw_ui()` integration into main loop |
+| `gui/chat_panel.py` | UITextBox (built-in scrollbar — **fixes scrollbar bug**), UITextEntryLine, UIButton. HTML message formatting with color-coded roles. `_refresh_text_box()` with auto-scroll. `process_ui_event()` for event handling. `_use_pgui` gates dual-mode. |
+| `gui/settings_panel.py` | UIDropDownMenu (**fixes z-order bug**), UIHorizontalSlider, UIButton. Toggle via UIButton "ON/OFF" text. Tab show/hide via widget visibility. `process_ui_event()` routing to `_pgui_on_button()`/`_pgui_on_dropdown()`/`_pgui_on_slider()`. |
+| `gui/lineage_panel.py` | UISelectionList (replaces hand-rolled list), UIButton, UITextEntryLine. `process_ui_event()` for button/selection/text entry routing. |
+| `gui/game_loop.py` | Gets `ui_manager` from window, passes to panel constructors. `_on_ui_event()` handler routes pygame_gui events to active panel's `process_ui_event()`. |
+
+### Phase 2: Audio Pipeline Hardening
+
+**Problem**: Barge-in fired on a single VAD frame (10ms) — a keyboard click triggered it. `cancel_tts()` stopped sounddevice but pending synthesis in the executor queue still played when dequeued. Safety valve reset `_tts_playing` but didn't notify AudioBridge.
+
+| Fix | File | Details |
+|-----|------|---------|
+| **RMS threshold raised** | `config.py` | `stt_silence_threshold` 0.01 → 0.03 (only affects RMS fallback when webrtcvad not installed) |
+| **Barge-in debounce** | `pipeline.py`, `config.py` | Require N consecutive speech frames before firing. New `_barge_in_count` state, `barge_in_debounce_frames=3` config (30ms). Resets on non-speech frame. |
+| **TTS cancel event** | `manager.py` | `threading.Event` (`_tts_cancelled`) — `cancel_tts()` sets event, `speak()` checks after `synthesize()` completes and before `feed_reference()`/playback. Clears at start of each `speak()`. |
+| **Safety valve callback** | `pipeline.py` | 30s timeout now also calls `on_barge_in()` so AudioBridge can clean up stuck TTS state |
+
+### Phase 3: Anthropic Claude Superpowers
+
+**Problem**: AnthropicProvider existed with basic chat/stream but no tool use, no prompt caching, no extended thinking. Router not wired for tool forwarding. `_tool_loop()` reached into `_router._pick_provider()` private method.
+
+| Feature | File | Details |
+|---------|------|---------|
+| **Tool use** | `llm/anthropic_provider.py` | `chat_with_tools()` implementing `ToolCapableLLM` protocol. Translates Ollama-style tool defs → Anthropic `input_schema` format. Parses `tool_use` content blocks. Returns `{"content", "tool_calls"}` matching Ollama format. |
+| **Tool forwarding** | `llm/router.py` | `chat_with_tools()` checks `ToolCapableLLM` and forwards, else falls back to plain `chat()` returning `{"content": text, "tool_calls": None}`. `chat()` accepts `**kwargs` for thinking params. |
+| **Prompt caching** | `llm/anthropic_provider.py`, `personality/prompt_builder.py` | `build_cached()` splits system prompt at `---CACHE_BREAK---` marker — stable prefix (identity, traits, constraints) vs dynamic suffix (mood, memories, vision). Provider sends prefix with `cache_control: {"type": "ephemeral"}`. 5-min server-side cache, ~90% token savings. Config: `enable_prompt_caching=True`. |
+| **Extended thinking** | `llm/anthropic_provider.py` | `thinking` and `thinking_budget` kwargs on `chat()`. Forces `temperature=1.0`, adds `thinking={"type": "enabled", "budget_tokens": N}`. Filters thinking blocks from response. Config: `extended_thinking=False`, `thinking_budget=4096`. |
+| **Simplified tool loop** | `conversation/manager.py` | `_tool_loop()` uses `self._llm.chat_with_tools()` directly instead of `self._router._pick_provider()`. Prompt caching activated in `process_input()`. Extended thinking activated for philosophical mood. |
+
+### Config Changes
+
+All three phases share `config.py` but target different Pydantic models:
+
+| Field | Model | Default | Phase |
+|-------|-------|---------|-------|
+| `stt_silence_threshold` | AudioConfig | 0.03 (was 0.01) | 2 |
+| `barge_in_debounce_frames` | AudioConfig | 3 | 2 |
+| `enable_prompt_caching` | LLMConfig | True | 3 |
+| `extended_thinking` | LLMConfig | False | 3 |
+| `thinking_budget` | LLMConfig | 4096 | 3 |
+
+### New Files
+
+| File | Purpose |
+|------|---------|
+| `config/theme.json` | pygame-gui JSON theme |
+
+### Tests
+
+All three phases include full test coverage following existing patterns:
+
+- `test_pipeline.py`: 4 new tests — debounce single frame, N frames, reset, safety valve callback
+- `test_manager.py`: 1 new test — TTS cancel prevents playback
+- `test_config.py`: 2 new tests — debounce default, threshold default
+- `test_anthropic_provider.py`: 11 new tests — tool use, caching, thinking
+- `test_router.py`: 6 new tests — tool forwarding, kwargs passthrough
+- `test_prompt_builder.py`: 8 new tests — `build_cached()` split
+- GUI tests: Added `sys.modules["pygame_gui"] = MagicMock()` mocking pattern for dual-mode architecture
+
+### Verification
+
+```bash
+python -m ruff check src/ tests/
+python -m pytest tests/ -x --tb=short
+python -m seaman_brain --gui
+```
+
+Phase 1 visual checks: scrollbar drags/clicks/wheels, dropdowns render on top of other panels, theme consistent with existing palette.
+Phase 2 audio checks: barge-in doesn't fire on noise/keyboard clicks, TTS cancel stops all queued speech immediately.
+Phase 3 Claude checks: set `routing_mode=hybrid`, `cloud_provider=anthropic`, verify tool use + caching + thinking in logs.
+
+---
+
+## Conversational Experience Roadmap
+
+### Current State Assessment
+
+The brain pipeline is `STT → text → LLM → text → TTS` with streaming LLM→TTS already partially implemented (sentence boundary detection yields incremental TTS playback during token streaming). Current conversational ceiling: **~65% of what's possible** with 2026 technology. Key bottlenecks:
+
+| Bottleneck | Impact | Current Latency |
+|------------|--------|-----------------|
+| Turn latency (STT+LLM+TTS) | Feels robotic, not conversational | 2-6 seconds |
+| Sentence-level TTS granularity | Long pauses before speech starts | ~1-2s first word |
+| No prosodic expression | Mood engine computes "sardonic" but voice sounds flat | N/A |
+| Response repetition (8B model) | Same phrases recycled within minutes | N/A |
+| Dead silence during user speech | No sense of active listening | N/A |
+| Text bottleneck destroys tone info | Can't hear sarcasm, anger, whisper | N/A |
+
+### Phase 1: Clause-Level TTS Streaming
+
+**Goal**: Reduce time-to-first-word from ~2s to ~500ms by starting TTS playback at clause boundaries instead of sentence boundaries.
+
+**Approach**: The existing `_SENTENCE_BOUNDARY` regex in `game_loop.py` splits on `[.!?\n]`. Extend to also split on commas, semicolons, em-dashes, and colons when the buffered text exceeds a minimum length (e.g. 40 chars). This feeds shorter chunks to TTS earlier.
+
+**Files**: `gui/game_loop.py` (regex + minimum chunk logic)
+
+**Success Criteria**: First TTS playback begins within 500ms of first LLM token for responses longer than one sentence.
+
+### Phase 2: Response Deduplication
+
+**Goal**: Eliminate the "bubbles are a reminder" repetition problem. The 8B model frequently recycles identical phrases for similar stimuli (aerate, feed, etc.).
+
+**Approach**: Add a `ResponseDeduplicator` to `conversation/manager.py` that maintains a ring buffer of recent response hashes (last 20). Before finalizing an LLM response, check cosine similarity of the embedding against the buffer. If similarity > 0.85, re-prompt the LLM with an instruction to vary its response (up to 2 retries). Fall back to the original response if retries exhausted.
+
+**Files**: `conversation/manager.py` (dedup logic), `conversation/deduplicator.py` (new module)
+
+**Success Criteria**: No two identical responses within a 5-minute window for the same interaction type.
+
+### Phase 3: Prosody-Aware TTS
+
+**Goal**: Make the creature's voice actually reflect its emotional state. When the mood engine outputs "hostile", the voice should sound hostile — not flat.
+
+**Approach**: Thread the creature's current mood through the speak pipeline as a `mood` parameter. Each TTS provider maps mood to its native controls:
+- **Riva**: Select emotion subvoice (e.g. `English-US.Male-1.Angry`, `English-US.Male-1.Happy`) per utterance
+- **Kokoro**: Adjust voice selection (lower pitch voices for hostile moods) and speed (faster for irritated, slower for philosophical)
+- **pyttsx3**: Adjust rate and volume (angry = fast+loud, content = slow+quiet)
+
+**Files**: `audio/tts.py` (TTSProvider protocol gains optional `mood` param), `audio/manager.py` (thread mood through speak), `gui/audio_integration.py` (pass mood from game state), `gui/game_loop.py` (wire mood to play_voice)
+
+**Success Criteria**: Blind audio test — listener can distinguish hostile from content responses without seeing text.
+
+### Phase 4: Cloud LLM Quality Routing
+
+**Goal**: Use cloud LLMs (Claude/GPT-4) for deep conversational exchanges while keeping local 8B for fast reactions and autonomous remarks. Dramatically improves response variety and character consistency for actual dialogue.
+
+**Approach**: Add a `routing_mode` to LLM config: `"local"` (all local), `"hybrid"` (cloud for user chat, local for reactions/autonomous), `"cloud"` (all cloud). In hybrid mode, `ConversationManager` checks whether the current call is user-initiated conversation vs. autonomous remark vs. interaction reaction. User chat routes to cloud provider, reactions route to local Ollama.
+
+**Files**: `config.py` (routing_mode field), `llm/router.py` (new — wraps two LLMProviders, dispatches by call type), `conversation/manager.py` (use router), `gui/settings_panel.py` (routing toggle + API key input), `gui/game_loop.py` (pass call type metadata)
+
+**Success Criteria**: User conversation uses cloud LLM while interaction reactions remain <500ms on local 8B. Settings panel allows runtime switching.
+
+### Phase 5: Backchanneling & Micro-Reactions
+
+**Goal**: The creature makes small sounds during user speech — "hmm", "uh-huh", gurgling, sighs — creating the sense of active listening. Tied to personality stage and mood.
+
+**Approach**: The full-duplex `AudioIOPipeline` already detects speech frames. Add a backchannel system that:
+1. After N consecutive speech frames (user has been talking for >2s), probabilistically trigger a backchannel
+2. Select from mood-appropriate micro-reactions (short pre-synthesized audio clips or tiny TTS calls)
+3. Play at low volume on a separate mixer channel so it doesn't interrupt the user
+4. Respect personality: early stages (mushroomer) make only biological sounds, later stages (frogman) make verbal backchannels
+
+**Files**: `audio/backchannel.py` (new — reaction selection + timing), `audio/pipeline.py` (fire backchannel callback), `audio/manager.py` (backchannel playback), `behavior/mood.py` (mood→backchannel mapping), `gui/audio_integration.py` (wire backchannel channel)
+
+**Success Criteria**: User hears 1-3 small creature reactions per 10-second speaking turn. Reactions vary by mood and stage.
+
+### Phase 6 (Future): Audio-Native Model Integration
+
+**Goal**: Eliminate the STT/TTS text bottleneck entirely by using end-to-end voice models that operate on audio tokens. Sub-500ms turn latency with full prosodic understanding.
+
+**Approach**: When locally-runnable audio-native models become available (successors to GPT-4o Realtime, Gemini Live, or open-source equivalents), integrate as a new LLM provider that accepts audio input and returns audio output. The existing WebSocket API server (`api/server.py`) is the natural integration point — add an audio-native streaming endpoint alongside the text-based one.
+
+**Prerequisites**: Audio-native model that runs on RTX 5090. The `llm/base.py` Protocol would need extension for audio I/O.
+
+**Files**: `llm/audio_native_provider.py` (new), `api/server.py` (audio WebSocket endpoint), `conversation/manager.py` (audio pipeline bypass)
+
+### Implementation Priority & Dependencies
+
+```
+Phase 1 (Clause TTS)  ──────┐
+Phase 2 (Dedup)        ──────┼── All independent, can run in parallel
+Phase 3 (Prosody)      ──────┤
+Phase 4 (Cloud Router) ──────┘
+Phase 5 (Backchannel)  ── Depends on Phase 3 (mood→audio mapping)
+Phase 6 (Audio-Native) ── Future, depends on external model availability
+```
+
+### Architecture Diagram (Target State)
+
+```
+                    ┌─────────────────────────────────────┐
+                    │         User Voice Input             │
+                    └──────────────┬──────────────────────┘
+                                   │
+                    ┌──────────────▼──────────────────────┐
+                    │   Full-Duplex Pipeline (AEC+VAD)     │
+                    │   • Echo cancellation (NLMS)         │
+                    │   • Backchannel detection (Phase 5)  │
+                    │   • Barge-in detection                │
+                    └──────┬───────────────┬──────────────┘
+                           │               │
+                    ┌──────▼──────┐  ┌─────▼──────────┐
+                    │  STT Engine  │  │  Backchannel   │
+                    │  (transcribe)│  │  Reactor       │
+                    └──────┬──────┘  │  (micro-sounds) │
+                           │         └────────────────┘
+                    ┌──────▼──────────────────────────────┐
+                    │   LLM Router (Phase 4)               │
+                    │   ┌─────────┐    ┌────────────┐     │
+                    │   │ Local   │    │ Cloud      │     │
+                    │   │ qwen3:8b│    │ Claude/GPT │     │
+                    │   └────┬────┘    └─────┬──────┘     │
+                    │        │ reactions      │ conversation│
+                    │        └───────┬───────┘             │
+                    └────────────────┼─────────────────────┘
+                                     │ streaming tokens
+                    ┌────────────────▼─────────────────────┐
+                    │   Response Deduplicator (Phase 2)     │
+                    │   • Ring buffer of recent responses   │
+                    │   • Embedding similarity check        │
+                    │   • Re-prompt on duplicate            │
+                    └────────────────┬─────────────────────┘
+                                     │ unique response tokens
+                    ┌────────────────▼─────────────────────┐
+                    │   Clause-Level TTS Streaming (Phase 1)│
+                    │   • Split on , ; : — after 40+ chars  │
+                    │   • Feed chunks to TTS immediately    │
+                    └────────────────┬─────────────────────┘
+                                     │
+                    ┌────────────────▼─────────────────────┐
+                    │   Prosody-Aware TTS (Phase 3)         │
+                    │   • Mood → voice emotion mapping      │
+                    │   • Riva subvoices / Kokoro styles    │
+                    │   • Rate/pitch per mood               │
+                    └────────────────┬─────────────────────┘
+                                     │ audio output
+                    ┌────────────────▼─────────────────────┐
+                    │         Speaker / Pygame Mixer        │
+                    └──────────────────────────────────────┘
+```
