@@ -17,20 +17,13 @@ from typing import Any
 import pygame
 
 from seaman_brain.config import GUIConfig, SeamanConfig
+from seaman_brain.gui.theme import VOID_BG, Colors
 
 logger = logging.getLogger(__name__)
 
 # Async bridge restart limits
 _LOOP_MAX_RESTARTS = 3
 _LOOP_RESTART_COOLDOWN = 2.0  # seconds between restart attempts
-
-# Default colors
-_BG_COLOR = (10, 20, 40)
-_TEXT_COLOR = (200, 220, 240)
-_HEADER_BG = (15, 30, 55)
-_STATUS_GREEN = (60, 200, 100)
-_STATUS_YELLOW = (220, 200, 60)
-_STATUS_RED = (220, 60, 60)
 
 
 class GameWindow:
@@ -338,7 +331,7 @@ class GameWindow:
                 self.running = False
                 return
 
-            # Dispatch to registered handlers (ESC handled by GameEngine)
+            # Dispatch to registered handlers
             handlers = self._event_handlers.get(event.type, [])
             for handler in handlers:
                 try:
@@ -370,7 +363,7 @@ class GameWindow:
             return
 
         # Clear
-        self._screen.fill(_BG_COLOR)
+        self._screen.fill(VOID_BG)
 
         # Registered renderers
         for callback in self._render_callbacks:
@@ -395,21 +388,21 @@ class GameWindow:
         w = self.config.window_width
 
         # Header bar
-        pygame.draw.rect(screen, _HEADER_BG, (0, 0, w, 40))
+        pygame.draw.rect(screen, Colors.SURFACE_3[:3], (0, 0, w, 40))
 
         # Title
-        title_surf = self._title_font.render("Seaman Reborn", True, _TEXT_COLOR)
+        title_surf = self._title_font.render("Seaman Reborn", True, Colors.TEXT_90)
         screen.blit(title_surf, (10, 8))
 
         # Status
-        color = _STATUS_GREEN if self._manager_initialized else _STATUS_YELLOW
+        color = Colors.STATUS_GREEN if self._manager_initialized else Colors.STATUS_YELLOW
         status_surf = self._font.render(self._status_message, True, color)
         screen.blit(status_surf, (w - status_surf.get_width() - 10, 12))
 
         # FPS counter (debug)
         if self.config.show_debug_hud and self._clock is not None:
             fps_text = f"FPS: {self._clock.get_fps():.0f}"
-            fps_surf = self._font.render(fps_text, True, (120, 140, 160))
+            fps_surf = self._font.render(fps_text, True, Colors.TEXT_30)
             screen.blit(fps_surf, (w - fps_surf.get_width() - 10, 30))
 
     def run(self) -> None:
