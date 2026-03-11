@@ -1,565 +1,381 @@
-"""HUD and status display - need bars, mood indicator, tank gauges.
+"""Modern Minimal HUD — thin top bar + left sidebar tiles.
 
-Renders creature vital statistics as a Pygame overlay:
-- Top bar: creature name/stage, mood indicator (text + color), session timer
-- Need bars: hunger, health, comfort, stimulation as colored progress bars
-- Tank indicators: temperature gauge, cleanliness meter, oxygen level
-- Trust meter: visual representation (0-1)
-- Color coding: green=good, yellow=warning, red=critical
-- Compact mode (icon-only) and expanded mode (icon + label + value)
+Top bar (32px): creature name, stage, mood, mic/tts indicators, lineage/settings
+buttons, session timer.
+
+Left sidebar (48px): 4 need tiles (hunger, health, comfort, trust) +
+divider + 7 action tiles (feed, aerator, temp up/down, clean, drain, fill).
+Tooltips on hover, cooldown overlays on action tiles.
 """
-
 from __future__ import annotations
 
-import logging
 import math
-from dataclasses import dataclass
+import time
 
 import pygame
 
-from seaman_brain.config import GUIConfig
-from seaman_brain.creature.state import CreatureState
-from seaman_brain.environment.tank import TankEnvironment
-from seaman_brain.types import CreatureStage
+from seaman_brain.gui.layout import ScreenLayout
+from seaman_brain.gui.theme import (
+    VOID_BG,
+    Colors,
+    Fonts,
+    Sizes,
+    status_color,
+)
 
-logger = logging.getLogger(__name__)
+# ── Tile Definitions ─────────────────────────────────────────────────
 
-# ── Colors ───────────────────────────────────────────────────────────────
+_NEED_DEFS: list[dict[str, str]] = [
+    {"key": "hunger", "icon": "H", "label": "Hunger"},
+    {"key": "health", "icon": "+", "label": "Health"},
+    {"key": "comfort", "icon": "C", "label": "Comfort"},
+    {"key": "trust", "icon": "T", "label": "Trust"},
+]
 
-_BG_COLOR = (15, 25, 45, 200)  # Semi-transparent dark blue
-_TOP_BAR_BG = (10, 18, 35, 220)
-_TEXT_COLOR = (200, 220, 240)
-_TEXT_DIM = (130, 150, 170)
-_LABEL_COLOR = (160, 180, 200)
+_ACTION_DEFS: list[dict[str, str]] = [
+    {"key": "feed", "icon": "F", "label": "Feed"},
+    {"key": "aerator", "icon": "O", "label": "Toggle Aerator"},
+    {"key": "temp_up", "icon": "^", "label": "Raise Temp"},
+    {"key": "temp_down", "icon": "v", "label": "Lower Temp"},
+    {"key": "clean", "icon": "*", "label": "Clean Tank"},
+    {"key": "drain", "icon": "~", "label": "Drain Tank"},
+    {"key": "fill", "icon": "o", "label": "Fill Tank"},
+]
 
-# Status colors (bar fill)
-_COLOR_GREEN = (60, 200, 100)
-_COLOR_YELLOW = (220, 200, 60)
-_COLOR_RED = (220, 60, 60)
-_COLOR_BLUE = (60, 140, 220)
-
-# Bar background
-_BAR_BG = (30, 40, 60)
-_BAR_BORDER = (60, 80, 110)
-
-# Audio indicator colors
-_MIC_ACTIVE_COLOR = (60, 220, 180)
-_MIC_INACTIVE_COLOR = (100, 120, 140)
-_TTS_ACTIVE_COLOR = (220, 180, 60)
-
-# Mood colors
-_MOOD_COLORS: dict[str, tuple[int, int, int]] = {
-    "hostile": (220, 50, 50),
-    "irritated": (220, 120, 50),
-    "sardonic": (180, 140, 80),
-    "neutral": (160, 180, 200),
-    "curious": (80, 180, 220),
-    "amused": (120, 200, 160),
-    "philosophical": (160, 120, 220),
-    "content": (80, 220, 120),
-}
-
-# Stage display names
-_STAGE_NAMES: dict[CreatureStage, str] = {
-    CreatureStage.MUSHROOMER: "Mushroomer",
-    CreatureStage.GILLMAN: "Gillman",
-    CreatureStage.PODFISH: "Podfish",
-    CreatureStage.TADMAN: "Tadman",
-    CreatureStage.FROGMAN: "Frogman",
-}
-
-# Icons for compact mode (Unicode characters)
-_ICONS: dict[str, str] = {
-    "hunger": "H",
-    "health": "+",
-    "comfort": "C",
-    "stimulation": "S",
-    "temperature": "T",
-    "cleanliness": "~",
-    "oxygen": "O",
-    "trust": "*",
-}
-
-# ── Constants ────────────────────────────────────────────────────────────
-
-_TOP_BAR_HEIGHT = 36
-_BAR_HEIGHT = 14
-_BAR_HEIGHT_COMPACT = 10
-_BAR_WIDTH = 120
-_BAR_WIDTH_COMPACT = 60
-_SECTION_PADDING = 8
-_BAR_SPACING = 20
-_BAR_SPACING_COMPACT = 14
-_FONT_SIZE = 14
-_TITLE_FONT_SIZE = 16
-_LABEL_WIDTH = 90
-_VALUE_WIDTH = 40
-
-
-def _status_color(value: float, *, inverted: bool = False) -> tuple[int, int, int]:
-    """Return green/yellow/red based on value (0-1).
-
-    Args:
-        value: The metric value in range [0, 1].
-        inverted: If True, high values are bad (e.g. hunger: 1.0 = starving).
-
-    Returns:
-        An RGB color tuple.
-    """
-    effective = 1.0 - value if inverted else value
-    if effective >= 0.6:
-        return _COLOR_GREEN
-    if effective >= 0.3:
-        return _COLOR_YELLOW
-    return _COLOR_RED
-
-
-def _format_percent(value: float) -> str:
-    """Format a 0-1 float as a percentage string."""
-    return f"{int(value * 100)}%"
-
-
-def _format_temperature(temp: float) -> str:
-    """Format temperature in Celsius."""
-    return f"{temp:.1f}C"
-
-
-@dataclass
-class HUDMetric:
-    """A single metric to display on the HUD.
-
-    Fields:
-        icon: Short icon/symbol for compact mode.
-        label: Full label for expanded mode.
-        value: Current value (0.0-1.0 for bars, or raw for temperature).
-        display_text: Formatted text for the value.
-        color: RGB color for the bar fill.
-        bar_value: Normalized 0-1 value for the progress bar.
-    """
-
-    icon: str
-    label: str
-    value: float
-    display_text: str
-    color: tuple[int, int, int]
-    bar_value: float
+# Mic/TTS indicator colors
+_MIC_ACTIVE = Colors.STATUS_GREEN
+_MIC_INACTIVE = Colors.TEXT_20
+_TTS_ACTIVE = Colors.STATUS_YELLOW
 
 
 class HUD:
-    """Heads-up display overlay for creature and tank status.
+    """Heads-up display with top bar and sidebar tiles."""
 
-    Renders status bars, mood indicator, and tank gauges on a Pygame surface.
-    Supports compact mode (icon + bar only) and expanded mode (icon + label + bar + value).
-
-    Attributes:
-        compact: Whether to use compact mode.
-    """
-
-    def __init__(self, gui_config: GUIConfig | None = None) -> None:
-        """Initialize the HUD.
-
-        Args:
-            gui_config: GUI configuration for sizing. Uses defaults if None.
-        """
-        self._config = gui_config or GUIConfig()
-        self.compact = True
-
-        # Font (lazy-initialized)
+    def __init__(self, layout: ScreenLayout) -> None:
+        self._layout = layout
         self._font: pygame.font.Font | None = None
-        self._title_font: pygame.font.Font | None = None
-        self._font_height = 0
 
-        # Session timer
-        self._session_time = 0.0
+        # Need tiles: icon, key, label, color, value
+        self._need_tiles: list[dict] = []
+        for d in _NEED_DEFS:
+            self._need_tiles.append({
+                "key": d["key"],
+                "icon": d["icon"],
+                "label": d["label"],
+                "color": Colors.STATUS_GREEN,
+                "value": 1.0,
+            })
 
-        # Button bounding rects (for click detection by GameEngine)
-        self.settings_rect: pygame.Rect | None = None
-        self.lineage_rect: pygame.Rect | None = None
-        self.mic_rect: pygame.Rect | None = None
+        # Action tiles: icon, key, label, cooldown_end
+        self._action_tiles: list[dict] = []
+        for d in _ACTION_DEFS:
+            self._action_tiles.append({
+                "key": d["key"],
+                "icon": d["icon"],
+                "label": d["label"],
+                "cooldown_end": 0.0,
+            })
 
-        # Audio indicator state
+        # Top bar state
+        self._creature_name = "Seaman"
+        self._stage_name = "Mushroomer"
+        self._mood_name = "neutral"
+
+        # Audio indicators
         self.mic_active: bool = False
         self.tts_active: bool = False
+        self.tts_provider_label: str = ""
+        self.stt_provider_label: str = ""
         self._mic_pulse_timer: float = 0.0
+
+        # Session timer
+        self._session_time: float = 0.0
+
+        # Click-detection rects (set during render)
+        self.settings_rect: tuple | None = None
+        self.lineage_rect: tuple | None = None
+        self.mic_rect: tuple | None = None
+
+        # Tooltip
+        self._tooltip: str | None = None
+
+        # Tile rects (computed on render for click/hover detection)
+        self._tile_rects: list[tuple[int, int, int, int, str, str]] = []
 
     @property
     def session_time(self) -> float:
-        """Elapsed session time in seconds."""
         return self._session_time
 
-    def _ensure_fonts(self) -> None:
-        """Initialize fonts if not yet done."""
-        if self._font is None:
-            for name in ("consolas", "couriernew", "courier"):
-                try:
-                    self._font = pygame.font.SysFont(name, _FONT_SIZE)
-                    self._title_font = pygame.font.SysFont(name, _TITLE_FONT_SIZE, bold=True)
-                    break
-                except Exception:
-                    continue
-            if self._font is None:
-                self._font = pygame.font.Font(None, _FONT_SIZE)
-                self._title_font = pygame.font.Font(None, _TITLE_FONT_SIZE)
-            self._font_height = self._font.get_linesize()
-
-    def toggle_mode(self) -> None:
-        """Toggle between compact and expanded display modes."""
-        self.compact = not self.compact
-
     def update(self, dt: float) -> None:
-        """Update the HUD state.
-
-        Args:
-            dt: Delta time in seconds since last frame.
-        """
+        """Update session timer and mic pulse."""
         self._session_time += dt
         if self.mic_active:
             self._mic_pulse_timer += dt
         else:
             self._mic_pulse_timer = 0.0
 
-    def _build_need_metrics(self, creature: CreatureState) -> list[HUDMetric]:
-        """Build the need bar metrics from creature state.
+    def update_needs(
+        self, hunger: float, health: float, comfort: float, trust: float
+    ) -> None:
+        """Update need tile values and colors."""
+        values = [hunger, health, comfort, trust]
+        for tile, val in zip(self._need_tiles, values):
+            tile["value"] = val
+            tile["color"] = status_color(val)
 
-        Args:
-            creature: Current creature state.
+    def update_creature_info(
+        self,
+        stage: str = "Mushroomer",
+        mood: str = "neutral",
+        name: str = "Seaman",
+    ) -> None:
+        """Update top bar creature info."""
+        self._stage_name = stage
+        self._mood_name = mood
+        self._creature_name = name
 
-        Returns:
-            List of HUDMetric for hunger, health, comfort, stimulation.
-        """
-        metrics: list[HUDMetric] = []
+    def set_cooldown(self, action_key: str, duration: float) -> None:
+        """Set a cooldown timer on an action tile."""
+        end = time.monotonic() + duration
+        for tile in self._action_tiles:
+            if tile["key"] == action_key:
+                tile["cooldown_end"] = end
+                break
 
-        # Hunger: 0=full, 1=starving → inverted color (high = bad)
-        hunger_bar = 1.0 - creature.hunger  # fullness for display
-        metrics.append(HUDMetric(
-            icon=_ICONS["hunger"],
-            label="Hunger",
-            value=creature.hunger,
-            display_text=_format_percent(hunger_bar),
-            color=_status_color(creature.hunger, inverted=True),
-            bar_value=hunger_bar,
-        ))
+    def resize(self, layout: ScreenLayout) -> None:
+        """Update layout reference on window resize."""
+        self._layout = layout
 
-        # Health: 0=dead, 1=healthy → normal color
-        metrics.append(HUDMetric(
-            icon=_ICONS["health"],
-            label="Health",
-            value=creature.health,
-            display_text=_format_percent(creature.health),
-            color=_status_color(creature.health),
-            bar_value=creature.health,
-        ))
+    def handle_click(self, mx: int, my: int) -> str | None:
+        """Check if click hits an action tile. Returns action key or None."""
+        for rx, ry, rw, rh, kind, key in self._tile_rects:
+            if kind == "action" and rx <= mx < rx + rw and ry <= my < ry + rh:
+                return key
+        return None
 
-        # Comfort: 0=miserable, 1=happy → normal color
-        metrics.append(HUDMetric(
-            icon=_ICONS["comfort"],
-            label="Comfort",
-            value=creature.comfort,
-            display_text=_format_percent(creature.comfort),
-            color=_status_color(creature.comfort),
-            bar_value=creature.comfort,
-        ))
+    def handle_hover(self, mx: int, my: int) -> None:
+        """Update tooltip based on hover position."""
+        for rx, ry, rw, rh, _kind, key in self._tile_rects:
+            if rx <= mx < rx + rw and ry <= my < ry + rh:
+                # Find matching label
+                for d in _NEED_DEFS + _ACTION_DEFS:
+                    if d["key"] == key:
+                        self._tooltip = d["label"]
+                        return
+        self._tooltip = None
 
-        return metrics
-
-    def _build_tank_metrics(self, tank: TankEnvironment) -> list[HUDMetric]:
-        """Build the tank indicator metrics.
-
-        Args:
-            tank: Current tank environment state.
-
-        Returns:
-            List of HUDMetric for temperature, cleanliness, oxygen.
-        """
-        metrics: list[HUDMetric] = []
-
-        # Temperature: show as color (blue=cold, green=good, red=hot)
-        # Normalize to 0-1 for bar display (10-38 range by default)
-        temp_norm = max(0.0, min(1.0, (tank.temperature - 10.0) / 28.0))
-        # Color based on distance from optimal (20-28 default)
-        if 20.0 <= tank.temperature <= 28.0:
-            temp_color = _COLOR_GREEN
-        elif tank.temperature < 20.0:
-            temp_color = _COLOR_BLUE
-        else:
-            temp_color = _COLOR_RED
-
-        metrics.append(HUDMetric(
-            icon=_ICONS["temperature"],
-            label="Temp",
-            value=tank.temperature,
-            display_text=_format_temperature(tank.temperature),
-            color=temp_color,
-            bar_value=temp_norm,
-        ))
-
-        # Cleanliness: 0=filthy, 1=spotless → normal color
-        metrics.append(HUDMetric(
-            icon=_ICONS["cleanliness"],
-            label="Clean",
-            value=tank.cleanliness,
-            display_text=_format_percent(tank.cleanliness),
-            color=_status_color(tank.cleanliness),
-            bar_value=tank.cleanliness,
-        ))
-
-        # Oxygen: 0=none, 1=saturated → normal color
-        metrics.append(HUDMetric(
-            icon=_ICONS["oxygen"],
-            label="Oxygen",
-            value=tank.oxygen_level,
-            display_text=_format_percent(tank.oxygen_level),
-            color=_status_color(tank.oxygen_level),
-            bar_value=tank.oxygen_level,
-        ))
-
-        return metrics
-
-    def _build_trust_metric(self, creature: CreatureState) -> HUDMetric:
-        """Build the trust meter metric.
-
-        Args:
-            creature: Current creature state.
-
-        Returns:
-            HUDMetric for trust level.
-        """
-        return HUDMetric(
-            icon=_ICONS["trust"],
-            label="Trust",
-            value=creature.trust_level,
-            display_text=_format_percent(creature.trust_level),
-            color=_status_color(creature.trust_level),
-            bar_value=creature.trust_level,
-        )
+    def _ensure_font(self) -> None:
+        if self._font is None:
+            if Fonts.label is not None:
+                self._font = Fonts.label
+            else:
+                for name in ("consolas", "couriernew", "courier"):
+                    try:
+                        self._font = pygame.font.SysFont(name, 10)
+                        return
+                    except Exception:
+                        continue
+                self._font = pygame.font.Font(None, 10)
 
     def _format_session_time(self) -> str:
-        """Format session time as MM:SS or HH:MM:SS."""
-        total_seconds = int(self._session_time)
-        hours = total_seconds // 3600
-        minutes = (total_seconds % 3600) // 60
-        seconds = total_seconds % 60
+        total = int(self._session_time)
+        hours = total // 3600
+        minutes = (total % 3600) // 60
+        seconds = total % 60
         if hours > 0:
             return f"{hours}:{minutes:02d}:{seconds:02d}"
         return f"{minutes:02d}:{seconds:02d}"
 
-    def render(
-        self,
-        surface: pygame.Surface,
-        creature: CreatureState,
-        tank: TankEnvironment,
-    ) -> None:
-        """Render the HUD overlay onto the given surface.
+    # ── Rendering ────────────────────────────────────────────────────
 
-        Args:
-            surface: Pygame surface to draw on.
-            creature: Current creature state for need bars and mood.
-            tank: Current tank environment for gauges.
-        """
-        self._ensure_fonts()
-        if self._font is None or self._title_font is None:
+    def render(self, surface: pygame.Surface) -> None:
+        """Render top bar and sidebar onto surface."""
+        self._ensure_font()
+        if self._font is None:
             return
 
-        # Draw top bar
-        self._render_top_bar(surface, creature)
+        self._tile_rects.clear()
+        self._render_top_bar(surface)
+        self._render_sidebar(surface)
 
-        # Draw need bars (left side below top bar)
-        need_metrics = self._build_need_metrics(creature)
-        trust_metric = self._build_trust_metric(creature)
-        tank_metrics = self._build_tank_metrics(tank)
+        # Tooltip
+        if self._tooltip:
+            self._render_tooltip(surface)
 
-        # Position: all bars stacked in left column
-        y_start = _TOP_BAR_HEIGHT + _SECTION_PADDING
-        spacing = _BAR_SPACING_COMPACT if self.compact else _BAR_SPACING
-
-        x_left = _SECTION_PADDING
-        y = y_start
-
-        # Need bars
-        for metric in need_metrics:
-            self._render_metric_bar(surface, x_left, y, metric)
-            y += spacing
-
-        # Trust bar
-        self._render_metric_bar(surface, x_left, y, trust_metric)
-        y += spacing
-
-        # Tank indicators (below trust)
-        for metric in tank_metrics:
-            self._render_metric_bar(surface, x_left, y, metric)
-            y += spacing
-
-    def _render_top_bar(
-        self,
-        surface: pygame.Surface,
-        creature: CreatureState,
-    ) -> None:
-        """Render the top status bar with name/stage, mood, and timer."""
-        if self._font is None or self._title_font is None:
-            return
-
+    def _render_top_bar(self, surface: pygame.Surface) -> None:
+        """Render the 32px top bar."""
         w = surface.get_width()
+        bar_h = Sizes.TOP_BAR_H
 
         # Background
-        bar_surface = pygame.Surface((w, _TOP_BAR_HEIGHT), pygame.SRCALPHA)
-        bar_surface.fill(_TOP_BAR_BG)
-        surface.blit(bar_surface, (0, 0))
+        bar_surf = pygame.Surface((w, bar_h), pygame.SRCALPHA)
+        bar_surf.fill((*VOID_BG, 220))
+        surface.blit(bar_surf, (0, 0))
 
-        # Creature name/stage (left)
-        stage_name = _STAGE_NAMES.get(creature.stage, creature.stage.value)
-        title_text = f"Seaman - {stage_name}"
-        title_surf = self._title_font.render(title_text, True, _TEXT_COLOR)
-        surface.blit(title_surf, (10, (_TOP_BAR_HEIGHT - title_surf.get_height()) // 2))
+        # Bottom border line
+        pygame.draw.line(
+            surface, Colors.BORDER[:3],
+            (0, bar_h - 1), (w, bar_h - 1), 1,
+        )
 
-        # Mood indicator (center)
-        mood_name = creature.mood.capitalize()
-        mood_color = _MOOD_COLORS.get(creature.mood, _TEXT_DIM)
-        mood_surf = self._font.render(mood_name, True, mood_color)
+        font = self._font
+        cy = bar_h // 2
+
+        # Left: creature name + stage
+        title = f"{self._creature_name} - {self._stage_name}"
+        title_surf = font.render(title, True, Colors.TEXT_90)
+        surface.blit(
+            title_surf, (Sizes.SIDEBAR_W + 8, cy - title_surf.get_height() // 2)
+        )
+
+        # Center: mood
+        mood_surf = font.render(self._mood_name.capitalize(), True, Colors.TEXT_50)
         mood_x = (w - mood_surf.get_width()) // 2
-        mood_y = (_TOP_BAR_HEIGHT - mood_surf.get_height()) // 2
-        surface.blit(mood_surf, (mood_x, mood_y))
+        surface.blit(mood_surf, (mood_x, cy - mood_surf.get_height() // 2))
 
-        # ── Right-side buttons: flow right-to-left from timer ──
-        # Session timer (rightmost)
+        # Right side (flowing left from right edge)
+        cursor_x = w - 8
+
+        # Timer
         timer_text = self._format_session_time()
-        timer_surf = self._font.render(timer_text, True, _TEXT_DIM)
-        timer_x = w - timer_surf.get_width() - 10
-        timer_y = (_TOP_BAR_HEIGHT - timer_surf.get_height()) // 2
-        surface.blit(timer_surf, (timer_x, timer_y))
+        timer_surf = font.render(timer_text, True, Colors.TEXT_20)
+        cursor_x -= timer_surf.get_width()
+        surface.blit(timer_surf, (cursor_x, cy - timer_surf.get_height() // 2))
+        cursor_x -= 12
 
-        # Cursor flows leftward from the timer
-        cursor_x = timer_x - 12
-
-        # [Settings] button
-        cursor_x = self._render_top_button(
-            surface, cursor_x, "[Settings]", _TEXT_COLOR, (30, 50, 80), (80, 120, 180),
+        # Settings button
+        settings_text = "SET"
+        stx_surf = font.render(settings_text, True, Colors.TEXT_50)
+        stx_w = stx_surf.get_width() + 8
+        cursor_x -= stx_w
+        btn_rect = pygame.Rect(cursor_x, 4, stx_w, bar_h - 8)
+        pygame.draw.rect(surface, Colors.SURFACE_3[:3], btn_rect)
+        pygame.draw.rect(surface, Colors.BORDER[:3], btn_rect, 1)
+        surface.blit(
+            stx_surf,
+            (cursor_x + 4, cy - stx_surf.get_height() // 2),
         )
-        self.settings_rect = self._last_btn_rect
+        self.settings_rect = (btn_rect[0], btn_rect[1], btn_rect[2], btn_rect[3]) \
+            if not isinstance(btn_rect, tuple) else btn_rect
+        cursor_x -= 8
 
-        cursor_x -= 6
-
-        # [Lineage] button
-        cursor_x = self._render_top_button(
-            surface, cursor_x, "[Lineage]", _TEXT_COLOR, (30, 50, 80), (80, 120, 180),
+        # Lineage button
+        lin_text = "LIN"
+        lin_surf = font.render(lin_text, True, Colors.TEXT_50)
+        lin_w = lin_surf.get_width() + 8
+        cursor_x -= lin_w
+        lin_rect = pygame.Rect(cursor_x, 4, lin_w, bar_h - 8)
+        pygame.draw.rect(surface, Colors.SURFACE_3[:3], lin_rect)
+        pygame.draw.rect(surface, Colors.BORDER[:3], lin_rect, 1)
+        surface.blit(
+            lin_surf,
+            (cursor_x + 4, cy - lin_surf.get_height() // 2),
         )
-        self.lineage_rect = self._last_btn_rect
+        self.lineage_rect = (lin_rect[0], lin_rect[1], lin_rect[2], lin_rect[3]) \
+            if not isinstance(lin_rect, tuple) else lin_rect
+        cursor_x -= 12
 
-        cursor_x -= 6
+        # TTS dot
+        tts_color = _TTS_ACTIVE if self.tts_active else _MIC_INACTIVE
+        pygame.draw.circle(surface, tts_color, (cursor_x, cy), 4)
+        cursor_x -= 12
 
-        # [TTS] indicator (passive, not clickable)
-        tts_color = _TTS_ACTIVE_COLOR if self.tts_active else _MIC_INACTIVE_COLOR
-        cursor_x = self._render_top_button(
-            surface, cursor_x, "[TTS]", tts_color, (30, 50, 80), tts_color,
-        )
-
-        cursor_x -= 6
-
-        # [Mic] button (clickable, pulsing when active)
+        # Mic dot (pulsing when active)
         if self.mic_active:
-            # Pulse between base color and bright via sin wave
-            pulse = self._mic_pulse_timer * 2.0 * math.pi * 1.5
-            t = math.sin(pulse) * 0.5 + 0.5
-            lo, hi = _MIC_INACTIVE_COLOR, _MIC_ACTIVE_COLOR
+            pulse = math.sin(self._mic_pulse_timer * 2.0 * math.pi * 1.5)
+            t = pulse * 0.5 + 0.5
             mic_color = (
-                int(lo[0] + (hi[0] - lo[0]) * t),
-                int(lo[1] + (hi[1] - lo[1]) * t),
-                int(lo[2] + (hi[2] - lo[2]) * t),
+                int(_MIC_INACTIVE[0] + (_MIC_ACTIVE[0] - _MIC_INACTIVE[0]) * t),
+                int(_MIC_INACTIVE[1] + (_MIC_ACTIVE[1] - _MIC_INACTIVE[1]) * t),
+                int(_MIC_INACTIVE[2] + (_MIC_ACTIVE[2] - _MIC_INACTIVE[2]) * t),
             )
         else:
-            mic_color = _MIC_INACTIVE_COLOR
-        cursor_x = self._render_top_button(
-            surface, cursor_x, "[Mic]", mic_color, (30, 50, 80), mic_color,
+            mic_color = _MIC_INACTIVE
+        pygame.draw.circle(surface, mic_color, (cursor_x, cy), 4)
+        self.mic_rect = (cursor_x - 4, cy - 4, 8, 8)
+
+    def _render_sidebar(self, surface: pygame.Surface) -> None:
+        """Render the 48px left sidebar with tiles."""
+        sb = self._layout.sidebar
+        font = self._font
+
+        # Background
+        sb_surf = pygame.Surface((sb.w, sb.h), pygame.SRCALPHA)
+        sb_surf.fill((*VOID_BG, 200))
+        surface.blit(sb_surf, (sb.x, sb.y))
+
+        # Right border
+        pygame.draw.line(
+            surface, Colors.BORDER[:3],
+            (sb.x + sb.w - 1, sb.y), (sb.x + sb.w - 1, sb.y + sb.h), 1,
         )
-        self.mic_rect = self._last_btn_rect
 
-    def _render_top_button(
-        self,
-        surface: pygame.Surface,
-        right_x: int,
-        text: str,
-        text_color: tuple[int, int, int],
-        bg_color: tuple[int, int, int],
-        border_color: tuple[int, int, int],
-    ) -> int:
-        """Render a top-bar button anchored to the right edge.
+        tile_size = Sizes.TILE
+        pad = (sb.w - tile_size) // 2
+        y = sb.y + 8
 
-        Args:
-            surface: Surface to draw on.
-            right_x: Right edge x position for this button.
-            text: Button label text.
-            text_color: RGB color for text.
-            bg_color: RGB color for background.
-            border_color: RGB color for border.
+        # Need tiles
+        now = time.monotonic()
+        for tile in self._need_tiles:
+            tx = sb.x + pad
+            # Tile background
+            pygame.draw.rect(
+                surface, Colors.SURFACE_5[:3],
+                (tx, y, tile_size, tile_size),
+            )
+            # Icon
+            icon_surf = font.render(tile["icon"], True, tile["color"])
+            ix = tx + (tile_size - icon_surf.get_width()) // 2
+            iy = y + (tile_size - icon_surf.get_height()) // 2
+            surface.blit(icon_surf, (ix, iy))
+            self._tile_rects.append(
+                (tx, y, tile_size, tile_size, "need", tile["key"])
+            )
+            y += tile_size + 4
 
-        Returns:
-            The new right_x (left edge of this button) for the next button.
-        """
-        if self._font is None:
-            self._last_btn_rect = None
-            return right_x
-
-        text_surf = self._font.render(text, True, text_color)
-        text_x = right_x - text_surf.get_width()
-        text_y = (_TOP_BAR_HEIGHT - text_surf.get_height()) // 2
-        btn_rect = pygame.Rect(
-            text_x - 6, text_y - 3,
-            text_surf.get_width() + 12, text_surf.get_height() + 6,
+        # Divider line
+        y += 4
+        pygame.draw.line(
+            surface, Colors.BORDER[:3],
+            (sb.x + 8, y), (sb.x + sb.w - 8, y), 1,
         )
-        pygame.draw.rect(surface, bg_color, btn_rect)
-        pygame.draw.rect(surface, border_color, btn_rect, 1)
-        surface.blit(text_surf, (text_x, text_y))
-        self._last_btn_rect = btn_rect
-        return text_x - 6
+        y += 8
 
-    def _render_metric_bar(
-        self,
-        surface: pygame.Surface,
-        x: int,
-        y: int,
-        metric: HUDMetric,
-    ) -> None:
-        """Render a single metric bar (icon + optional label + bar + optional value).
+        # Action tiles
+        for tile in self._action_tiles:
+            tx = sb.x + pad
+            pygame.draw.rect(
+                surface, Colors.SURFACE_3[:3],
+                (tx, y, tile_size, tile_size),
+            )
+            icon_surf = font.render(tile["icon"], True, Colors.TEXT_50)
+            ix = tx + (tile_size - icon_surf.get_width()) // 2
+            iy = y + (tile_size - icon_surf.get_height()) // 2
+            surface.blit(icon_surf, (ix, iy))
 
-        Args:
-            surface: Surface to draw on.
-            x: Left x position.
-            y: Top y position.
-            metric: The metric data to render.
-        """
-        if self._font is None:
+            # Cooldown overlay
+            if tile["cooldown_end"] > now:
+                # Semi-transparent overlay
+                pygame.draw.rect(
+                    surface, (*Colors.STATUS_RED, 80),
+                    (tx, y, tile_size, tile_size),
+                )
+
+            self._tile_rects.append(
+                (tx, y, tile_size, tile_size, "action", tile["key"])
+            )
+            y += tile_size + 4
+
+    def _render_tooltip(self, surface: pygame.Surface) -> None:
+        """Render tooltip text near the sidebar."""
+        if self._font is None or self._tooltip is None:
             return
-
-        bar_h = _BAR_HEIGHT_COMPACT if self.compact else _BAR_HEIGHT
-        bar_w = _BAR_WIDTH_COMPACT if self.compact else _BAR_WIDTH
-
-        cursor_x = x
-
-        # Icon
-        icon_surf = self._font.render(metric.icon, True, metric.color)
-        surface.blit(icon_surf, (cursor_x, y))
-        cursor_x += 16
-
-        # Label (expanded mode only)
-        if not self.compact:
-            label_surf = self._font.render(metric.label, True, _LABEL_COLOR)
-            surface.blit(label_surf, (cursor_x, y))
-            cursor_x += _LABEL_WIDTH
-
-        # Bar background
-        bar_y = y + (self._font_height - bar_h) // 2
-        pygame.draw.rect(surface, _BAR_BG, (cursor_x, bar_y, bar_w, bar_h))
-
-        # Bar fill
-        fill_w = max(0, int(bar_w * max(0.0, min(1.0, metric.bar_value))))
-        if fill_w > 0:
-            pygame.draw.rect(surface, metric.color, (cursor_x, bar_y, fill_w, bar_h))
-
-        # Bar border
-        pygame.draw.rect(surface, _BAR_BORDER, (cursor_x, bar_y, bar_w, bar_h), 1)
-
-        cursor_x += bar_w + 4
-
-        # Value text (expanded mode only)
-        if not self.compact:
-            value_surf = self._font.render(metric.display_text, True, _TEXT_COLOR)
-            surface.blit(value_surf, (cursor_x, y))
+        tip_surf = self._font.render(self._tooltip, True, Colors.TEXT_90)
+        x = self._layout.sidebar.w + 4
+        y = self._layout.sidebar.y + 4
+        # Background
+        bw = tip_surf.get_width() + 8
+        bh = tip_surf.get_height() + 4
+        pygame.draw.rect(surface, VOID_BG, (x, y, bw, bh))
+        pygame.draw.rect(surface, Colors.BORDER[:3], (x, y, bw, bh), 1)
+        surface.blit(tip_surf, (x + 4, y + 2))

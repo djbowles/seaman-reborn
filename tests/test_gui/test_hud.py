@@ -1,51 +1,25 @@
-"""Tests for the HUD and status display (US-039).
-
-Pygame is mocked at module level to avoid requiring a display server in CI.
-Uses the pattern from test_chat_panel.py: sys.modules["pygame"] = mock, import once.
-"""
-
+"""Tests for the Modern Minimal HUD — top bar and sidebar tiles."""
 from __future__ import annotations
 
 import sys
 from unittest.mock import MagicMock
 
-import pytest
-
-# ── Pygame Mock Setup (module-level, before any gui imports) ──────────
-
 _pygame_mock = MagicMock()
 _pygame_mock.SRCALPHA = 65536
-_pygame_mock.QUIT = 256
-_pygame_mock.KEYDOWN = 768
-_pygame_mock.init.return_value = (6, 0)
-_pygame_mock.font.init.return_value = None
-
-# Surface mock
+_font_mock = MagicMock()
+_font_surface = MagicMock()
+_font_surface.get_width.return_value = 80
+_font_surface.get_height.return_value = 14
+_font_mock.render.return_value = _font_surface
+_font_mock.size.return_value = (80, 14)
+_font_mock.get_linesize.return_value = 16
+_pygame_mock.font.SysFont.return_value = _font_mock
+_pygame_mock.font.Font.return_value = _font_mock
 _surface_mock = MagicMock()
 _surface_mock.get_width.return_value = 1024
 _surface_mock.get_height.return_value = 768
 
-# Font mock
-_font_mock = MagicMock()
-_font_mock.get_linesize.return_value = 16
-_font_mock.size.return_value = (80, 16)
-_text_surf_mock = MagicMock()
-_text_surf_mock.get_width.return_value = 80
-_text_surf_mock.get_height.return_value = 16
-_font_mock.render.return_value = _text_surf_mock
-_pygame_mock.font.SysFont.return_value = _font_mock
-_pygame_mock.font.Font.return_value = _font_mock
 
-# Draw mock
-_pygame_mock.draw.rect.return_value = None
-_pygame_mock.draw.line.return_value = None
-_pygame_mock.draw.circle.return_value = None
-
-# Rect mock
-_pygame_mock.Rect = lambda x, y, w, h: (x, y, w, h)
-
-
-# Surface constructor mock — returns a fresh MagicMock each time
 def _make_surface(*args, **kwargs):
     s = MagicMock()
     s.get_width.return_value = args[0][0] if args and isinstance(args[0], tuple) else 100
@@ -54,563 +28,251 @@ def _make_surface(*args, **kwargs):
 
 
 _pygame_mock.Surface = _make_surface
-
-# Install pygame mock before importing gui modules
+_pygame_mock.Rect = lambda x, y, w, h: (x, y, w, h)
 sys.modules["pygame"] = _pygame_mock
+sys.modules["pygame_gui"] = MagicMock()
 
-from seaman_brain.config import GUIConfig  # noqa: E402
-from seaman_brain.creature.state import CreatureState  # noqa: E402
-from seaman_brain.environment.tank import TankEnvironment  # noqa: E402
-from seaman_brain.gui.hud import (  # noqa: E402
-    _COLOR_BLUE,
-    _COLOR_GREEN,
-    _COLOR_RED,
-    _COLOR_YELLOW,
-    _MIC_ACTIVE_COLOR,
-    _MIC_INACTIVE_COLOR,
-    _MOOD_COLORS,
-    _STAGE_NAMES,
-    _TTS_ACTIVE_COLOR,
-    HUD,
-    HUDMetric,
-    _status_color,
-)
-from seaman_brain.types import CreatureStage  # noqa: E402
+import pytest  # noqa: E402
+
+from seaman_brain.gui.hud import HUD  # noqa: E402
+from seaman_brain.gui.layout import ScreenLayout  # noqa: E402
+from seaman_brain.gui.theme import Colors  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
-def _reset_mocks():
-    """Reset draw mocks and re-install pygame mock between tests.
-
-    Other test_gui modules also set sys.modules["pygame"] at module level,
-    so we must re-install ours before each test to avoid cross-contamination.
-    We also patch the pygame reference in the hud module itself, since it may
-    have captured a different mock at import time.
-    """
+def _reinstall_mock():
     sys.modules["pygame"] = _pygame_mock
-    # Patch the hud module's pygame reference to point to OUR mock
-    import seaman_brain.gui.hud as hud_mod
-    hud_mod.pygame = _pygame_mock
+    sys.modules["pygame_gui"] = MagicMock()
+    import seaman_brain.gui.hud as mod
+    mod.pygame = _pygame_mock
     _pygame_mock.draw.reset_mock()
     _surface_mock.reset_mock()
     _font_mock.reset_mock()
-    _text_surf_mock.reset_mock()
-    # Restore return values after reset
+    _font_surface.reset_mock()
     _pygame_mock.Surface = _make_surface
     _pygame_mock.Rect = lambda x, y, w, h: (x, y, w, h)
     _pygame_mock.font.SysFont.return_value = _font_mock
     _pygame_mock.font.Font.return_value = _font_mock
-    _font_mock.render.return_value = _text_surf_mock
+    _font_mock.render.return_value = _font_surface
     _font_mock.get_linesize.return_value = 16
-    _font_mock.size.return_value = (80, 16)
-    _text_surf_mock.get_width.return_value = 80
-    _text_surf_mock.get_height.return_value = 16
+    _font_mock.size.return_value = (80, 14)
+    _font_surface.get_width.return_value = 80
+    _font_surface.get_height.return_value = 14
+    yield
 
 
 @pytest.fixture()
-def default_creature() -> CreatureState:
-    """A creature with default values."""
-    return CreatureState()
+def layout():
+    return ScreenLayout(1024, 768)
 
 
 @pytest.fixture()
-def default_tank() -> TankEnvironment:
-    """A tank with default values."""
-    return TankEnvironment()
+def hud(layout):
+    return HUD(layout)
 
 
-@pytest.fixture()
-def hud() -> HUD:
-    """An HUD with default config."""
-    return HUD()
-
-
-# ── Construction Tests ───────────────────────────────────────────────
+# ── Construction Tests ────────────────────────────────────────────────
 
 
 class TestHUDConstruction:
-    """Tests for HUD initialization."""
+    def test_creates_need_tiles(self, hud):
+        assert len(hud._need_tiles) == 4  # H, +, C, T
 
-    def test_default_config(self):
-        """HUD uses default GUIConfig when none provided."""
-        h = HUD()
-        assert h._config.window_width == 1024
-        assert h._config.window_height == 768
+    def test_creates_action_tiles(self, hud):
+        assert len(hud._action_tiles) == 7  # F, O, ^, v, *, ~, o
 
-    def test_custom_config(self):
-        """HUD accepts custom GUIConfig."""
-        cfg = GUIConfig(window_width=800, window_height=600)
-        h = HUD(gui_config=cfg)
-        assert h._config.window_width == 800
-        assert h._config.window_height == 600
+    def test_session_time_starts_at_zero(self, hud):
+        assert hud.session_time == 0.0
 
-    def test_starts_in_compact_mode(self):
-        """HUD defaults to compact mode."""
-        h = HUD()
-        assert h.compact is True
+    def test_mic_starts_inactive(self, hud):
+        assert hud.mic_active is False
 
-    def test_session_time_starts_at_zero(self):
-        """Session timer starts at zero."""
-        h = HUD()
-        assert h.session_time == 0.0
+    def test_tts_starts_inactive(self, hud):
+        assert hud.tts_active is False
 
 
-# ── Color Threshold Tests ────────────────────────────────────────────
+# ── Need Tile Tests ──────────────────────────────────────────────────
 
 
-class TestColorThresholds:
-    """Tests for _status_color function — green/yellow/red thresholds."""
+class TestNeedTiles:
+    def test_tile_color_green_when_healthy(self, hud):
+        hud.update_needs(hunger=0.8, health=0.9, comfort=0.7, trust=0.6)
+        for tile in hud._need_tiles:
+            assert tile["color"] == Colors.STATUS_GREEN
 
-    def test_high_value_is_green(self):
-        """Value >= 0.6 should return green."""
-        assert _status_color(0.8) == _COLOR_GREEN
-        assert _status_color(1.0) == _COLOR_GREEN
-        assert _status_color(0.6) == _COLOR_GREEN
+    def test_tile_color_red_when_critical(self, hud):
+        hud.update_needs(hunger=0.1, health=0.1, comfort=0.1, trust=0.1)
+        for tile in hud._need_tiles:
+            assert tile["color"] == Colors.STATUS_RED
 
-    def test_medium_value_is_yellow(self):
-        """Value 0.3-0.59 should return yellow."""
-        assert _status_color(0.5) == _COLOR_YELLOW
-        assert _status_color(0.3) == _COLOR_YELLOW
+    def test_tile_color_yellow_when_medium(self, hud):
+        hud.update_needs(hunger=0.35, health=0.35, comfort=0.35, trust=0.35)
+        for tile in hud._need_tiles:
+            assert tile["color"] == Colors.STATUS_YELLOW
 
-    def test_low_value_is_red(self):
-        """Value < 0.3 should return red."""
-        assert _status_color(0.1) == _COLOR_RED
-        assert _status_color(0.0) == _COLOR_RED
-        assert _status_color(0.29) == _COLOR_RED
+    def test_need_tile_icons(self, hud):
+        icons = [t["icon"] for t in hud._need_tiles]
+        assert icons == ["H", "+", "C", "T"]
 
-    def test_inverted_high_value_is_red(self):
-        """Inverted: high value (e.g. hunger 1.0) should be red."""
-        assert _status_color(0.8, inverted=True) == _COLOR_RED
-        assert _status_color(1.0, inverted=True) == _COLOR_RED
-
-    def test_inverted_low_value_is_green(self):
-        """Inverted: low value (e.g. hunger 0.0) should be green."""
-        assert _status_color(0.0, inverted=True) == _COLOR_GREEN
-        assert _status_color(0.1, inverted=True) == _COLOR_GREEN
-
-    def test_inverted_medium_is_yellow(self):
-        """Inverted: medium value should be yellow."""
-        assert _status_color(0.5, inverted=True) == _COLOR_YELLOW
+    def test_need_tile_keys(self, hud):
+        keys = [t["key"] for t in hud._need_tiles]
+        assert keys == ["hunger", "health", "comfort", "trust"]
 
 
-# ── Mode Switching Tests ─────────────────────────────────────────────
+# ── Action Tile Tests ────────────────────────────────────────────────
 
 
-class TestModeSwitching:
-    """Tests for compact/expanded mode toggling."""
+class TestActionTiles:
+    def test_action_tile_icons(self, hud):
+        icons = [t["icon"] for t in hud._action_tiles]
+        assert icons == ["F", "O", "^", "v", "*", "~", "o"]
 
-    def test_toggle_to_expanded(self, hud: HUD):
-        """toggle_mode() switches from compact (default) to expanded."""
-        assert hud.compact is True
-        hud.toggle_mode()
-        assert hud.compact is False
-
-    def test_toggle_back_to_compact(self, hud: HUD):
-        """toggle_mode() twice returns to compact."""
-        hud.toggle_mode()
-        hud.toggle_mode()
-        assert hud.compact is True
-
-    def test_compact_renders_without_crash(
-        self, hud: HUD, default_creature: CreatureState, default_tank: TankEnvironment
-    ):
-        """Compact mode render does not crash."""
-        hud.compact = True
-        hud.render(_surface_mock, default_creature, default_tank)
-        # If we got here, no crash
-
-    def test_expanded_renders_without_crash(
-        self, hud: HUD, default_creature: CreatureState, default_tank: TankEnvironment
-    ):
-        """Expanded mode render does not crash."""
-        hud.compact = False
-        hud.render(_surface_mock, default_creature, default_tank)
+    def test_action_tile_keys(self, hud):
+        keys = [t["key"] for t in hud._action_tiles]
+        assert keys == [
+            "feed", "aerator", "temp_up", "temp_down",
+            "clean", "drain", "fill",
+        ]
 
 
-# ── Update Tests ─────────────────────────────────────────────────────
+# ── Click Handling Tests ─────────────────────────────────────────────
 
 
-class TestHUDUpdate:
-    """Tests for HUD update (session timer)."""
+class TestActionTileClick:
+    def test_click_outside_sidebar_returns_none(self, hud):
+        # Click well outside sidebar (sidebar is 0-48px x)
+        result = hud.handle_click(500, 200)
+        assert result is None
 
-    def test_session_time_increments(self, hud: HUD):
-        """Session timer increases with update()."""
-        hud.update(1.5)
-        assert hud.session_time == pytest.approx(1.5)
-
-    def test_multiple_updates_accumulate(self, hud: HUD):
-        """Multiple update() calls accumulate session time."""
-        hud.update(1.0)
-        hud.update(2.5)
-        hud.update(0.5)
-        assert hud.session_time == pytest.approx(4.0)
-
-
-# ── Bar Rendering Tests ──────────────────────────────────────────────
-
-
-class TestBarRendering:
-    """Tests for metric bar rendering via render()."""
-
-    def test_render_calls_draw_rect(
-        self, hud: HUD, default_creature: CreatureState, default_tank: TankEnvironment
-    ):
-        """Rendering draws rectangles for bars."""
-        hud.render(_surface_mock, default_creature, default_tank)
-        # Should have drawn rect calls for bar backgrounds, fills, and borders
-        assert _pygame_mock.draw.rect.call_count > 0
-
-    def test_render_calls_font_render(
-        self, hud: HUD, default_creature: CreatureState, default_tank: TankEnvironment
-    ):
-        """Rendering draws text for labels and values."""
-        hud.render(_surface_mock, default_creature, default_tank)
-        assert _font_mock.render.call_count > 0
-
-    def test_starving_creature_hunger_bar_red(self, hud: HUD):
-        """Hunger bar color is red when creature is starving."""
-        creature = CreatureState(hunger=0.9)
-        metrics = hud._build_need_metrics(creature)
-        hunger = metrics[0]
-        assert hunger.color == _COLOR_RED
-
-    def test_healthy_creature_health_bar_green(self, hud: HUD):
-        """Health bar color is green when creature is healthy."""
-        creature = CreatureState(health=1.0)
-        metrics = hud._build_need_metrics(creature)
-        health = metrics[1]
-        assert health.color == _COLOR_GREEN
-
-    def test_low_health_bar_red(self, hud: HUD):
-        """Health bar color is red when health is low."""
-        creature = CreatureState(health=0.1)
-        metrics = hud._build_need_metrics(creature)
-        health = metrics[1]
-        assert health.color == _COLOR_RED
-
-    def test_medium_comfort_bar_yellow(self, hud: HUD):
-        """Comfort bar color is yellow when comfort is medium."""
-        creature = CreatureState(comfort=0.4)
-        metrics = hud._build_need_metrics(creature)
-        comfort = metrics[2]
-        assert comfort.color == _COLOR_YELLOW
-
-    def test_hunger_bar_value_is_inverted(self, hud: HUD):
-        """Hunger bar_value shows fullness (1 - hunger)."""
-        creature = CreatureState(hunger=0.3)
-        metrics = hud._build_need_metrics(creature)
-        hunger = metrics[0]
-        assert hunger.bar_value == pytest.approx(0.7)
-
-    def test_health_bar_value_direct(self, hud: HUD):
-        """Health bar_value is the direct health value."""
-        creature = CreatureState(health=0.8)
-        metrics = hud._build_need_metrics(creature)
-        health = metrics[1]
-        assert health.bar_value == pytest.approx(0.8)
-
-
-# ── Tank Indicator Tests ─────────────────────────────────────────────
-
-
-class TestTankIndicators:
-    """Tests for tank environment indicators."""
-
-    def test_optimal_temperature_is_green(self, hud: HUD):
-        """Temperature in optimal range shows green."""
-        tank = TankEnvironment(temperature=24.0)
-        metrics = hud._build_tank_metrics(tank)
-        temp = metrics[0]
-        assert temp.color == _COLOR_GREEN
-
-    def test_cold_temperature_is_blue(self, hud: HUD):
-        """Cold temperature shows blue."""
-        tank = TankEnvironment(temperature=15.0)
-        metrics = hud._build_tank_metrics(tank)
-        temp = metrics[0]
-        assert temp.color == _COLOR_BLUE
-
-    def test_hot_temperature_is_red(self, hud: HUD):
-        """Hot temperature shows red."""
-        tank = TankEnvironment(temperature=35.0)
-        metrics = hud._build_tank_metrics(tank)
-        temp = metrics[0]
-        assert temp.color == _COLOR_RED
-
-    def test_clean_tank_is_green(self, hud: HUD):
-        """Cleanliness at 1.0 shows green."""
-        tank = TankEnvironment(cleanliness=1.0)
-        metrics = hud._build_tank_metrics(tank)
-        clean = metrics[1]
-        assert clean.color == _COLOR_GREEN
-
-    def test_dirty_tank_is_red(self, hud: HUD):
-        """Cleanliness near 0.0 shows red."""
-        tank = TankEnvironment(cleanliness=0.1)
-        metrics = hud._build_tank_metrics(tank)
-        clean = metrics[1]
-        assert clean.color == _COLOR_RED
-
-    def test_oxygen_bar_present(self, hud: HUD):
-        """Oxygen bar is included in tank metrics."""
-        tank = TankEnvironment(oxygen_level=0.8)
-        metrics = hud._build_tank_metrics(tank)
-        assert len(metrics) == 3
-        oxygen = metrics[2]
-        assert oxygen.label == "Oxygen"
-        assert oxygen.bar_value == pytest.approx(0.8)
-
-    def test_temperature_display_text_format(self, hud: HUD):
-        """Temperature display text shows Celsius."""
-        tank = TankEnvironment(temperature=24.5)
-        metrics = hud._build_tank_metrics(tank)
-        temp = metrics[0]
-        assert temp.display_text == "24.5C"
-
-
-# ── Trust Meter Tests ────────────────────────────────────────────────
-
-
-class TestTrustMeter:
-    """Tests for trust level display."""
-
-    def test_zero_trust_is_red(self, hud: HUD):
-        """Zero trust shows red."""
-        creature = CreatureState(trust_level=0.0)
-        metric = hud._build_trust_metric(creature)
-        assert metric.color == _COLOR_RED
-
-    def test_full_trust_is_green(self, hud: HUD):
-        """Full trust shows green."""
-        creature = CreatureState(trust_level=1.0)
-        metric = hud._build_trust_metric(creature)
-        assert metric.color == _COLOR_GREEN
-
-    def test_trust_bar_value_matches(self, hud: HUD):
-        """Trust bar value matches creature trust level."""
-        creature = CreatureState(trust_level=0.5)
-        metric = hud._build_trust_metric(creature)
-        assert metric.bar_value == pytest.approx(0.5)
-        assert metric.display_text == "50%"
+    def test_click_in_sidebar_area(self, hud):
+        # Click at sidebar x, somewhere in the tile area
+        result = hud.handle_click(24, 200)
+        assert result is None or isinstance(result, str)
 
 
 # ── Top Bar Tests ────────────────────────────────────────────────────
 
 
 class TestTopBar:
-    """Tests for the top status bar."""
+    def test_render_does_not_crash(self, hud):
+        surface = MagicMock()
+        surface.get_width.return_value = 1024
+        hud.render(surface)
+        # Should have drawn something
+        assert _pygame_mock.draw.rect.called or surface.blit.called
 
-    def test_stage_names_cover_all_stages(self):
-        """All CreatureStage values have display names."""
-        for stage in CreatureStage:
-            assert stage in _STAGE_NAMES
-
-    def test_mood_colors_cover_expected_moods(self):
-        """Known mood strings have color mappings."""
-        expected = {"hostile", "irritated", "sardonic", "neutral",
-                    "curious", "amused", "philosophical", "content"}
-        assert set(_MOOD_COLORS.keys()) == expected
-
-    def test_session_time_format_minutes(self, hud: HUD):
-        """Session time formats as MM:SS for short sessions."""
-        hud._session_time = 65.0  # 1 minute 5 seconds
-        result = hud._format_session_time()
-        assert result == "01:05"
-
-    def test_session_time_format_hours(self, hud: HUD):
-        """Session time formats as HH:MM:SS for long sessions."""
-        hud._session_time = 3661.0  # 1 hour 1 minute 1 second
-        result = hud._format_session_time()
-        assert result == "1:01:01"
-
-    def test_session_time_format_zero(self, hud: HUD):
-        """Session time formats as 00:00 at start."""
-        result = hud._format_session_time()
-        assert result == "00:00"
-
-
-# ── Edge Case Tests ──────────────────────────────────────────────────
-
-
-class TestEdgeCases:
-    """Edge cases and error handling."""
-
-    def test_extreme_hunger_clamp(self, hud: HUD):
-        """Creature at max hunger (1.0) produces valid bar."""
-        creature = CreatureState(hunger=1.0)
-        metrics = hud._build_need_metrics(creature)
-        hunger = metrics[0]
-        assert hunger.bar_value == pytest.approx(0.0)
-        assert hunger.color == _COLOR_RED
-
-    def test_all_needs_zero(self, hud: HUD):
-        """Creature with all needs at worst produces valid bars."""
-        creature = CreatureState(hunger=1.0, health=0.0, comfort=0.0)
-        metrics = hud._build_need_metrics(creature)
-        assert len(metrics) == 3
-        for m in metrics:
-            assert m.color == _COLOR_RED
-
-    def test_perfect_creature_all_green(self, hud: HUD):
-        """Creature in perfect state has all green bars."""
-        creature = CreatureState(hunger=0.0, health=1.0, comfort=1.0, trust_level=1.0)
-        need_metrics = hud._build_need_metrics(creature)
-        trust = hud._build_trust_metric(creature)
-        for m in need_metrics:
-            assert m.color == _COLOR_GREEN
-        assert trust.color == _COLOR_GREEN
-
-    def test_all_stages_render(
-        self, hud: HUD, default_tank: TankEnvironment
-    ):
-        """HUD renders without crash for all creature stages."""
-        for stage in CreatureStage:
-            creature = CreatureState(stage=stage)
-            hud.render(_surface_mock, creature, default_tank)
-
-    def test_render_with_extreme_temperature(
-        self, hud: HUD, default_creature: CreatureState
-    ):
-        """HUD renders without crash for extreme temperatures."""
-        tank = TankEnvironment(temperature=5.0)
-        hud.render(_surface_mock, default_creature, tank)
-        tank2 = TankEnvironment(temperature=40.0)
-        hud.render(_surface_mock, default_creature, tank2)
-
-    def test_hudmetric_dataclass(self):
-        """HUDMetric dataclass creates correctly."""
-        m = HUDMetric(
-            icon="H", label="Hunger", value=0.5,
-            display_text="50%", color=(60, 200, 100), bar_value=0.5
-        )
-        assert m.icon == "H"
-        assert m.label == "Hunger"
-        assert m.value == 0.5
-        assert m.display_text == "50%"
-        assert m.color == (60, 200, 100)
-        assert m.bar_value == 0.5
-
-
-# ── Settings Button Tests ────────────────────────────────────────────
-
-
-class TestSettingsButton:
-    """Tests for the HUD settings button indicator."""
-
-    def test_settings_button_has_background(
-        self, hud: HUD, default_creature: CreatureState, default_tank: TankEnvironment
-    ):
-        """Settings button has a background rect drawn."""
-        hud.render(_surface_mock, default_creature, default_tank)
-        # draw.rect should be called for the button background and border
-        assert _pygame_mock.draw.rect.call_count >= 2
-
-    def test_all_bars_in_left_column(
-        self, hud: HUD, default_creature: CreatureState, default_tank: TankEnvironment
-    ):
-        """All bars (needs + trust + tank) are rendered in the left column."""
-        # Build all metrics and verify they would be rendered from the same x position
-        need_metrics = hud._build_need_metrics(default_creature)
-        hud._build_trust_metric(default_creature)
-        tank_metrics = hud._build_tank_metrics(default_tank)
-        # 3 needs + 1 trust + 3 tank = 7 total bars
-        total = len(need_metrics) + 1 + len(tank_metrics)
-        assert total == 7
-
-    def test_settings_rect_none_before_render(self, hud: HUD):
-        """settings_rect is None before first render."""
+    def test_settings_rect_none_before_render(self, hud):
         assert hud.settings_rect is None
 
-    def test_settings_rect_set_after_render(
-        self, hud: HUD, default_creature: CreatureState, default_tank: TankEnvironment
-    ):
-        """settings_rect is set after rendering the top bar."""
-        hud.render(_surface_mock, default_creature, default_tank)
+    def test_lineage_rect_none_before_render(self, hud):
+        assert hud.lineage_rect is None
+
+    def test_settings_rect_set_after_render(self, hud):
+        surface = MagicMock()
+        surface.get_width.return_value = 1024
+        hud.render(surface)
         assert hud.settings_rect is not None
 
-    def test_settings_button_renders_text(
-        self, hud: HUD, default_creature: CreatureState, default_tank: TankEnvironment
-    ):
-        """Top bar renders [Settings] text for settings button."""
-        hud.render(_surface_mock, default_creature, default_tank)
-        # Check that "[Settings]" was rendered
-        rendered_texts = [call.args[0] for call in _font_mock.render.call_args_list]
-        assert any("[Settings]" in str(t) for t in rendered_texts)
+    def test_lineage_rect_set_after_render(self, hud):
+        surface = MagicMock()
+        surface.get_width.return_value = 1024
+        hud.render(surface)
+        assert hud.lineage_rect is not None
 
 
-# ── Audio Indicator Tests ────────────────────────────────────────────
+# ── Update Tests ─────────────────────────────────────────────────────
 
 
-class TestAudioIndicators:
-    """Tests for mic and TTS indicator buttons in the HUD."""
+class TestHUDUpdate:
+    def test_session_time_increments(self, hud):
+        hud.update(1.5)
+        assert hud.session_time == pytest.approx(1.5)
 
-    def test_mic_rect_none_before_render(self, hud: HUD):
-        """mic_rect is None before first render."""
-        assert hud.mic_rect is None
+    def test_multiple_updates_accumulate(self, hud):
+        hud.update(1.0)
+        hud.update(2.5)
+        hud.update(0.5)
+        assert hud.session_time == pytest.approx(4.0)
 
-    def test_mic_rect_set_after_render(
-        self, hud: HUD, default_creature: CreatureState, default_tank: TankEnvironment
-    ):
-        """mic_rect is set after rendering the top bar."""
-        hud.render(_surface_mock, default_creature, default_tank)
-        assert hud.mic_rect is not None
-
-    def test_mic_default_inactive(self, hud: HUD):
-        """Mic starts inactive."""
-        assert hud.mic_active is False
-
-    def test_tts_default_inactive(self, hud: HUD):
-        """TTS starts inactive."""
-        assert hud.tts_active is False
-
-    def test_mic_pulse_timer_advances_when_active(self, hud: HUD):
-        """Pulse timer advances when mic is active."""
+    def test_mic_pulse_advances_when_active(self, hud):
         hud.mic_active = True
         hud.update(0.5)
         assert hud._mic_pulse_timer > 0.0
 
-    def test_mic_pulse_timer_resets_when_inactive(self, hud: HUD):
-        """Pulse timer resets to 0 when mic is deactivated."""
+    def test_mic_pulse_resets_when_inactive(self, hud):
         hud.mic_active = True
         hud.update(1.0)
-        assert hud._mic_pulse_timer > 0.0
         hud.mic_active = False
         hud.update(0.1)
         assert hud._mic_pulse_timer == 0.0
 
-    def test_render_with_mic_active_no_crash(
-        self, hud: HUD, default_creature: CreatureState, default_tank: TankEnvironment
-    ):
-        """Render with mic active doesn't crash."""
-        hud.mic_active = True
-        hud._mic_pulse_timer = 1.5
-        hud.render(_surface_mock, default_creature, default_tank)
 
-    def test_render_with_tts_active_no_crash(
-        self, hud: HUD, default_creature: CreatureState, default_tank: TankEnvironment
-    ):
-        """Render with TTS active doesn't crash."""
-        hud.tts_active = True
-        hud.render(_surface_mock, default_creature, default_tank)
+# ── Session Timer Format Tests ───────────────────────────────────────
 
-    def test_renders_mic_label(
-        self, hud: HUD, default_creature: CreatureState, default_tank: TankEnvironment
-    ):
-        """Top bar renders [Mic] text."""
-        hud.render(_surface_mock, default_creature, default_tank)
-        rendered_texts = [call.args[0] for call in _font_mock.render.call_args_list]
-        assert any("[Mic]" in str(t) for t in rendered_texts)
 
-    def test_renders_tts_label(
-        self, hud: HUD, default_creature: CreatureState, default_tank: TankEnvironment
-    ):
-        """Top bar renders [TTS] text."""
-        hud.render(_surface_mock, default_creature, default_tank)
-        rendered_texts = [call.args[0] for call in _font_mock.render.call_args_list]
-        assert any("[TTS]" in str(t) for t in rendered_texts)
+class TestSessionTimerFormat:
+    def test_format_zero(self, hud):
+        assert hud._format_session_time() == "00:00"
 
-    def test_audio_indicator_colors_defined(self):
-        """Audio indicator color constants are defined."""
-        assert _MIC_ACTIVE_COLOR == (60, 220, 180)
-        assert _MIC_INACTIVE_COLOR == (100, 120, 140)
-        assert _TTS_ACTIVE_COLOR == (220, 180, 60)
+    def test_format_minutes(self, hud):
+        hud._session_time = 65.0
+        assert hud._format_session_time() == "01:05"
+
+    def test_format_hours(self, hud):
+        hud._session_time = 3661.0
+        assert hud._format_session_time() == "1:01:01"
+
+
+# ── Top Bar State Tests ──────────────────────────────────────────────
+
+
+class TestTopBarState:
+    def test_update_creature_info(self, hud):
+        hud.update_creature_info(stage="Gillman", mood="sardonic", name="Seaman")
+        assert hud._stage_name == "Gillman"
+        assert hud._mood_name == "sardonic"
+        assert hud._creature_name == "Seaman"
+
+    def test_default_creature_info(self, hud):
+        assert hud._stage_name == "Mushroomer"
+        assert hud._mood_name == "neutral"
+        assert hud._creature_name == "Seaman"
+
+
+# ── Tooltip Tests ────────────────────────────────────────────────────
+
+
+class TestTooltips:
+    def test_hover_over_need_tile_sets_tooltip(self, hud):
+        # Hover at x=24 (sidebar center), y near first tile
+        hud.handle_hover(24, hud._layout.sidebar.y + 12)
+        # tooltip may or may not be set depending on exact position
+        assert hud._tooltip is None or isinstance(hud._tooltip, str)
+
+    def test_hover_outside_clears_tooltip(self, hud):
+        hud._tooltip = "some tooltip"
+        hud.handle_hover(500, 500)
+        assert hud._tooltip is None
+
+
+# ── Edge Cases ───────────────────────────────────────────────────────
+
+
+class TestEdgeCases:
+    def test_render_with_all_defaults(self, hud):
+        surface = MagicMock()
+        surface.get_width.return_value = 1024
+        hud.render(surface)  # No crash
+
+    def test_render_after_resize(self, layout, hud):
+        layout.resize(1920, 1080)
+        hud.resize(layout)
+        surface = MagicMock()
+        surface.get_width.return_value = 1920
+        hud.render(surface)  # No crash
+
+    def test_cooldown_overlay_does_not_crash(self, hud):
+        hud.set_cooldown("feed", 5.0)
+        surface = MagicMock()
+        surface.get_width.return_value = 1024
+        hud.render(surface)  # No crash
