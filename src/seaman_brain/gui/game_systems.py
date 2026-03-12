@@ -9,10 +9,11 @@ from __future__ import annotations
 
 import logging
 import re
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
-from seaman_brain.behavior.autonomous import BehaviorEngine
+from seaman_brain.behavior.autonomous import BehaviorEngine, IdleBehavior
 from seaman_brain.behavior.events import EventSystem
 from seaman_brain.behavior.mood import MoodEngine
 from seaman_brain.creature.evolution import EvolutionEngine
@@ -45,6 +46,25 @@ _VISION_LOOK_TIMEOUT = 30.0  # seconds before Look Now gives up
 _STT_DEBOUNCE_SECONDS = 0.2  # wait for speech to settle before submitting
 _PENDING_TIMEOUT = 60.0  # seconds before a stuck pending future is force-cancelled
 _REACTION_COOLDOWN = 5.0  # seconds between interaction reactions
+
+
+# ── Tick result ─────────────────────────────────────────────────────
+
+
+@dataclass
+class TickResult:
+    """Results from a single game systems tick.
+
+    GameEngine reads these fields to trigger UI responses (chat messages,
+    animations, overlays, sound effects) without knowing the tick internals.
+    """
+
+    mood_value: str = "neutral"
+    behavior: IdleBehavior | None = None
+    fired_events: list[Any] = field(default_factory=list)
+    new_stage: Any | None = None
+    death_cause: Any | None = None
+
 
 # ── TTS splitting ────────────────────────────────────────────────────
 
@@ -233,23 +253,27 @@ class GameSystems:
     def needs(self, value: CreatureNeeds) -> None:
         self._needs = value
 
-    def tick(self, dt: float) -> None:
+    def tick(self, dt: float) -> TickResult | None:
         """Advance all timer-based subsystems by *dt* seconds.
 
-        Skips all updates when the creature is dead.
+        Returns ``None`` when the creature is dead (no updates run).
+        Otherwise returns a :class:`TickResult` with any behaviors,
+        events, evolution, or death that occurred this tick.
 
         Args:
             dt: Delta time in seconds since last tick.
         """
         if not self._creature_state.is_alive:
-            return
+            return None
+
+        result = TickResult()
 
         # Accumulate timers
         self._needs_timer += dt
         self._behavior_timer += dt
         self._event_timer += dt
 
-        # Periodic needs update
+        # ── Needs ─────────────────────────────────────────────────
         if self._needs_timer >= _NEEDS_UPDATE_INTERVAL:
             elapsed = self._needs_timer
             self._needs_timer = 0.0
@@ -260,6 +284,84 @@ class GameSystems:
                 logger.error(
                     "Needs update error (continuing with stale state): %s", exc
                 )
+
+        # ── Death ─────────────────────────────────────────────────
+        try:
+            cause = self._death_engine.check_death(
+                self._creature_state, self._needs, self._tank,
+            )
+            if cause is not None:
+                result.death_cause = cause
+                return result
+        except Exception as exc:
+            logger.error("Death check error: %s", exc, exc_info=True)
+
+        # ── Mood ──────────────────────────────────────────────────
+        time_context: dict = {}
+        try:
+            time_context = self._clock.get_time_context()
+            traits = self.get_traits()
+            mood = self._mood_engine.calculate_mood(
+                needs=self._needs,
+                trust=self._creature_state.trust_level,
+                time_context=time_context,
+                recent_interactions=self._creature_state.interaction_count,
+                traits=traits,
+            )
+            self._creature_state.mood = mood.value
+            result.mood_value = mood.value
+        except Exception as exc:
+            logger.error("Mood update error: %s", exc, exc_info=True)
+
+        # ── Behavior ──────────────────────────────────────────────
+        try:
+            if self._behavior_timer >= _BEHAVIOR_CHECK_INTERVAL:
+                self._behavior_timer = 0.0
+                traits = self.get_traits()
+                creature_dict = {
+                    "stage": self._creature_state.stage.value,
+                    "mood": self._creature_state.mood,
+                    "trust": self._creature_state.trust_level,
+                    "hunger": self._creature_state.hunger,
+                }
+                behavior = self._behavior_engine.get_idle_behavior(
+                    creature_state=creature_dict,
+                    needs=self._needs,
+                    mood=self._mood_engine.current_mood,
+                    time_context=time_context,
+                    traits=traits,
+                )
+                result.behavior = behavior
+        except Exception as exc:
+            logger.error("Behavior check error: %s", exc, exc_info=True)
+
+        # ── Events ────────────────────────────────────────────────
+        try:
+            if self._event_timer >= _EVENT_CHECK_INTERVAL:
+                self._event_timer = 0.0
+                fired = self._event_system.check_events(
+                    creature_state=self._creature_state,
+                    tank=self._tank,
+                    time_context=time_context,
+                )
+                for event in fired:
+                    self._event_system.apply_effects(
+                        event, self._creature_state, self._tank,
+                    )
+                result.fired_events = fired
+        except Exception as exc:
+            logger.error("Event check error: %s", exc, exc_info=True)
+
+        # ── Evolution ─────────────────────────────────────────────
+        try:
+            new_stage = self._evolution_engine.check_evolution(
+                self._creature_state,
+            )
+            result.new_stage = new_stage
+        except Exception as exc:
+            logger.error("Evolution check error: %s", exc, exc_info=True)
+
+        return result
 
     def _update_needs(self, elapsed: float) -> None:
         """Update creature needs based on elapsed time."""
